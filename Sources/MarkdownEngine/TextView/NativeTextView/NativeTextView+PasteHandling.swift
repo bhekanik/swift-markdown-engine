@@ -24,22 +24,21 @@ extension NativeTextView {
         // Our own copy: prefer the private raw-markdown flavor so an in-app
         // copy→paste round-trips byte-exact, so this must win over the HTML
         // branch below.
-        if let ownMarkdown = pasteboard.string(forType: MarkdownPasteboardWriter.markdownType) {
-            if !ownMarkdown.isEmpty {
-                insertPasted(ownMarkdown, replacementRange: selectedRange())
-                return
-            }
+        // Verbatim, both of them: the private flavor because
+        // MarkdownPasteboardWriter documents it as byte-exact, and everything
+        // in raw mode because raw is the source. Sanitising either one trimmed
+        // indented-code prefixes and trailing hard-break spaces, so pasting a
+        // copy from another Recto view changed the document.
+        let verbatim = pasteboard.string(forType: MarkdownPasteboardWriter.markdownType)
+            ?? (configuration.rawSourceMode
+                ? pasteboard.string(forType: .string)
+                    ?? textFromPastedFileURL(pasteboard: pasteboard)
+                : nil)
+        if let verbatim, !verbatim.isEmpty {
+            insertPasted(verbatim, replacementRange: selectedRange())
+            return
         }
-
         if configuration.rawSourceMode {
-            if let pasted = pasteboard.string(forType: .string), !pasted.isEmpty {
-                insertPasted(pasted, replacementRange: selectedRange())
-                return
-            }
-            if let fileText = textFromPastedFileURL(pasteboard: pasteboard), !fileText.isEmpty {
-                insertPasted(fileText, replacementRange: selectedRange())
-                return
-            }
             pasteAsPlainText(sender)
             return
         }
