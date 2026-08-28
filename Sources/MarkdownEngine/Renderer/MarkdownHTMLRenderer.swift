@@ -24,30 +24,49 @@ public enum MarkdownHTMLRenderer {
         extensions: [any MarkdownExtension] = []
     ) -> String {
         let ns = markdown as NSString
-        let env = Env(registry: ExtensionRegistry(extensions: extensions),
+        let registry = ExtensionRegistry(extensions: extensions)
+        let blocks = DocumentAST.parse(markdown, registry: registry)
+        var definitions: [String: ReferenceDefinition] = [:]
+        for block in blocks {
+            guard case .linkDefinition(_, let label, let destination, let title) = block else { continue }
+            let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label)
+            if definitions[key] == nil {
+                definitions[key] = ReferenceDefinition(destination: destination, title: title)
+            }
+        }
+        let env = Env(registry: registry,
                       byID: {
                           var out: [String: any MarkdownExtension] = [:]
                           for ext in extensions { out[ext.id] = ext }
                           return out
-                      }())
-        let blocks = DocumentAST.parse(markdown, registry: env.registry)
+                      }(),
+                      definitions: definitions)
         let pieces = blocks.compactMap { block(for: $0, ns: ns, env: env) }
         return pieces.joined(separator: "\n")
     }
 
     /// Extension lookup threaded through the render walk.
+    private struct ReferenceDefinition {
+        let destination: NSRange
+        let title: NSRange?
+    }
+
     private struct Env {
         let registry: ExtensionRegistry
         let byID: [String: any MarkdownExtension]
-        static let empty = Env(registry: .empty, byID: [:])
+        let definitions: [String: ReferenceDefinition]
+        static let empty = Env(registry: .empty, byID: [:], definitions: [:])
     }
 
     // MARK: - Blocks
 
     private static func block(for node: BlockNode, ns: NSString, env: Env) -> String? {
         switch node {
-        case .frontmatter:
+        case .frontmatter, .linkDefinition:
             return nil
+
+        case .footnoteDefinition(_, _, _, let inlines):
+            return "<p>\(renderInlines(inlines, ns: ns, env: env))</p>"
 
         case .heading(let level, _, _, let inlines):
             let l = min(max(level, 1), 6)
@@ -247,11 +266,32 @@ public enum MarkdownHTMLRenderer {
             case .boldItalic: return "<strong><em>\(inner)</em></strong>"
             }
 
-        case .link(_, _, let url, _, let children):
-            return "<a href=\"\(escape(ns.substring(with: url)))\">\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
+        case .link(_, _, let url, let title, _, let children):
+            let titleAttribute = title.map { " title=\"\(escape(ns.substring(with: $0)))\"" } ?? ""
+            return "<a href=\"\(escape(ns.substring(with: url)))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
 
-        case .image(_, let alt, let url, _):
-            return "<img src=\"\(escape(ns.substring(with: url)))\" alt=\"\(escape(ns.substring(with: alt)))\">"
+        case .image(_, let alt, let url, let title, _):
+            let titleAttribute = title.map { " title=\"\(escape(ns.substring(with: $0)))\"" } ?? ""
+            return "<img src=\"\(escape(ns.substring(with: url)))\" alt=\"\(escape(ns.substring(with: alt)))\"\(titleAttribute)>"
+
+        case .referenceLink(let range, let textRange, let label, _, let children):
+            let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label ?? textRange)
+            guard let definition = env.definitions[key] else {
+                return escape(ns.substring(with: range))
+            }
+            let titleAttribute = definition.title.map { " title=\"\(escape(ns.substring(with: $0)))\"" } ?? ""
+            return "<a href=\"\(escape(ns.substring(with: definition.destination)))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
+
+        case .footnoteReference(_, let label, _):
+            return "<sup>\(escape(ns.substring(with: label)))</sup>"
+
+        case .hardBreak:
+            return "<br>\n"
+
+        case .autolink(_, let url, _):
+            let label = ns.substring(with: url)
+            let destination = label.contains("@") && !label.contains(":") ? "mailto:\(label)" : label
+            return "<a href=\"\(escape(destination))\">\(escape(label))</a>"
 
         case .ext(let node):
             guard let ext = env.byID[node.extensionID] else {

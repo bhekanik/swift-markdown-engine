@@ -25,6 +25,8 @@ import Foundation
 /// The block-level classification of a run of lines.
 enum BlockKind: Equatable {
     case frontmatter     // opening `---` through a closing `---` / `...`
+    case linkDefinition  // consecutive `[id]: destination "title"` lines
+    case footnoteDefinition // `[^id]: body` plus four-space continuation lines
     case paragraph       // inline-bearing
     case heading         // ATX or setext, inline-bearing content
     case blockquote      // consecutive `>` lines, inline-bearing per line
@@ -236,7 +238,7 @@ enum BlockParser {
         // A trailing fence or extension block reaching the window end might continue past it.
         if let last = reparsed.last, NSMaxRange(last.range) >= winEndNew {
             switch last.kind {
-            case .frontmatter, .fencedCode, .ext: return nil
+            case .frontmatter, .linkDefinition, .footnoteDefinition, .fencedCode, .ext: return nil
             case .paragraph:
                 // The edit may have dissolved the separator that used to end
                 // this paragraph (backspace-joining two paragraphs): if the
@@ -307,6 +309,14 @@ enum BlockParser {
             return nil
         }
 
+        func isLinkDefinitionLine(_ index: Int) -> Bool {
+            MarkdownLinkSyntax.linkDefinition(in: nsText, lineRange: lines[index]) != nil
+        }
+
+        func isFootnoteDefinitionLine(_ index: Int) -> Bool {
+            MarkdownLinkSyntax.footnoteDefinitionHeader(in: nsText, lineRange: lines[index]) != nil
+        }
+
         // 2. Classify + group.
         var blocks: [Block] = []
         var i = 0
@@ -315,6 +325,20 @@ enum BlockParser {
 
             if i == 0, let end = frontmatterCloseIndex() {
                 blocks.append(Block(kind: .frontmatter, range: union(lines[i...end])))
+                i = end + 1
+
+            } else if isFootnoteDefinitionLine(i) {
+                var end = i
+                while end + 1 < lines.count, isIndentedCodeLine(lineText(end + 1)) {
+                    end += 1
+                }
+                blocks.append(Block(kind: .footnoteDefinition, range: union(lines[i...end])))
+                i = end + 1
+
+            } else if isLinkDefinitionLine(i) {
+                var end = i
+                while end + 1 < lines.count, isLinkDefinitionLine(end + 1) { end += 1 }
+                blocks.append(Block(kind: .linkDefinition, range: union(lines[i...end])))
                 i = end + 1
 
             } else if isBlank(line) {
@@ -408,7 +432,8 @@ enum BlockParser {
                         continue
                     }
                     if isBlank(next) || isThematicBreak(next)
-                        || isHeading(next) || isBlockquote(next) || isListItem(next) { break }
+                        || isHeading(next) || isBlockquote(next) || isListItem(next)
+                        || isLinkDefinitionLine(end + 1) || isFootnoteDefinitionLine(end + 1) { break }
                     // A table (row + separator), a CLOSED code fence, or an
                     // extension fence interrupts it —
                     // an unclosed opener stays part of the paragraph.

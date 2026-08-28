@@ -15,19 +15,16 @@
 //    1. scanCodeSpans   — highest precedence, opaque interior.
 //    2. scanEscapes      — `\x` becomes a claimed span, so the escaped char is
 //                          automatically inert for every pass below.
-//    3. scanLinkFamily   — ![…](…), […](…) (+ registered
-//                          extension spans) in precedence order. URLs allow
-//                          balanced parens. A candidate overlapping a claimed
-//                          span is rejected (kept literal), except for opaque
-//                          spans wholly nested inside a Markdown link's label.
-//                          This keeps `[x](y)` inert inside code while allowing
-//                          valid labels such as [`x`](y).
-//    4. resolveEmphasis  — `*`/`_` delimiter runs over text outside every
+//    3. scanLinkFamily   — inline links, reference links, footnotes,
+//                          autolinks, images, and registered extension spans.
+//                          A candidate overlapping a claimed span is rejected
+//                          except where escapes are inert inside link content.
+//    4. scanHardBreaks   — line-ending marker runs outside claimed spans.
+//    5. resolveEmphasis  — `*`/`_` delimiter runs over text outside every
 //                          claimed span; may wrap claimed spans.
-//    5. buildTree        — containment tree. Emphasis nests already-collected
+//    6. buildTree        — containment tree. Emphasis nests already-collected
 //                          spans; link/extension-span content is re-parsed
-//                          recursively; code/image/escape are
-//                          opaque leaves.
+//                          recursively; the remaining claims are opaque leaves.
 //
 //  Claimed spans are therefore either disjoint or properly NESTED — a link
 //  label may hold one, nothing else may. That is load-bearing for cost as well
@@ -48,10 +45,18 @@ indirect enum InlineNode: Equatable {
     case code(range: NSRange, content: NSRange)
     /// `*`/`_` emphasis. `markers` is `[openMarker, closeMarker]`.
     case emphasis(EmphasisKind, range: NSRange, markers: [NSRange], children: [InlineNode])
-    /// `[text](url)`. `markers` is `[ "[", "]", "(", ")" ]`; text is recursively parsed.
-    case link(range: NSRange, textRange: NSRange, url: NSRange, markers: [NSRange], children: [InlineNode])
-    /// `![alt](url)`. `markers` is `[ "![", "]", "(", ")" ]`. Alt is opaque.
-    case image(range: NSRange, alt: NSRange, url: NSRange, markers: [NSRange])
+    /// `[text](url "title")`; text is recursively parsed.
+    case link(range: NSRange, textRange: NSRange, url: NSRange, title: NSRange?, markers: [NSRange], children: [InlineNode])
+    /// `![alt](url "title")`. Alt is opaque.
+    case image(range: NSRange, alt: NSRange, url: NSRange, title: NSRange?, markers: [NSRange])
+    /// `[text][id]`, `[text][]`, or shortcut `[id]`; text is recursively parsed.
+    case referenceLink(range: NSRange, textRange: NSRange, label: NSRange?, markers: [NSRange], children: [InlineNode])
+    /// `[^id]`; `label` excludes the `[^` and `]` markers.
+    case footnoteReference(range: NSRange, label: NSRange, markers: [NSRange])
+    /// A backslash or two-or-more spaces immediately before an internal line ending.
+    case hardBreak(range: NSRange, marker: NSRange)
+    /// `<absolute-uri>` or `<email@example.com>`.
+    case autolink(range: NSRange, url: NSRange, markers: [NSRange])
     /// Backslash escape `\x`; `marker` is the `\`, `character` the now-literal punctuation.
     case escape(range: NSRange, character: NSRange, marker: NSRange)
     /// A span contributed by a registered `MarkdownExtension`
@@ -82,6 +87,10 @@ enum InlineParser {
     private static let lparen: unichar = 0x28
     private static let rparen: unichar = 0x29
     private static let backslash: unichar = 0x5C
+    private static let carriageReturn: unichar = 0x0D
+    private static let langle: unichar = 0x3C
+    private static let rangle: unichar = 0x3E
+    private static let caret: unichar = 0x5E
 
     // MARK: - Entry point
 
@@ -93,6 +102,7 @@ enum InlineParser {
         var claimed = scanCodeSpans(ns, len: len)
         claimed += scanEscapes(ns, len: len, claimed: ClaimedIndex(claimed))
         claimed += scanLinkFamily(ns, len: len, claimed: ClaimedIndex(claimed), registry: registry)
+        claimed += scanHardBreaks(ns, len: len, claimed: ClaimedIndex(claimed))
         let emphasis = resolveEmphasis(ns, len: len, claimed: ClaimedIndex(claimed))
         return buildTree(region: NSRange(location: 0, length: len), spans: claimed + emphasis, ns: ns, registry: registry)
     }
@@ -107,15 +117,21 @@ enum InlineParser {
     private enum Span {
         case code(range: NSRange, content: NSRange)
         case emphasis(kind: EmphasisKind, range: NSRange, open: NSRange, close: NSRange)
-        case link(range: NSRange, textRange: NSRange, url: NSRange, markers: [NSRange])
-        case image(range: NSRange, alt: NSRange, url: NSRange, markers: [NSRange])
+        case link(range: NSRange, textRange: NSRange, url: NSRange, title: NSRange?, markers: [NSRange])
+        case image(range: NSRange, alt: NSRange, url: NSRange, title: NSRange?, markers: [NSRange])
+        case referenceLink(range: NSRange, textRange: NSRange, label: NSRange?, markers: [NSRange])
+        case footnoteReference(range: NSRange, label: NSRange, markers: [NSRange])
+        case hardBreak(range: NSRange, marker: NSRange)
+        case autolink(range: NSRange, url: NSRange, markers: [NSRange])
         case escape(range: NSRange, character: NSRange, marker: NSRange)
         case ext(id: String, range: NSRange, contentRange: NSRange, markers: [NSRange], parsesContent: Bool)
 
         var fullRange: NSRange {
             switch self {
-            case .code(let r, _), .emphasis(_, let r, _, _), .link(let r, _, _, _),
-                 .image(let r, _, _, _),
+            case .code(let r, _), .emphasis(_, let r, _, _), .link(let r, _, _, _, _),
+                 .image(let r, _, _, _, _), .referenceLink(let r, _, _, _),
+                 .footnoteReference(let r, _, _), .hardBreak(let r, _),
+                 .autolink(let r, _, _),
                  .escape(let r, _, _),
                  .ext(_, let r, _, _, _):
                 return r
@@ -253,10 +269,19 @@ enum InlineParser {
         // needs the full overlap list; everything else short-circuits on the
         // first one.
         func hasDisallowedClaimedOverlap(_ span: Span) -> Bool {
-            guard case .link(_, let textRange, _, _) = span else {
-                return claimed.overlaps(span.fullRange)
+            let nestedRange: NSRange?
+            switch span {
+            case .link(_, let textRange, _, _, _),
+                 .referenceLink(_, let textRange, _, _):
+                nestedRange = textRange
+            case .autolink:
+                // Backslashes have no escape semantics inside autolinks, including before `>`.
+                nestedRange = span.fullRange
+            default:
+                nestedRange = nil
             }
-            return claimed.overlapping(span.fullRange).contains { !rangeContains(textRange, $0) }
+            guard let nestedRange else { return claimed.overlaps(span.fullRange) }
+            return claimed.overlapping(span.fullRange).contains { !rangeContains(nestedRange, $0) }
         }
         var spans: [Span] = []
         var i = 0
@@ -290,7 +315,9 @@ enum InlineParser {
         let c = ns.character(at: i)
         let c1 = peek(ns, i + 1, len)
         if c == bang, c1 == lbracket { return matchImage(ns, len, start: i) }
+        if c == lbracket, c1 == caret { return matchFootnoteReference(ns, len, start: i) }
         if c == lbracket { return matchLink(ns, len, start: i) }
+        if c == langle { return matchAutolink(ns, len, start: i) }
         return nil
     }
 
@@ -345,19 +372,19 @@ enum InlineParser {
         let altStart = i + 2
         guard let closeBracket = findChar(ns, len, from: altStart, char: rbracket),
               peek(ns, closeBracket + 1, len) == lparen,
-              let closeParen = balancedParen(ns, len, from: closeBracket + 2) else { return nil }
-        let urlStart = closeBracket + 2
-        guard closeParen > urlStart else { return nil }
+              let parsed = MarkdownLinkSyntax.inlineTarget(in: ns, from: closeBracket + 2, length: len) else { return nil }
+        let closeParen = parsed.closeParen
         return .image(
             range: NSRange(location: i, length: (closeParen + 1) - i),
             alt: NSRange(location: altStart, length: closeBracket - altStart),
-            url: NSRange(location: urlStart, length: closeParen - urlStart),
+            url: parsed.target.destination,
+            title: parsed.target.title,
             markers: [
                 NSRange(location: i, length: 2),
                 NSRange(location: closeBracket, length: 1),
                 NSRange(location: closeBracket + 1, length: 1),
                 NSRange(location: closeParen, length: 1),
-            ]
+            ] + parsed.target.markers
         )
     }
 
@@ -365,21 +392,87 @@ enum InlineParser {
     private static func matchLink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
         let textStart = i + 1
         guard let closeBracket = findChar(ns, len, from: textStart, char: rbracket),
-              closeBracket > textStart,
-              peek(ns, closeBracket + 1, len) == lparen,
-              let closeParen = balancedParen(ns, len, from: closeBracket + 2) else { return nil }
-        let urlStart = closeBracket + 2
-        guard closeParen > urlStart else { return nil }
-        return .link(
-            range: NSRange(location: i, length: (closeParen + 1) - i),
-            textRange: NSRange(location: textStart, length: closeBracket - textStart),
-            url: NSRange(location: urlStart, length: closeParen - urlStart),
-            markers: [
-                NSRange(location: i, length: 1),
-                NSRange(location: closeBracket, length: 1),
-                NSRange(location: closeBracket + 1, length: 1),
-                NSRange(location: closeParen, length: 1),
-            ]
+              closeBracket > textStart else { return nil }
+        let textRange = NSRange(location: textStart, length: closeBracket - textStart)
+
+        if peek(ns, closeBracket + 1, len) == lparen,
+           let parsed = MarkdownLinkSyntax.inlineTarget(in: ns, from: closeBracket + 2, length: len) {
+            let closeParen = parsed.closeParen
+            return .link(
+                range: NSRange(location: i, length: (closeParen + 1) - i),
+                textRange: textRange,
+                url: parsed.target.destination,
+                title: parsed.target.title,
+                markers: [
+                    NSRange(location: i, length: 1),
+                    NSRange(location: closeBracket, length: 1),
+                    NSRange(location: closeBracket + 1, length: 1),
+                    NSRange(location: closeParen, length: 1),
+                ] + parsed.target.markers
+            )
+        }
+
+        if peek(ns, closeBracket + 1, len) == lbracket,
+           let labelClose = findChar(ns, len, from: closeBracket + 2, char: rbracket) {
+            let label = NSRange(location: closeBracket + 2, length: labelClose - closeBracket - 2)
+            return .referenceLink(
+                range: NSRange(location: i, length: labelClose + 1 - i),
+                textRange: textRange,
+                label: label.length == 0 ? nil : label,
+                markers: [
+                    NSRange(location: i, length: 1),
+                    NSRange(location: closeBracket, length: 1),
+                    NSRange(location: closeBracket + 1, length: 1),
+                    NSRange(location: labelClose, length: 1),
+                ]
+            )
+        }
+
+        return .referenceLink(
+            range: NSRange(location: i, length: closeBracket + 1 - i),
+            textRange: textRange,
+            label: nil,
+            markers: [NSRange(location: i, length: 1), NSRange(location: closeBracket, length: 1)]
+        )
+    }
+
+    private static func matchFootnoteReference(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+        let labelStart = i + 2
+        guard let close = findChar(ns, len, from: labelStart, char: rbracket),
+              close > labelStart else { return nil }
+        return .footnoteReference(
+            range: NSRange(location: i, length: close + 1 - i),
+            label: NSRange(location: labelStart, length: close - labelStart),
+            markers: [NSRange(location: i, length: 2), NSRange(location: close, length: 1)]
+        )
+    }
+
+    private static let uriAutolink = try! NSRegularExpression(
+        pattern: #"^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\x00-\x20<>]*$"#
+    )
+    private static let emailAutolink = try! NSRegularExpression(
+        pattern: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"#
+    )
+
+    private static func matchAutolink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+        var close = i + 1
+        while close < len,
+              ns.character(at: close) != rangle,
+              ns.character(at: close) != newline,
+              ns.character(at: close) != carriageReturn {
+            close += 1
+        }
+        guard close < len, ns.character(at: close) == rangle else { return nil }
+        let url = NSRange(location: i + 1, length: close - i - 1)
+        guard url.length > 0 else { return nil }
+        let value = ns.substring(with: url)
+        let whole = NSRange(location: 0, length: (value as NSString).length)
+        guard uriAutolink.firstMatch(in: value, range: whole)?.range == whole
+                || emailAutolink.firstMatch(in: value, range: whole)?.range == whole else { return nil }
+        return .autolink(
+            range: NSRange(location: i, length: close + 1 - i),
+            url: url,
+            markers: [NSRange(location: i, length: 1), NSRange(location: close, length: 1)]
         )
     }
 
@@ -387,27 +480,45 @@ enum InlineParser {
         var k = from
         while k < len {
             let ch = ns.character(at: k)
-            if ch == char { return k }
-            if ch == newline { return nil }
+            if ch == char, !isEscaped(k, ns) { return k }
+            if ch == newline || ch == carriageReturn { return nil }
             k += 1
         }
         return nil
     }
 
-    private static func balancedParen(_ ns: NSString, _ len: Int, from: Int) -> Int? {
-        var depth = 1
-        var k = from
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == lparen { depth += 1 }
-            else if ch == rparen { depth -= 1; if depth == 0 { return k } }
-            k += 1
+    // MARK: - 4. Hard line breaks
+
+    private static func scanHardBreaks(_ ns: NSString, len: Int, claimed: ClaimedIndex) -> [Span] {
+        var claimed = claimed
+        var spans: [Span] = []
+        var i = 0
+        while i < len {
+            let c = ns.character(at: i)
+            guard c == newline || c == carriageReturn else { i += 1; continue }
+            let next = c == carriageReturn && i + 1 < len && ns.character(at: i + 1) == newline ? i + 2 : i + 1
+            guard next < len else { i = next; continue }
+
+            var marker: NSRange?
+            if i > 0, ns.character(at: i - 1) == backslash, !isEscaped(i - 1, ns) {
+                marker = NSRange(location: i - 1, length: 1)
+            } else {
+                var start = i
+                while start > 0, ns.character(at: start - 1) == 0x20 { start -= 1 }
+                if i - start >= 2 { marker = NSRange(location: start, length: i - start) }
+            }
+            if let marker, !claimed.overlaps(marker) {
+                spans.append(.hardBreak(
+                    range: NSRange(location: marker.location, length: next - marker.location),
+                    marker: marker
+                ))
+            }
+            i = next
         }
-        return nil
+        return spans
     }
 
-    // MARK: - 4. Emphasis (delimiter runs)
+    // MARK: - 5. Emphasis (delimiter runs)
 
     private struct DelimRun {
         let char: unichar
@@ -513,7 +624,7 @@ enum InlineParser {
         }
     }
 
-    // MARK: - 5. Containment tree
+    // MARK: - 6. Containment tree
 
     private static func buildTree(region: NSRange, spans: [Span], ns: NSString, registry: ExtensionRegistry) -> [InlineNode] {
         // Spans are non-overlapping or properly nested (each pass claims only
@@ -556,11 +667,20 @@ enum InlineParser {
                 result.append(.emphasis(kind, range: range, markers: [open, close],
                                         children: buildTree(region: content, ordered: ordered,
                                                             cursor: &cursor, ns: ns, registry: registry)))
-            case .link(let range, let textRange, let url, let markers):
-                result.append(.link(range: range, textRange: textRange, url: url, markers: markers,
+            case .link(let range, let textRange, let url, let title, let markers):
+                result.append(.link(range: range, textRange: textRange, url: url, title: title, markers: markers,
                                      children: reparse(textRange, ns: ns, registry: registry)))
-            case .image(let range, let alt, let url, let markers):
-                result.append(.image(range: range, alt: alt, url: url, markers: markers))
+            case .image(let range, let alt, let url, let title, let markers):
+                result.append(.image(range: range, alt: alt, url: url, title: title, markers: markers))
+            case .referenceLink(let range, let textRange, let label, let markers):
+                result.append(.referenceLink(range: range, textRange: textRange, label: label, markers: markers,
+                                             children: reparse(textRange, ns: ns, registry: registry)))
+            case .footnoteReference(let range, let label, let markers):
+                result.append(.footnoteReference(range: range, label: label, markers: markers))
+            case .hardBreak(let range, let marker):
+                result.append(.hardBreak(range: range, marker: marker))
+            case .autolink(let range, let url, let markers):
+                result.append(.autolink(range: range, url: url, markers: markers))
             case .escape(let range, let character, let marker):
                 result.append(.escape(range: range, character: character, marker: marker))
             case .ext(let id, let range, let contentRange, let markers, let parsesContent):
@@ -598,8 +718,12 @@ enum InlineParser {
         case .text(let r): return .text(s(r))
         case .code(let r, let c): return .code(range: s(r), content: s(c))
         case .emphasis(let k, let r, let m, let ch): return .emphasis(k, range: s(r), markers: m.map(s), children: offsetNodes(ch, by: d))
-        case .link(let r, let tr, let u, let m, let ch): return .link(range: s(r), textRange: s(tr), url: s(u), markers: m.map(s), children: offsetNodes(ch, by: d))
-        case .image(let r, let a, let u, let m): return .image(range: s(r), alt: s(a), url: s(u), markers: m.map(s))
+        case .link(let r, let tr, let u, let t, let m, let ch): return .link(range: s(r), textRange: s(tr), url: s(u), title: t.map(s), markers: m.map(s), children: offsetNodes(ch, by: d))
+        case .image(let r, let a, let u, let t, let m): return .image(range: s(r), alt: s(a), url: s(u), title: t.map(s), markers: m.map(s))
+        case .referenceLink(let r, let tr, let l, let m, let ch): return .referenceLink(range: s(r), textRange: s(tr), label: l.map(s), markers: m.map(s), children: offsetNodes(ch, by: d))
+        case .footnoteReference(let r, let l, let m): return .footnoteReference(range: s(r), label: s(l), markers: m.map(s))
+        case .hardBreak(let r, let m): return .hardBreak(range: s(r), marker: s(m))
+        case .autolink(let r, let u, let m): return .autolink(range: s(r), url: s(u), markers: m.map(s))
         case .escape(let r, let c, let m): return .escape(range: s(r), character: s(c), marker: s(m))
         case .ext(let n): return .ext(ExtensionInlineNode(
             extensionID: n.extensionID, range: s(n.range), contentRange: s(n.contentRange),

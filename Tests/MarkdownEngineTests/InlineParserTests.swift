@@ -121,7 +121,7 @@ struct InlineParserTests {
     @Test("markdown link, text recursively parsed")
     func markdownLink() {
         #expect(InlineParser.parse("[text](url)") == [
-            .link(range: r(0, 11), textRange: r(1, 4), url: r(7, 3),
+            .link(range: r(0, 11), textRange: r(1, 4), url: r(7, 3), title: nil,
                   markers: [r(0, 1), r(5, 1), r(6, 1), r(10, 1)], children: [.text(r(1, 4))]),
         ])
     }
@@ -133,6 +133,7 @@ struct InlineParserTests {
                 range: r(0, 26),
                 textRange: r(1, 5),
                 url: r(8, 17),
+                title: nil,
                 markers: [r(0, 1), r(6, 1), r(7, 1), r(25, 1)],
                 children: [.code(range: r(1, 5), content: r(2, 3))]
             ),
@@ -146,6 +147,7 @@ struct InlineParserTests {
                 range: r(0, 16),
                 textRange: r(1, 11),
                 url: r(14, 1),
+                title: nil,
                 markers: [r(0, 1), r(12, 1), r(13, 1), r(15, 1)],
                 children: [
                     .code(range: r(1, 3), content: r(2, 1)),
@@ -171,6 +173,7 @@ struct InlineParserTests {
                 range: r(0, 7),
                 textRange: r(1, 2),
                 url: r(5, 1),
+                title: nil,
                 markers: [r(0, 1), r(3, 1), r(4, 1), r(6, 1)],
                 children: [.escape(range: r(1, 2), character: r(2, 1), marker: r(1, 1))]
             ),
@@ -187,7 +190,7 @@ struct InlineParserTests {
     @Test("link URL keeps balanced parentheses (bug 4)")
     func linkWithBalancedParens() {
         #expect(InlineParser.parse("[a](b(c))") == [
-            .link(range: r(0, 9), textRange: r(1, 1), url: r(4, 4),
+            .link(range: r(0, 9), textRange: r(1, 1), url: r(4, 4), title: nil,
                   markers: [r(0, 1), r(2, 1), r(3, 1), r(8, 1)], children: [.text(r(1, 1))]),
         ])
     }
@@ -195,14 +198,14 @@ struct InlineParserTests {
     @Test("image")
     func image() {
         #expect(InlineParser.parse("![alt](u)") == [
-            .image(range: r(0, 9), alt: r(2, 3), url: r(7, 1), markers: [r(0, 2), r(5, 1), r(6, 1), r(8, 1)]),
+            .image(range: r(0, 9), alt: r(2, 3), url: r(7, 1), title: nil, markers: [r(0, 2), r(5, 1), r(6, 1), r(8, 1)]),
         ])
     }
 
     @Test("emphasis inside link text")
     func linkContainsEmphasis() {
         #expect(InlineParser.parse("[*x*](u)") == [
-            .link(range: r(0, 8), textRange: r(1, 3), url: r(6, 1),
+            .link(range: r(0, 8), textRange: r(1, 3), url: r(6, 1), title: nil,
                   markers: [r(0, 1), r(4, 1), r(5, 1), r(7, 1)],
                   children: [.emphasis(.italic, range: r(1, 3), markers: [r(1, 1), r(3, 1)], children: [.text(r(2, 1))])]),
         ])
@@ -212,10 +215,115 @@ struct InlineParserTests {
     func emphasisWrapsLink() {
         #expect(InlineParser.parse("*[a](b)*") == [
             .emphasis(.italic, range: r(0, 8), markers: [r(0, 1), r(7, 1)], children: [
-                .link(range: r(1, 6), textRange: r(2, 1), url: r(5, 1),
+                .link(range: r(1, 6), textRange: r(2, 1), url: r(5, 1), title: nil,
                       markers: [r(1, 1), r(3, 1), r(4, 1), r(6, 1)], children: [.text(r(2, 1))]),
             ]),
         ])
+    }
+
+    @Test("link and image destinations split from quoted titles; angle brackets are markers")
+    func linkAndImageTitles() throws {
+        for source in [
+            #"[text](url "title")"#,
+            #"[text](url 'title')"#,
+            #"[text](url (title))"#,
+        ] {
+            let node = try #require(InlineParser.parse(source).first)
+            guard case .link(_, _, let url, let title, _, _) = node else {
+                Issue.record("Expected link for \(source)")
+                continue
+            }
+            let ns = source as NSString
+            #expect(ns.substring(with: url) == "url")
+            #expect(title.map { ns.substring(with: $0) } == "title")
+        }
+
+        let source = #"![alt](<https://example.com/a.png> "caption")"#
+        let node = try #require(InlineParser.parse(source).first)
+        guard case .image(_, _, let url, let title, let markers) = node else {
+            Issue.record("Expected image")
+            return
+        }
+        let ns = source as NSString
+        #expect(ns.substring(with: url) == "https://example.com/a.png")
+        #expect(title.map { ns.substring(with: $0) } == "caption")
+        #expect(markers.contains { ns.substring(with: $0) == "<" })
+        #expect(markers.contains { ns.substring(with: $0) == ">" })
+
+        #expect(InlineParser.parse("[text]()") == [
+            .link(
+                range: r(0, 8), textRange: r(1, 4), url: r(7, 0), title: nil,
+                markers: [r(0, 1), r(5, 1), r(6, 1), r(7, 1)], children: [.text(r(1, 4))]
+            ),
+        ])
+    }
+
+    @Test("full, collapsed, and shortcut reference links preserve their label shape")
+    func referenceLinks() {
+        #expect(InlineParser.parse("[text][ID]") == [
+            .referenceLink(
+                range: r(0, 10), textRange: r(1, 4), label: r(7, 2),
+                markers: [r(0, 1), r(5, 1), r(6, 1), r(9, 1)], children: [.text(r(1, 4))]
+            ),
+        ])
+        #expect(InlineParser.parse("[text][]") == [
+            .referenceLink(
+                range: r(0, 8), textRange: r(1, 4), label: nil,
+                markers: [r(0, 1), r(5, 1), r(6, 1), r(7, 1)], children: [.text(r(1, 4))]
+            ),
+        ])
+        #expect(InlineParser.parse("[ID]") == [
+            .referenceLink(
+                range: r(0, 4), textRange: r(1, 2), label: nil,
+                markers: [r(0, 1), r(3, 1)], children: [.text(r(1, 2))]
+            ),
+        ])
+    }
+
+    @Test("footnote references claim the whole bracket run")
+    func footnoteReference() {
+        #expect(InlineParser.parse("[^note]") == [
+            .footnoteReference(range: r(0, 7), label: r(2, 4), markers: [r(0, 2), r(6, 1)]),
+        ])
+    }
+
+    @Test("hard-break markers claim only internal-line backslashes and trailing spaces")
+    func hardBreakMarkers() {
+        let nodes = InlineParser.parse("a  \nb\\\nc  ")
+        #expect(nodes.contains { $0 == .hardBreak(range: r(1, 3), marker: r(1, 2)) })
+        #expect(nodes.contains { $0 == .hardBreak(range: r(5, 2), marker: r(5, 1)) })
+        #expect(!nodes.contains { node in
+            if case .hardBreak(let range, _) = node { return range.location >= 8 }
+            return false
+        })
+        #expect(InlineParser.parse("`a\\\nb`").allSatisfy {
+            if case .hardBreak = $0 { return false }
+            return true
+        })
+    }
+
+    @Test("autolinks claim valid URI and email brackets but leave HTML and comparisons literal")
+    func autolinks() throws {
+        for source in ["<https://example.com>", "<mailto:someone@example.com>", "<someone@example.com>"] {
+            let node = try #require(InlineParser.parse(source).first)
+            guard case .autolink(let range, let url, let markers) = node else {
+                Issue.record("Expected autolink for \(source)")
+                continue
+            }
+            let length = (source as NSString).length
+            #expect(range == r(0, length))
+            #expect(markers == [r(0, 1), r(length - 1, 1)])
+            #expect((source as NSString).substring(with: url) == String(source.dropFirst().dropLast()))
+        }
+        #expect(InlineParser.parse("a < b") == [.text(r(0, 5))])
+        #expect(InlineParser.parse("<span>") == [.text(r(0, 6))])
+
+        let escaped = #"<https://example.com/\[\>"#
+        guard case .autolink(_, let url, _) = try #require(InlineParser.parse(escaped).first) else {
+            Issue.record("Expected escaped punctuation to remain inside an autolink")
+            return
+        }
+        #expect((escaped as NSString).substring(with: url) == #"https://example.com/\[\"#)
     }
 
     // MARK: - Strikethrough (extension-supplied `~~…~~` span)

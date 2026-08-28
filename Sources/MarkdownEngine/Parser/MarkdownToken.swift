@@ -12,6 +12,7 @@ import Foundation
 
 extension NSAttributedString.Key {
     public static let taskCheckbox = NSAttributedString.Key("TaskCheckbox")
+    public static let footnoteID = NSAttributedString.Key("FootnoteID")
 }
 
 enum MarkdownTokenKind: Equatable {

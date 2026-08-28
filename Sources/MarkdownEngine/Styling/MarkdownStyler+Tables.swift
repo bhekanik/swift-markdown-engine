@@ -461,9 +461,16 @@ extension MarkdownStyler {
                 out.append(NSAttributedString(string: ns.substring(with: content), attributes: [
                     .font: codeFont, .backgroundColor: codeBackgroundColor, .foregroundColor: theme.bodyText
                 ]))
-            case .link(let range, _, _, _, _),
-                 .image(let range, _, _, _):
+            case .link(let range, _, _, _, _, _),
+                 .image(let range, _, _, _, _):
                 appendPlain(range, font)
+            case .referenceLink(_, _, _, _, let children):
+                recurse(children, font)
+            case .footnoteReference(_, let label, _),
+                 .autolink(_, let label, _):
+                appendPlain(label, font)
+            case .hardBreak:
+                break
             }
         }
     }

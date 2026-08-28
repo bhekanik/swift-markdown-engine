@@ -35,12 +35,18 @@ enum InlineASTAdapter {
                                         contentRange: between(markers), markerRanges: markers))
             children.forEach { append($0, to: &result) }
 
-        case .link(let range, let textRange, _, let markers, let children):
+        case .link(let range, let textRange, _, _, let markers, let children):
             result.append(MarkdownToken(kind: .link, range: range, contentRange: textRange, markerRanges: markers))
             children.forEach { append($0, to: &result) }
 
-        case .image(let range, let alt, _, let markers):
+        case .image(let range, let alt, _, _, let markers):
             result.append(MarkdownToken(kind: .imageLink, range: range, contentRange: alt, markerRanges: markers))
+
+        case .referenceLink(_, _, _, _, let children):
+            children.forEach { append($0, to: &result) }
+
+        case .footnoteReference, .hardBreak, .autolink:
+            break
 
         case .ext(let node):
             result.append(MarkdownToken(kind: .extensionSpan(node.extensionID), range: node.range,

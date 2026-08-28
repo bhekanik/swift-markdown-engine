@@ -52,6 +52,8 @@ struct ExtensionBlockNode: Equatable {
 /// A top-level block in the document AST.
 indirect enum BlockNode: Equatable {
     case frontmatter(range: NSRange)
+    case linkDefinition(range: NSRange, label: NSRange, destination: NSRange, title: NSRange?)
+    case footnoteDefinition(range: NSRange, label: NSRange, markers: [NSRange], inlines: [InlineNode])
     case paragraph(range: NSRange, inlines: [InlineNode])
     case heading(level: Int, range: NSRange, markers: [NSRange], inlines: [InlineNode])
     case blockquote(range: NSRange, inlines: [InlineNode])
@@ -64,7 +66,8 @@ indirect enum BlockNode: Equatable {
 
     var range: NSRange {
         switch self {
-        case .frontmatter(let r), .paragraph(let r, _), .heading(_, let r, _, _), .blockquote(let r, _),
+        case .frontmatter(let r), .linkDefinition(let r, _, _, _), .footnoteDefinition(let r, _, _, _),
+             .paragraph(let r, _), .heading(_, let r, _, _), .blockquote(let r, _),
              .list(let r, _), .codeBlock(let r), .table(let r),
              .thematicBreak(let r), .blank(let r):
             return r
@@ -100,11 +103,15 @@ enum DocumentAST {
             var out: [(Block, [NSRange]?)] = []
             var ci = 0
             for block in blocks {
+                if block.kind == .linkDefinition {
+                    out.append((block, nil))
+                    continue
+                }
                 while ci < normalizedScopes.count,
                       NSMaxRange(normalizedScopes[ci]) <= block.range.location {
                     ci += 1
                 }
-                guard ci < normalizedScopes.count else { break }
+                guard ci < normalizedScopes.count else { continue }
                 var intersections: [NSRange] = []
                 var si = ci
                 while si < normalizedScopes.count,
@@ -120,8 +127,8 @@ enum DocumentAST {
         } else {
             relevant = blocks.map { ($0, nil) }
         }
-        return relevant.map { candidate in
-            node(
+        return relevant.flatMap { candidate in
+            nodes(
                 for: candidate.block,
                 ns: ns,
                 scopedRanges: candidate.scopes,
@@ -175,35 +182,109 @@ enum DocumentAST {
         return scopedRanges.contains { NSIntersectionRange($0, range).length > 0 }
     }
 
-    private static func node(for block: Block, ns: NSString, scopedRanges: [NSRange]?, registry: ExtensionRegistry) -> BlockNode {
+    private static func nodes(for block: Block, ns: NSString, scopedRanges: [NSRange]?, registry: ExtensionRegistry) -> [BlockNode] {
         let scoped = inScope(block.range, scopedRanges)
         switch block.kind {
         case .frontmatter:
-            return .frontmatter(range: block.range)
+            return [.frontmatter(range: block.range)]
+        case .linkDefinition:
+            return linkDefinitions(in: block.range, ns)
+        case .footnoteDefinition:
+            return [footnoteDefinition(in: block.range, ns, scoped: scoped, registry: registry)]
         case .paragraph:
-            return .paragraph(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range, registry: registry) : [])
+            return [.paragraph(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range, registry: registry) : [])]
         case .heading:
-            return heading(block.range, ns, scoped: scoped, registry: registry)
+            return [heading(block.range, ns, scoped: scoped, registry: registry)]
         case .blockquote:
-            return .blockquote(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range, registry: registry) : [])
+            return [.blockquote(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range, registry: registry) : [])]
         case .list:
-            return list(
+            return [list(
                 block.range,
                 ns,
                 scopedRanges: scopedRanges,
                 registry: registry
-            )
+            )]
         case .fencedCode:
-            return .codeBlock(range: block.range)
+            return [.codeBlock(range: block.range)]
         case .table:
-            return .table(range: block.range)
+            return [.table(range: block.range)]
         case .thematicBreak:
-            return .thematicBreak(range: block.range)
+            return [.thematicBreak(range: block.range)]
         case .blank:
-            return .blank(range: block.range)
+            return [.blank(range: block.range)]
         case .ext(let id):
-            return extensionBlock(id: id, range: block.range, ns, scoped: scoped, registry: registry)
+            return [extensionBlock(id: id, range: block.range, ns, scoped: scoped, registry: registry)]
         }
+    }
+
+    private static func linkDefinitions(in range: NSRange, _ ns: NSString) -> [BlockNode] {
+        var result: [BlockNode] = []
+        var cursor = range.location
+        while cursor < NSMaxRange(range) {
+            let line = NSIntersectionRange(
+                ns.lineRange(for: NSRange(location: cursor, length: 0)),
+                range
+            )
+            if let definition = MarkdownLinkSyntax.linkDefinition(in: ns, lineRange: line) {
+                result.append(.linkDefinition(
+                    range: range,
+                    label: definition.label,
+                    destination: definition.destination,
+                    title: definition.title
+                ))
+            }
+            let next = NSMaxRange(line)
+            guard next > cursor else { break }
+            cursor = next
+        }
+        return result
+    }
+
+    private static func footnoteDefinition(
+        in range: NSRange,
+        _ ns: NSString,
+        scoped: Bool,
+        registry: ExtensionRegistry
+    ) -> BlockNode {
+        let firstLine = NSIntersectionRange(
+            ns.lineRange(for: NSRange(location: range.location, length: 0)),
+            range
+        )
+        guard let header = MarkdownLinkSyntax.footnoteDefinitionHeader(in: ns, lineRange: firstLine) else {
+            return .paragraph(range: range, inlines: scoped ? InlineParser.parse(ns, range: range, registry: registry) : [])
+        }
+
+        var markers = header.markers
+        var cursor = NSMaxRange(firstLine)
+        while cursor < NSMaxRange(range) {
+            let line = NSIntersectionRange(
+                ns.lineRange(for: NSRange(location: cursor, length: 0)),
+                range
+            )
+            var indentEnd = line.location
+            while indentEnd < NSMaxRange(line), indentEnd - line.location < 4,
+                  ns.character(at: indentEnd) == space {
+                indentEnd += 1
+            }
+            if indentEnd > line.location {
+                markers.append(NSRange(location: line.location, length: indentEnd - line.location))
+            }
+            let next = NSMaxRange(line)
+            guard next > cursor else { break }
+            cursor = next
+        }
+
+        let body = NSRange(
+            location: header.bodyStart,
+            length: NSMaxRange(range) - header.bodyStart
+        )
+        return .footnoteDefinition(
+            range: range,
+            label: header.label,
+            markers: markers,
+            inlines: scoped && body.length > 0
+                ? InlineParser.parse(ns, range: body, registry: registry) : []
+        )
     }
 
     /// Split an extension fenced block into open fence line, optional closing

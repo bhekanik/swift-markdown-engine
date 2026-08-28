@@ -22,6 +22,11 @@ import Foundation
 
 enum MarkdownASTStyler {
 
+    private struct ReferenceDefinition {
+        let destination: NSRange
+        let title: NSRange?
+    }
+
     static func styleAttributes(
         text: String,
         fontName: String,
@@ -54,6 +59,7 @@ enum MarkdownASTStyler {
         // Ahead of `ctx` because the ordered-list display numbers are derived from these blocks.
         let blocks = DocumentAST.parse(text, scopedRanges: scopedRanges, precomputedBlocks: precomputedBlocks,
                                        registry: configuration.extensionRegistry)
+        let referenceDefinitions = collectReferenceDefinitions(in: blocks, ns: ns)
         let ctx = Ctx(
             ns: ns,
             fontName: fontName,
@@ -68,6 +74,7 @@ enum MarkdownASTStyler {
             selection: selection,
             config: configuration,
             extensionsByID: configuration.extensionsByID,
+            referenceDefinitions: referenceDefinitions,
             scopedRanges: scopedRanges,
             orderedDisplayNumbers: computeOrderedDisplayNumbers(blocks: blocks, ns: ns)
         )
@@ -81,9 +88,30 @@ enum MarkdownASTStyler {
         let codeRanges = collectCodeRanges(in: blocks)
         let checkboxRanges = collectCheckboxRanges(in: blocks)
         let linkRanges = collectLinkRanges(in: blocks)
+        let incompleteLinkExclusions = collectIncompleteLinkExclusions(in: blocks, ctx: ctx)
         styleAutoLinks(ctx: ctx, codeRanges: codeRanges, linkRanges: linkRanges, into: &attrs)
-        styleIncompleteLinkBrackets(ctx: ctx, codeRanges: codeRanges, checkboxRanges: checkboxRanges, into: &attrs)
+        styleIncompleteLinkBrackets(
+            ctx: ctx,
+            codeRanges: codeRanges,
+            excludedRanges: checkboxRanges + incompleteLinkExclusions,
+            into: &attrs
+        )
         return attrs
+    }
+
+    private static func collectReferenceDefinitions(
+        in blocks: [BlockNode],
+        ns: NSString
+    ) -> [String: ReferenceDefinition] {
+        var result: [String: ReferenceDefinition] = [:]
+        for block in blocks {
+            guard case .linkDefinition(_, let label, let destination, let title) = block else { continue }
+            let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label)
+            if result[key] == nil {
+                result[key] = ReferenceDefinition(destination: destination, title: title)
+            }
+        }
+        return result
     }
 
     // MARK: - Text/regex-based passes (ported 1:1, AST-agnostic)
@@ -95,7 +123,8 @@ enum MarkdownASTStyler {
                 switch node {
                 case .code(let range, _): ranges.append(range)
                 case .emphasis(_, _, _, let children),
-                     .link(_, _, _, _, let children): walk(children)
+                     .link(_, _, _, _, _, let children),
+                     .referenceLink(_, _, _, _, let children): walk(children)
                 case .ext(let node): walk(node.children)
                 default: break
                 }
@@ -104,7 +133,8 @@ enum MarkdownASTStyler {
         for block in blocks {
             switch block {
             case .codeBlock(let range): ranges.append(range)
-            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines):
+            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines),
+                 .footnoteDefinition(_, _, _, let inlines):
                 walk(inlines)
             case .list(_, let items):
                 for item in items { walk(item.inlines) }
@@ -129,9 +159,14 @@ enum MarkdownASTStyler {
         func walk(_ nodes: [InlineNode]) {
             for node in nodes {
                 switch node {
-                case .link(let range, _, _, _, let children):
+                case .link(let range, _, _, _, _, let children):
                     ranges.append(range)
                     walk(children)
+                case .referenceLink(let range, _, _, _, let children):
+                    ranges.append(range)
+                    walk(children)
+                case .autolink(let range, _, _):
+                    ranges.append(range)
                 case .emphasis(_, _, _, let children):
                     walk(children)
                 case .ext(let node):
@@ -142,13 +177,54 @@ enum MarkdownASTStyler {
         }
         for block in blocks {
             switch block {
-            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines):
+            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines),
+                 .footnoteDefinition(_, _, _, let inlines):
                 walk(inlines)
             case .list(_, let items):
                 for item in items { walk(item.inlines) }
             case .ext(let node):
                 walk(node.inlines)
             default: break
+            }
+        }
+        return ranges
+    }
+
+    private static func collectIncompleteLinkExclusions(
+        in blocks: [BlockNode],
+        ctx: Ctx
+    ) -> [NSRange] {
+        var ranges: [NSRange] = []
+        func walk(_ nodes: [InlineNode]) {
+            for node in nodes {
+                switch node {
+                case .footnoteReference(let range, _, _):
+                    ranges.append(range)
+                case .referenceLink(let range, let textRange, let label, _, let children):
+                    if ctx.referenceDefinition(textRange: textRange, label: label) != nil {
+                        ranges.append(range)
+                    }
+                    walk(children)
+                case .link(_, _, _, _, _, let children), .emphasis(_, _, _, let children):
+                    walk(children)
+                case .ext(let node):
+                    walk(node.children)
+                default:
+                    break
+                }
+            }
+        }
+        for block in blocks {
+            switch block {
+            case .paragraph(_, let inlines), .heading(_, _, _, let inlines), .blockquote(_, let inlines),
+                 .footnoteDefinition(_, _, _, let inlines):
+                walk(inlines)
+            case .list(_, let items):
+                for item in items { walk(item.inlines) }
+            case .ext(let node):
+                walk(node.inlines)
+            default:
+                break
             }
         }
         return ranges
@@ -546,7 +622,7 @@ enum MarkdownASTStyler {
         }
     }
 
-    private static func styleIncompleteLinkBrackets(ctx: Ctx, codeRanges: [NSRange], checkboxRanges: [NSRange], into attrs: inout [StyledRange]) {
+    private static func styleIncompleteLinkBrackets(ctx: Ctx, codeRanges: [NSRange], excludedRanges: [NSRange], into attrs: inout [StyledRange]) {
         // Every pattern starts with `\[`, so no `[` in the text ⇒ no match: skip
         // all 6 regex sweeps (the 78ms on hits=0 docs).
         guard ctx.ns.range(of: "[").location != NSNotFound else { return }
@@ -555,7 +631,7 @@ enum MarkdownASTStyler {
         for re in incompleteLinkPatterns {
             for scan in ctx.scanRanges {
               for m in re.matches(in: ctx.text, options: [], range: scan)
-                  where !isInCode(m.range, codeRanges) && !isInCode(m.range, checkboxRanges) {
+                  where !isInCode(m.range, codeRanges) && !isInCode(m.range, excludedRanges) {
                 // One range per RUN of same-colored characters, not per character: a
                 // single `[Design System]` used to emit 15 ranges, and the note in the
                 // bug report reached 25,504 from this pass alone — every one of them a
@@ -586,7 +662,7 @@ enum MarkdownASTStyler {
 
     /// Shared inputs threaded through the walk.
     /// Internal (not private) so per-construct styling can live in its own
-    struct Ctx {
+    private struct Ctx {
         let ns: NSString
         let fontName: String
         let baseFont: NSFont
@@ -606,6 +682,7 @@ enum MarkdownASTStyler {
         let selection: NSRange?
         let config: MarkdownEditorConfiguration
         let extensionsByID: [String: any MarkdownExtension]
+        let referenceDefinitions: [String: ReferenceDefinition]
         let scopedRanges: [NSRange]?
         let orderedDisplayNumbers: [Int: Int]
 
@@ -626,6 +703,10 @@ enum MarkdownASTStyler {
         var theme: MarkdownEditorTheme { config.theme }
         var text: String { ns as String }
         var fullRange: NSRange { NSRange(location: 0, length: ns.length) }
+        func referenceDefinition(textRange: NSRange, label: NSRange?) -> ReferenceDefinition? {
+            let source = label ?? textRange
+            return referenceDefinitions[MarkdownLinkSyntax.normalizedLabel(in: ns, range: source)]
+        }
         /// Whether a range falls in the styled region (nil scope = whole doc).
         func inScope(_ r: NSRange) -> Bool {
             guard let scopedRanges else { return true }
@@ -639,29 +720,24 @@ enum MarkdownASTStyler {
 
     private static func styleBlock(_ block: BlockNode, font: NSFont, ctx: Ctx, into attrs: inout [StyledRange]) {
         switch block {
-        case .frontmatter(let range):
-            if ctx.isActive(range) {
-                attrs.append((range, [
-                    .font: font,
+        case .frontmatter(let range), .linkDefinition(let range, _, _, _):
+            styleHiddenSourceBlock(range: range, font: font, ctx: ctx, into: &attrs)
+
+        case .footnoteDefinition(let range, let label, let markers, let inlines):
+            let active = ctx.isActive(range)
+            if active {
+                for marker in markers {
+                    attrs.append((marker, [.foregroundColor: ctx.theme.mutedText]))
+                }
+            } else {
+                let footnoteFont = NSFont(descriptor: font.fontDescriptor, size: font.pointSize * 0.8) ?? font
+                attrs.append((label, [
+                    .font: footnoteFont,
+                    .baselineOffset: font.pointSize * 0.3,
                     .foregroundColor: ctx.theme.mutedText,
                 ]))
-            } else {
-                // Shrinking the characters is not enough: a newline starts a
-                // new line fragment whatever font it is set in, so a five-line
-                // block would still leave five empty lines above the body.
-                // Collapsing the line height is what actually removes them.
-                let collapsed = NSMutableParagraphStyle()
-                collapsed.minimumLineHeight = 0.01
-                collapsed.maximumLineHeight = 0.01
-                collapsed.paragraphSpacing = 0
-                collapsed.paragraphSpacingBefore = 0
-                attrs.append((range, [
-                    .font: ctx.inlineMarkerFont,
-                    .foregroundColor: NSColor.clear,
-                    .kern: -ctx.inlineMarkerFont.pointSize,
-                    .paragraphStyle: collapsed,
-                ]))
             }
+            styleInlines(inlines, font: font, ctx: ctx, into: &attrs)
 
         case .paragraph(_, let inlines):
             styleInlines(inlines, font: font, ctx: ctx, into: &attrs)
@@ -703,6 +779,27 @@ enum MarkdownASTStyler {
             styleExtensionBlock(node, font: font, ctx: ctx, into: &attrs)
         case .table, .blank:
             break   // NSImage rendering ported next
+        }
+    }
+
+    private static func styleHiddenSourceBlock(
+        range: NSRange,
+        font: NSFont,
+        ctx: Ctx,
+        into attrs: inout [StyledRange]
+    ) {
+        if ctx.isActive(range) {
+            attrs.append((range, [
+                .font: font,
+                .foregroundColor: ctx.theme.mutedText,
+            ]))
+        } else {
+            attrs.append((range, [
+                .font: ctx.inlineMarkerFont,
+                .foregroundColor: NSColor.clear,
+                .kern: -ctx.inlineMarkerFont.pointSize,
+                .paragraphStyle: collapsedLine,
+            ]))
         }
     }
 
@@ -906,24 +1003,74 @@ enum MarkdownASTStyler {
                        .font: ctx.inlineMarkerFont]
                 for marker in markers(of: range, content: contentRange) { attrs.append((marker, markerAttrs)) }
 
-            case .link(let range, let textRange, let url, let markers, let children):
-                styleLink(range: range, textRange: textRange, url: url, markers: markers, children: children, font: font, ctx: ctx, into: &attrs)
+            case .link(let range, let textRange, let url, let title, let markers, let children):
+                styleLink(range: range, textRange: textRange, url: url, title: title, markers: markers, children: children, font: font, ctx: ctx, into: &attrs)
 
-            case .image, .escape:
-                break   // ported in later increments
+            case .image(let range, _, let url, let title, let markers):
+                attrs.append((range, [.spellingState: 0]))
+                if ctx.isActive(range) {
+                    for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+                    attrs.append((url, [.foregroundColor: ctx.theme.mutedText]))
+                    if let title { attrs.append((title, [.foregroundColor: ctx.theme.mutedText])) }
+                }
+
+            case .referenceLink(let range, let textRange, let label, let markers, let children):
+                styleReferenceLink(
+                    range: range,
+                    textRange: textRange,
+                    label: label,
+                    markers: markers,
+                    children: children,
+                    font: font,
+                    ctx: ctx,
+                    into: &attrs
+                )
+
+            case .footnoteReference(let range, let label, let markers):
+                let id = ctx.ns.substring(with: label)
+                attrs.append((label, [.footnoteID: id]))
+                if ctx.isActive(range) {
+                    for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+                } else {
+                    let footnoteFont = NSFont(descriptor: font.fontDescriptor, size: font.pointSize * 0.8) ?? font
+                    attrs.append((label, [
+                        .font: footnoteFont,
+                        .baselineOffset: font.pointSize * 0.3,
+                        .foregroundColor: ctx.theme.mutedText,
+                    ]))
+                }
+
+            case .hardBreak(_, let marker):
+                if ctx.isActive(ctx.ns.lineRange(for: marker)) {
+                    attrs.append((marker, [.foregroundColor: ctx.theme.mutedText]))
+                }
+
+            case .autolink(let range, let urlRange, let markers):
+                attrs.append((range, [.spellingState: 0]))
+                if let url = linkURL(for: urlRange, ctx: ctx, emailFallback: true) {
+                    attrs.append((urlRange, [
+                        .link: url,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .foregroundColor: ctx.theme.link,
+                    ]))
+                }
+                if ctx.isActive(range) {
+                    for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+                }
+
+            case .escape:
+                break
             }
         }
     }
 
     private static func styleLink(
-        range: NSRange, textRange: NSRange, url urlRange: NSRange, markers: [NSRange],
+        range: NSRange, textRange: NSRange, url urlRange: NSRange, title: NSRange?, markers: [NSRange],
         children: [InlineNode], font: NSFont, ctx: Ctx, into attrs: inout [StyledRange]
     ) {
         attrs.append((range, [.spellingState: 0]))
-        var urlString = ctx.ns.substring(with: urlRange)
-        if !urlString.contains("://") { urlString = "https://\(urlString)" }
         let isActive = ctx.isActive(range)
-        if let url = URL(string: urlString) {
+        if let url = linkURL(for: urlRange, ctx: ctx) {
             if isActive {
                 attrs.append((textRange, [
                     .foregroundColor: ctx.theme.link.withAlphaComponent(ctx.config.link.activeLinkAlpha),
@@ -939,8 +1086,62 @@ enum MarkdownASTStyler {
         for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
         // The target is syntax, revealed with its brackets and muted like them —
         // at body color it is louder than the label it belongs to.
-        if isActive { attrs.append((urlRange, [.foregroundColor: ctx.theme.mutedText])) }
+        if isActive {
+            attrs.append((urlRange, [.foregroundColor: ctx.theme.mutedText]))
+            if let title { attrs.append((title, [.foregroundColor: ctx.theme.mutedText])) }
+        }
         styleInlines(children, font: font, ctx: ctx, into: &attrs)
+    }
+
+    private static func styleReferenceLink(
+        range: NSRange,
+        textRange: NSRange,
+        label: NSRange?,
+        markers: [NSRange],
+        children: [InlineNode],
+        font: NSFont,
+        ctx: Ctx,
+        into attrs: inout [StyledRange]
+    ) {
+        guard let definition = ctx.referenceDefinition(textRange: textRange, label: label) else {
+            styleInlines(children, font: font, ctx: ctx, into: &attrs)
+            return
+        }
+        attrs.append((range, [.spellingState: 0]))
+        let isActive = ctx.isActive(range)
+        if let url = linkURL(for: definition.destination, ctx: ctx) {
+            if isActive {
+                attrs.append((textRange, [
+                    .foregroundColor: ctx.theme.link.withAlphaComponent(ctx.config.link.activeLinkAlpha),
+                ]))
+            } else {
+                attrs.append((textRange, [
+                    .link: url,
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .foregroundColor: ctx.theme.link,
+                ]))
+            }
+        }
+        if isActive {
+            for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+            if let label { attrs.append((label, [.foregroundColor: ctx.theme.mutedText])) }
+        }
+        styleInlines(children, font: font, ctx: ctx, into: &attrs)
+    }
+
+    private static func linkURL(
+        for range: NSRange,
+        ctx: Ctx,
+        emailFallback: Bool = false
+    ) -> URL? {
+        guard range.length > 0 else { return nil }
+        var value = ctx.ns.substring(with: range)
+        if emailFallback, value.contains("@"), !value.contains(":") {
+            value = "mailto:\(value)"
+        } else if !value.contains("://") && !value.hasPrefix("mailto:") {
+            value = "https://\(value)"
+        }
+        return URL(string: value)
     }
 
     // MARK: - Marker shrinking (hide syntax of inactive nodes)
@@ -963,12 +1164,15 @@ enum MarkdownASTStyler {
                 shrinkInlineMarkers(inlines, ctx: ctx, into: &attrs)
             case .paragraph(_, let inlines), .blockquote(_, let inlines):
                 shrinkInlineMarkers(inlines, ctx: ctx, into: &attrs)
+            case .footnoteDefinition(let range, _, let markers, let inlines):
+                if !ctx.isActive(range) { shrink(markers, ctx: ctx, into: &attrs) }
+                shrinkInlineMarkers(inlines, ctx: ctx, forceReveal: ctx.isActive(range), into: &attrs)
             case .list(_, let items):
                 // Phase A: shrink only inline markers; the list marker is hidden by the bullet/task pass.
                 for item in items { shrinkInlineMarkers(item.inlines, ctx: ctx, into: &attrs) }
             case .ext(let node):
                 shrinkInlineMarkers(node.inlines, ctx: ctx, into: &attrs)
-            case .frontmatter, .codeBlock, .table, .thematicBreak, .blank:
+            case .frontmatter, .linkDefinition, .codeBlock, .table, .thematicBreak, .blank:
                 break
             }
         }
@@ -986,18 +1190,38 @@ enum MarkdownASTStyler {
                 let active = forceReveal || ctx.isActive(node.range)
                 if !active { shrink(node.markers, ctx: ctx, into: &attrs) }
                 shrinkInlineMarkers(node.children, ctx: ctx, forceReveal: active, into: &attrs)
-            case .link(let range, _, _, let markers, let children):
+            case .link(let range, _, _, _, let markers, let children):
                 let active = forceReveal || ctx.isActive(range)
                 if !active {
                     shrink(markers, ctx: ctx, into: &attrs)
-                    if markers.count >= 4 {   // also hide the "(url)" run
-                        let hide = NSRange(location: markers[2].location,
-                                           length: NSMaxRange(markers[3]) - markers[2].location)
-                        attrs.append((hide, [.font: ctx.inlineMarkerFont, .foregroundColor: NSColor.clear]))
+                    hideInlineTarget(markers: markers, ctx: ctx, into: &attrs)
+                }
+                shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
+            case .image(let range, _, _, _, let markers):
+                if !(forceReveal || ctx.isActive(range)) {
+                    shrink(markers, ctx: ctx, into: &attrs)
+                    hideInlineTarget(markers: markers, ctx: ctx, into: &attrs)
+                }
+            case .referenceLink(let range, let textRange, let label, let markers, let children):
+                let active = forceReveal || ctx.isActive(range)
+                if ctx.referenceDefinition(textRange: textRange, label: label) != nil, !active {
+                    shrink(markers, ctx: ctx, into: &attrs)
+                    if markers.count >= 4 {
+                        let target = NSRange(
+                            location: markers[2].location,
+                            length: NSMaxRange(markers[3]) - markers[2].location
+                        )
+                        attrs.append((target, [.font: ctx.inlineMarkerFont, .foregroundColor: NSColor.clear]))
                     }
                 }
                 shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
-            case .image(let range, _, _, let markers):
+            case .footnoteReference(let range, _, let markers):
+                if !(forceReveal || ctx.isActive(range)) { shrink(markers, ctx: ctx, into: &attrs) }
+            case .hardBreak(_, let marker):
+                if !(forceReveal || ctx.isActive(ctx.ns.lineRange(for: marker))) {
+                    shrink([marker], ctx: ctx, into: &attrs)
+                }
+            case .autolink(let range, _, let markers):
                 if !(forceReveal || ctx.isActive(range)) { shrink(markers, ctx: ctx, into: &attrs) }
             case .escape(let range, _, let marker):
                 if !(forceReveal || ctx.isActive(range)) { shrink([marker], ctx: ctx, into: &attrs) }
@@ -1027,6 +1251,19 @@ enum MarkdownASTStyler {
         for marker in markers {
             attrs.append((marker, [.font: ctx.inlineMarkerFont, .kern: -ctx.inlineMarkerFont.pointSize]))
         }
+    }
+
+    private static func hideInlineTarget(
+        markers: [NSRange],
+        ctx: Ctx,
+        into attrs: inout [StyledRange]
+    ) {
+        guard markers.count >= 4 else { return }
+        let hide = NSRange(
+            location: markers[2].location,
+            length: NSMaxRange(markers[3]) - markers[2].location
+        )
+        attrs.append((hide, [.font: ctx.inlineMarkerFont, .foregroundColor: NSColor.clear]))
     }
 
     // MARK: - Helpers

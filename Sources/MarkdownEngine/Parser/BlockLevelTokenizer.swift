@@ -43,7 +43,7 @@ enum BlockLevelTokenizer {
     /// Block-level tokens for one block substring, dispatched by its kind.
     static func tokens(for kind: BlockKind, in sub: NSString, registry: ExtensionRegistry = .empty) -> [MarkdownToken] {
         switch kind {
-        case .frontmatter: return []
+        case .frontmatter, .linkDefinition, .footnoteDefinition: return []
         case .fencedCode:  return codeBlock(in: sub)
         case .heading:     return heading(in: sub)
         case .blockquote:  return blockquote(in: sub)

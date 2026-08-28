@@ -378,6 +378,124 @@ struct MarkdownASTStylerTests {
         let nestedStyle = nested.attribute(.paragraphStyle, at: 7, effectiveRange: nil) as? NSParagraphStyle
         #expect((nestedStyle?.headIndent ?? 0) > (siblingStyle?.headIndent ?? 0))
     }
+
+    @MainActor
+    @Test("link and image titles hide with their targets and preserve source bytes")
+    func linkAndImageTitlesHideAndPreserveSource() throws {
+        let source = #"""
+[text](https://example.com "title")
+![alt](<https://example.com/a.png> 'caption')
+"""#
+        let ns = source as NSString
+        let hidden = render(source)
+        expectSourceBytesUnchanged(source, hidden)
+
+        let linkText = ns.range(of: "text")
+        let title = ns.range(of: "title")
+        let imageURL = ns.range(of: "https://example.com/a.png")
+        #expect(hidden.attribute(.link, at: linkText.location, effectiveRange: nil) != nil)
+        #expect(try #require(hidden.attribute(.font, at: title.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(hidden.attribute(.font, at: imageURL.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+
+        let revealed = render(source, caret: linkText.location)
+        #expect(try #require(revealed.attribute(.font, at: title.location, effectiveRange: nil) as? NSFont).pointSize == base)
+        #expect(revealed.attribute(.foregroundColor, at: title.location, effectiveRange: nil) as? NSColor == MarkdownEditorTheme.default.mutedText)
+    }
+
+    @MainActor
+    @Test("reference links resolve from full definitions during scoped styling")
+    func scopedReferenceLinksUseFullDefinitionMap() throws {
+        let source = "[Straße   Note][ STRASSE NOTE ]\n\n[strasse note]: https://example.com \"title\"\n[other]: /two\n"
+        let ns = source as NSString
+        let referenceLine = ns.lineRange(for: NSRange(location: 0, length: 0))
+        let definitionRange = ns.range(of: "[strasse note]:")
+
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.link, at: 1, effectiveRange: nil) != nil)
+        #expect(try #require(rendered.attribute(.font, at: definitionRange.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+
+        let scoped = MarkdownASTStyler.styleAttributes(
+            text: source,
+            fontName: fontName,
+            fontSize: base,
+            scopedRanges: [referenceLine]
+        )
+        let storage = NSMutableAttributedString(string: source)
+        TextStylingService.applyStyledRanges(
+            scoped,
+            paragraphs: [referenceLine],
+            baseAttributes: [.font: NSFont(name: fontName, size: base) ?? .systemFont(ofSize: base)],
+            to: storage
+        )
+        #expect(Array(storage.string.utf8) == Array(source.utf8))
+        #expect(storage.attribute(.link, at: 1, effectiveRange: nil) != nil)
+
+        let revealedDefinitions = render(source, caret: ns.range(of: "[other]:").location + 2)
+        #expect(try #require(revealedDefinitions.attribute(.font, at: definitionRange.location, effectiveRange: nil) as? NSFont).pointSize == base)
+    }
+
+    @MainActor
+    @Test("footnote references superscript the id, expose footnoteID, and keep definitions inline-styled")
+    func footnotesStyleAndPreserveSource() throws {
+        let source = "See [^one].\n\n[^one]: *note*\n    continued\n"
+        let ns = source as NSString
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+
+        let referenceLabel = ns.range(of: "one")
+        let referenceOpen = ns.range(of: "[^")
+        let definitionLabel = ns.range(of: "one", options: .backwards)
+        let definitionOpen = ns.range(of: "[^", options: .backwards)
+        #expect(rendered.attribute(.footnoteID, at: referenceLabel.location, effectiveRange: nil) as? String == "one")
+        #expect((rendered.attribute(.baselineOffset, at: referenceLabel.location, effectiveRange: nil) as? CGFloat ?? 0) > 0)
+        #expect(try #require(rendered.attribute(.font, at: referenceOpen.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: definitionOpen.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect((rendered.attribute(.baselineOffset, at: definitionLabel.location, effectiveRange: nil) as? CGFloat ?? 0) > 0)
+        #expect((rendered.attribute(.font, at: ns.range(of: "note", options: .backwards).location, effectiveRange: nil) as? NSFont)?.fontDescriptor.symbolicTraits.contains(.italic) == true)
+
+        let revealed = render(source, caret: referenceLabel.location)
+        #expect((revealed.attribute(.baselineOffset, at: referenceLabel.location, effectiveRange: nil) as? CGFloat ?? 0) == 0)
+        #expect(try #require(revealed.attribute(.font, at: referenceOpen.location, effectiveRange: nil) as? NSFont).pointSize == base)
+    }
+
+    @MainActor
+    @Test("hard-break markers hide only before internal newlines")
+    func hardBreaksHideAndPreserveSource() throws {
+        let source = "first  \nsecond\\\nlast  "
+        let ns = source as NSString
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+
+        let firstSpaces = ns.range(of: "  \n")
+        let backslash = ns.range(of: "\\\n")
+        let finalSpaces = ns.range(of: "  ", options: .backwards)
+        #expect(try #require(rendered.attribute(.font, at: firstSpaces.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: backslash.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: finalSpaces.location, effectiveRange: nil) as? NSFont).pointSize == base)
+
+        let revealed = render(source, caret: 1)
+        #expect(try #require(revealed.attribute(.font, at: firstSpaces.location, effectiveRange: nil) as? NSFont).pointSize == base)
+    }
+
+    @MainActor
+    @Test("autolink brackets hide while raw HTML and comparisons stay literal")
+    func autolinkBracketsHideAndPreserveSource() throws {
+        let source = "<https://example.com> <mailto:someone@example.com> a < b <span>"
+        let ns = source as NSString
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+
+        let url = ns.range(of: "https://example.com")
+        let firstOpen = ns.range(of: "<")
+        let html = ns.range(of: "<span>")
+        #expect(rendered.attribute(.link, at: url.location, effectiveRange: nil) != nil)
+        #expect(try #require(rendered.attribute(.font, at: firstOpen.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: html.location, effectiveRange: nil) as? NSFont).pointSize == base)
+
+        let revealed = render(source, caret: url.location)
+        #expect(try #require(revealed.attribute(.font, at: firstOpen.location, effectiveRange: nil) as? NSFont).pointSize == base)
+    }
 }
 
 /// A hidden task item shares the BULLET list's left geometry (GitHub/Obsidian):

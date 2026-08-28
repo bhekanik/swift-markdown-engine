@@ -121,6 +121,39 @@ struct BlockParserTests {
         assertTiles(text)
     }
 
+    @Test("consecutive link definitions group and retain every destination")
+    func linkDefinitionsGroup() {
+        let text = " [One]: <https://example.com/a b> \"title\"\n[Two]: /two\n\nbody"
+        let blocks = BlockParser.parse(text)
+        #expect(blocks.map(\.kind) == [.linkDefinition, .blank, .paragraph])
+        #expect(blocks[0].range == NSRange(location: 0, length: 54))
+
+        let definitions = DocumentAST.parse(text).compactMap { node -> (String, String)? in
+            guard case .linkDefinition(_, let label, let destination, _) = node else { return nil }
+            let ns = text as NSString
+            return (ns.substring(with: label), ns.substring(with: destination))
+        }
+        #expect(definitions.map(\.0) == ["One", "Two"])
+        #expect(definitions.map(\.1) == ["https://example.com/a b", "/two"])
+        assertTiles(text)
+    }
+
+    @Test("footnote definitions include four-space continuation lines")
+    func footnoteDefinitionContinuation() throws {
+        let text = "[^note]: first\n    *second*\nplain"
+        #expect(BlockParser.parse(text).map(\.kind) == [.footnoteDefinition, .paragraph])
+        let node = try #require(DocumentAST.parse(text).first)
+        guard case .footnoteDefinition(let range, let label, let markers, let inlines) = node else {
+            Issue.record("Expected footnote definition")
+            return
+        }
+        #expect(range == NSRange(location: 0, length: 28))
+        #expect((text as NSString).substring(with: label) == "note")
+        #expect(markers.count == 3)
+        #expect(inlines.contains { if case .emphasis = $0 { return true }; return false })
+        assertTiles(text)
+    }
+
     @Test("frontmatter and tilde delimiters force a full incremental parse")
     func newPairedDelimitersRipple() {
         for text in ["---\n", "...\n", "~~~swift\n"] {

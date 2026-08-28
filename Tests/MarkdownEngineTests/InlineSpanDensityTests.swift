@@ -89,7 +89,8 @@ struct InlineSpanDensityTests {
             extensions: [HighlightExtension(), StrikethroughExtension()]
         ).extensionRegistry
 
-        #expect(fingerprint(corpus(4000), registry: registry) == "36d58d448f0c2a44")
+        // The added dialect nodes intentionally reset the semantic baseline.
+        #expect(fingerprint(corpus(4000), registry: registry) == "a857324c96f47fdc")
     }
 
     // MARK: - Cost curve
