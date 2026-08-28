@@ -152,6 +152,24 @@ struct EditorControllerPatchTests {
         #expect(textView.string == "one two three")
     }
 
+    @Test("applyText patches the one changed run and keeps the caret")
+    func applyTextPatchesOneRun() {
+        let (textView, controller, _) = makeEditor("alpha bravo charlie")
+        textView.setSelectedRange(NSRange(location: 18, length: 0))
+
+        #expect(controller.applyText("alpha DELTA charlie"))
+
+        #expect(textView.string == "alpha DELTA charlie")
+        #expect(textView.selectedRange() == NSRange(location: 18, length: 0))
+    }
+
+    @Test("applyText with identical text is a no-op that reports success")
+    func applyTextNoOp() {
+        let (textView, controller, _) = makeEditor("alpha")
+        #expect(controller.applyText("alpha"))
+        #expect(textView.string == "alpha")
+    }
+
     // MARK: - Undo
 
     @Test("an external patch registers no undo action by default")

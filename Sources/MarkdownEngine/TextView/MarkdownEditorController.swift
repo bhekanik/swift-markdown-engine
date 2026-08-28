@@ -141,8 +141,9 @@ public final class MarkdownEditorController {
         var selection = textView.selectedRange()
         var applied = false
         for patch in ordered {
-            guard apply(patch, to: textView, coordinator: coordinator,
-                        actionName: actionName, registersUndo: registersUndo) else { continue }
+            guard coordinator.applyProgrammaticPatch(
+                patch, to: textView, actionName: actionName,
+                registersUndo: registersUndo) else { continue }
             selection = selection.adjusting(
                 forReplacementOf: patch.range,
                 withLength: (patch.replacement as NSString).length
@@ -155,15 +156,44 @@ public final class MarkdownEditorController {
         return true
     }
 
-    private func apply(
-        _ patch: MarkdownTextPatch,
-        to textView: NSTextView,
-        coordinator: NativeTextViewCoordinator,
-        actionName: String?,
-        registersUndo: Bool
+    /// Bring the editor to `text` by patching the one run that changed.
+    ///
+    /// The caller has a new whole document — a sync change, a history jump, a
+    /// canonicalisation — and wants the editor to hold it without losing the
+    /// caret. A common-prefix/suffix scan is enough: a document edit is one
+    /// contiguous change often enough that a real diff would buy nothing, and
+    /// an over-wide answer is still correct output, only a bigger restyle.
+    ///
+    /// - Returns: `true` when the editor now holds `text`.
+    @discardableResult
+    public func applyText(
+        _ text: String,
+        actionName: String? = nil,
+        registersUndo: Bool = false
     ) -> Bool {
-        coordinator.applyProgrammaticPatch(
-            patch, to: textView, actionName: actionName, registersUndo: registersUndo)
+        guard let textView else { return false }
+        let old = textView.string as NSString
+        guard old as String != text else { return true }
+        let new = text as NSString
+        var prefix = 0
+        let maxPrefix = min(old.length, new.length)
+        while prefix < maxPrefix, old.character(at: prefix) == new.character(at: prefix) {
+            prefix += 1
+        }
+        var suffix = 0
+        let maxSuffix = maxPrefix - prefix
+        while suffix < maxSuffix,
+              old.character(at: old.length - 1 - suffix)
+                == new.character(at: new.length - 1 - suffix) {
+            suffix += 1
+        }
+        return applyPatch(
+            range: NSRange(location: prefix, length: old.length - suffix - prefix),
+            replacement: new.substring(
+                with: NSRange(location: prefix, length: new.length - suffix - prefix)),
+            actionName: actionName,
+            registersUndo: registersUndo
+        )
     }
 
     // MARK: - Attachment (engine-internal)
