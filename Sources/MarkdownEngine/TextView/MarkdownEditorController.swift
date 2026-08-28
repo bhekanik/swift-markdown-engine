@@ -275,23 +275,46 @@ public final class MarkdownEditorController {
     /// `true` when nothing is attached yet, or when the presentation matches
     /// what is already attached. See ``presentation``.
     public func accepts(rawSourceMode: Bool, isEditable: Bool) -> Bool {
+        canPresent(rawSourceMode: rawSourceMode, isEditable: isEditable, from: nil)
+    }
+
+    /// Whether this document can be shown as `(rawSourceMode, isEditable)`,
+    /// asked on behalf of `view`.
+    ///
+    /// A document with no views, or whose only view is the one asking, is free
+    /// to change presentation — switching the lens in a single window is the
+    /// ordinary case and must not be refused. It is only when OTHER views are
+    /// attached that the presentation is locked, because they share the storage
+    /// the styling is written into.
+    ///
+    /// Ask this BEFORE moving a layout manager or writing any configuration: a
+    /// refusal has to stop the transition, not report on one already made.
+    public func canPresent(rawSourceMode: Bool, isEditable: Bool, from view: NSTextView?) -> Bool {
         attachments.removeAll { $0.textView == nil }
-        guard !attachments.isEmpty, let presentation else { return true }
+        let peers = attachments.filter { $0.textView !== view }
+        guard !peers.isEmpty, let presentation else { return true }
         return presentation == (rawSourceMode, isEditable)
     }
 
+    /// - Parameters:
+    ///   - rawSourceMode: The presentation the caller is ABOUT to apply, passed
+    ///     explicitly rather than read back off the coordinator: the caller has
+    ///     to know whether it is allowed before it writes any configuration,
+    ///     and reading state that has not been written yet is how the lock
+    ///     became advisory in the first place.
     @discardableResult
-    func attach(textView: NSTextView, coordinator: NativeTextViewCoordinator) -> Bool {
+    func attach(textView: NSTextView, coordinator: NativeTextViewCoordinator,
+                rawSourceMode: Bool, isEditable: Bool) -> Bool {
         attachments.removeAll { $0.textView == nil }
-        let incoming = (coordinator.configuration.rawSourceMode, textView.isEditable)
-        if let presentation, !attachments.isEmpty, presentation != incoming {
+        let incoming = (rawSourceMode: rawSourceMode, isEditable: isEditable)
+        guard canPresent(rawSourceMode: rawSourceMode, isEditable: isEditable, from: textView) else {
             assertionFailure(
                 "A document's views share one text storage, and presentation-dependent "
                 + "styling is written into it, so two presentations overwrite each other. "
-                + "This controller is showing raw=\(presentation.rawSourceMode) "
-                + "editable=\(presentation.isEditable); a view asked to join as "
-                + "raw=\(incoming.0) editable=\(incoming.1). Give each presentation its "
-                + "own MarkdownEditorController.")
+                + "This controller is showing raw=\(presentation?.rawSourceMode as Any) "
+                + "editable=\(presentation?.isEditable as Any); a view asked to join as "
+                + "raw=\(incoming.rawSourceMode) editable=\(incoming.isEditable). Give each "
+                + "presentation its own MarkdownEditorController.")
             return false
         }
         self.presentation = incoming

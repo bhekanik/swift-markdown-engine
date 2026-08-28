@@ -276,7 +276,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
 
         context.coordinator.textView = textView
         context.coordinator.editorController = controller
-        controller?.attach(textView: textView, coordinator: context.coordinator)
+        controller?.attach(textView: textView, coordinator: context.coordinator,
+                           rawSourceMode: configuration.rawSourceMode, isEditable: isEditable)
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
@@ -347,6 +348,20 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         guard let textView = nsView.nativeTextView else {
             return
         }
+        // Asked BEFORE anything is moved or written. A document's views share
+        // one storage and presentation-dependent styling goes into it, so a
+        // second view in a different presentation would rewrite the first's
+        // attributes. Refusing has to stop the transition — including the
+        // rebuild — not report on one already made.
+        if let controller,
+           !controller.canPresent(rawSourceMode: configuration.rawSourceMode,
+                                  isEditable: isEditable,
+                                  from: textView) {
+            assertionFailure(
+                "This document is already shown in another presentation. Give each "
+                + "presentation its own MarkdownEditorController.")
+            return
+        }
         let isNodeSwitch = context.coordinator.documentId != documentId
 
         // Refreshed here, not with the other callbacks at the bottom — teardown has
@@ -413,17 +428,39 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         let controllerChanged = context.coordinator.editorController !== controller
         if controllerChanged {
             if let previous = context.coordinator.editorController {
+                // Remember where this window was in the OUTGOING document, so
+                // coming back to it lands the reader where they left.
+                context.coordinator.selectionByDocument[ObjectIdentifier(previous)] =
+                    textView.selectedRange()
                 previous.detach(textView: textView)
             }
+            // A selection from the old document can be out of range for the new
+            // one, and the next attribute write (`textView.font = font`, below)
+            // makes AppKit fix attributes over the selected range — which traps
+            // in `ensureAttributesAreFixedInRange`.
+            //
+            // Zeroed TWICE, deliberately. Once here, while the view still has
+            // storage to accept it; and again after the move, because detaching
+            // the layout manager leaves the view with no content manager and
+            // the selection it reads back afterwards is neither zero nor in
+            // range (measured: 1235 against a length of 0).
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
             context.coordinator.editorController = controller
             if let controller, let layoutManager = textView.textLayoutManager {
                 controller.adopt(layoutManager: layoutManager)
             }
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
             context.coordinator.didInitialFormatting = false
             context.coordinator.didEnsureLayoutForCurrentDocument = false
             context.coordinator.invalidateParseCache()
+            context.coordinator.pendingSelectionRestore = controller.map { ObjectIdentifier($0) }
         }
-        controller?.attach(textView: textView, coordinator: context.coordinator)
+        if let controller,
+           !controller.attach(textView: textView, coordinator: context.coordinator,
+                              rawSourceMode: configuration.rawSourceMode,
+                              isEditable: isEditable) {
+            return
+        }
         context.coordinator.configuration.undo = configuration.undo
         textView.configuration.undo = configuration.undo
         textView.allowsUndo = configuration.undo == .engine
@@ -597,6 +634,16 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         }
         textView.recalcOverscroll(for: nsView)
         (nsView as? ClampedScrollView)?.clampToInsets()
+        // The new document is laid out, so its remembered caret is meaningful
+        // again — clamped, because the document it was recorded in may have
+        // been longer than this one.
+        if let restoreKey = context.coordinator.pendingSelectionRestore {
+            let remembered = context.coordinator.selectionByDocument[restoreKey]
+                ?? NSRange(location: 0, length: 0)
+            textView.setSelectedRange(
+                remembered.clamped(toLength: (textView.string as NSString).length))
+            context.coordinator.pendingSelectionRestore = nil
+        }
         // Height is measured now, so restore the saved offset; clampToInsets keeps
         // it in range if the document got shorter. Latched rather than gated on
         // `isNodeSwitch`, because a remount is not a switch and its first pass still

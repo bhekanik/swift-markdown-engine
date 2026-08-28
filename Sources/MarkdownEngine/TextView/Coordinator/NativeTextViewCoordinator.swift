@@ -67,6 +67,12 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// Embedder handle for external patches and the text-view seam. Weak: the
     /// embedder owns it and outlives the editor.
     weak var editorController: MarkdownEditorController?
+    /// Where this VIEW was in each document it has shown, keyed by controller
+    /// identity. A window swapped between documents puts the reader back.
+    var selectionByDocument: [ObjectIdentifier: NSRange] = [:]
+    /// Set while a controller swap is in flight; consumed once the new
+    /// document has been rebuilt and its length is known.
+    var pendingSelectionRestore: ObjectIdentifier?
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
     /// default menu + current selection range, returns the menu to show.

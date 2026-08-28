@@ -38,6 +38,8 @@ public extension NativeTextViewCoordinator {
         rebuildTextStorageAndStyle(textView, from: text)
         previousDisplayLength = (textView.string as NSString).length
         didInitialFormatting = true
-        editorController?.attach(textView: textView, coordinator: self)
+        editorController?.attach(textView: textView, coordinator: self,
+                                 rawSourceMode: configuration.rawSourceMode,
+                                 isEditable: textView.isEditable)
     }
 }
