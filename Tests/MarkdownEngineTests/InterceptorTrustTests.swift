@@ -16,6 +16,7 @@ import SwiftUI
 import Testing
 @testable import MarkdownEngine
 
+#if DEBUG
 @MainActor
 @Suite("Interceptor edits keep the fast paths trusted")
 struct InterceptorTrustTests {
@@ -58,3 +59,4 @@ struct InterceptorTrustTests {
         #expect(coord.debugLastEditWasTrusted == true)
     }
 }
+#endif
