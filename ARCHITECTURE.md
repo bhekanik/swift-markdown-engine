@@ -7,15 +7,14 @@ Sources/
 ├── MarkdownEngine/                          # core target — zero deps
 │   ├── Configuration/                       # MarkdownEditorConfiguration + MarkdownEditorTheme
 │   ├── Extensions/                          # the extension seam: MarkdownExtension + bundled opt-ins
-│   ├── Services/                            # 3 protocols, no-op defaults, WikiLinkService
+│   ├── Services/                            # syntax highlighting and event bus
 │   ├── Parser/                              # two-phase AST: BlockParser → InlineParser → DocumentAST (+ token projection)
 │   ├── Styling/                             # MarkdownASTStyler (AST walk) + MarkdownStyler facade for NSImage passes
-│   ├── Renderer/                            # LayoutBridge, MarkdownTextLayoutFragment, EmbeddedImageCache
+│   ├── Renderer/                            # LayoutBridge, MarkdownTextLayoutFragment
 │   ├── Input/                               # MarkdownInputHandler + MarkdownListHandler
 │   ├── TextView/
 │   │   ├── NativeTextViewWrapper.swift      # SwiftUI entry point (NSViewRepresentable)
-│   │   ├── NativeTextViewContainer.swift    # the scroll view's documentView: header band + text column stacking
-│   │   ├── ScrollingHeaderController.swift  # scroll-away header: hosting, collapse/expand, teardown
+│   │   ├── NativeTextViewContainer.swift    # the scroll view's documentView: text column stacking
 │   │   ├── ClampedScrollView.swift          # scroll range clamped to real content height
 │   │   ├── NativeTextView/                  # AppKit subclass + UX extensions (paste, drag-select, …)
 │   │   └── Coordinator/                     # NSTextViewDelegate split by concern (restyling, find, …)
@@ -38,7 +37,7 @@ regexes are gone, replaced by hand-written scanners and a real syntax tree.
    per-keystroke callers share one line-scan.
 2. **`InlineParser`** turns a single inline-bearing block's text into an inline
    AST (`[InlineNode]`) with correct CommonMark precedence: code spans →
-   escapes → link family (`![[…]]`, `[[…]]`, `![…](…)`, `[…](…)`, `~~…~~`,
+   escapes → link family (`![…](…)`, `[…](…)`, `~~…~~`,
    `$…$`) → emphasis (`*`/`_` delimiter runs) → `buildTree`. Each pass claims
    spans only in regions not already claimed, so there are never partial
    overlaps and the tree is a clean containment tree. That invariant is also
@@ -86,21 +85,12 @@ never take text away from core markdown.
 
 ## [`Services/`](Sources/MarkdownEngine/Services): how does the engine talk to your app?
 
-`MarkdownEditorServices.swift` declares the three service protocols. Each is
-called synchronously when its construct is styled or rendered: `WikiLinkResolver`
-while styling wiki-links, `EmbeddedImageProvider` from the image-embed render
-pass, and `SyntaxHighlighter` from code styling.
-
-`WikiLinkService.swift` handles the dual-form storage / display transform —
-storage is `[[Name|<id>]]`, display is `[[Name]]`. The coordinator runs it both
-ways every time `rebuildTextStorageAndStyle()` fires.
+`MarkdownEditorServices.swift` declares the `SyntaxHighlighter` service
+protocol, called synchronously from code styling.
 
 **Invariant:** Service callbacks are synchronous. If an embedder's
-implementation is slow, it caches (both bundled bridges do); the engine never
+implementation is slow, it caches; the engine never
 async-renders.
-
-**Invariant:** Wiki-link storage and display are different strings. Display IDs
-never leak into the binding.
 
 ## [`Styling/`](Sources/MarkdownEngine/Styling): how does the AST become attributes?
 
@@ -113,8 +103,8 @@ pipeline got wrong, e.g. the shrinking bold in `# **n*o*des**`.)
 
 `MarkdownStyler.styleAttributes()` (`MarkdownStyler.swift:43`) is now a thin
 facade: it builds the `StylingContext`, runs the AST styler for all text
-styling, then appends the passes that still render **NSImages** and therefore
-still consume tokens — image embeds and image links (`+Images`), and rendered
+styling, then appends the passes that still consume tokens — image links
+(`+Images`), and rendered
 tables (`+Tables`). `MarkdownStyler+TaskCheckboxes`
 and `+BulletMarkers` no longer style (the AST styler does); they keep only the
 caret / selection range helpers (`taskSyntaxRange`, `bulletSyntaxRange`,
@@ -129,16 +119,13 @@ selection / copy / find / undo bug downstream traces back to violating this.
 
 ## [`Renderer/`](Sources/MarkdownEngine/Renderer): TextKit 2 layout
 
-Thin wrappers around `NSTextLayoutManager` (`LayoutBridge.swift`), a custom
-`MarkdownTextLayoutFragment` for precise positioning, and `EmbeddedImageCache`
-keyed by an embedder-supplied fingerprint so images invalidate when the
-embedder says so.
+Thin wrappers around `NSTextLayoutManager` (`LayoutBridge.swift`) and a custom
+`MarkdownTextLayoutFragment` for precise positioning.
 
 ## [`Input/`](Sources/MarkdownEngine/Input): typing-time helpers
 
-`MarkdownInputHandler.swift` handles auto-wrap for `![[…]]`.
 `MarkdownListHandler.swift` handles list continuation, indent / outdent, and
-task-checkbox toggling on Enter / Tab / Backspace. Both run synchronously inside
+task-checkbox toggling on Enter / Tab / Backspace. It runs synchronously inside
 the text-view delegate.
 
 ## [`TextView/`](Sources/MarkdownEngine/TextView): NSTextView + SwiftUI bridge
@@ -147,12 +134,8 @@ The entry point is `NativeTextViewWrapper.swift` — an `NSViewRepresentable` th
 owns the coordinator and the configured text view.
 
 The scroll view's `documentView` is **always** `NativeTextViewContainer`, never
-the text view itself. The container stacks up to three kinds of siblings in a
-flipped coordinate space: the optional scroll-away header band at the top (a
-clipped `NSHostingView` managed by `ScrollingHeaderController`, reserved height
-mirrored into `container.headerHeight`), the `NativeTextView` at
-`y = headerHeight` (centered at a fixed width when
-`configuration.readingWidth` is set), and — in reading-column mode — the
+the text view itself. The container stacks the `NativeTextView` (centered at a
+fixed width when `configuration.readingWidth` is set) and, in reading-column mode, the
 full-width wide-table breakout overlays. Anything that converts between
 text-view-local rects and scroll/document space must lift by the text view's
 origin inside the container (`convert(_:to:)` or `frame.origin`); see
@@ -163,7 +146,7 @@ Two sub-folders matter:
 - `NativeTextView/` — extensions on the AppKit subclass (paste, drag-select
   boost, spell policy, caret workarounds, frame/overscroll management)
 - `Coordinator/` — `NSTextViewDelegate` glue, split by concern (restyling,
-  writing-tools, find, code-blocks, inline selection, autocorrect)
+  writing-tools, find, code-blocks, autocorrect)
 
 Application of `[StyledRange]` to text storage happens in
 `Coordinator/NativeTextViewCoordinator+Restyling.swift` →

@@ -12,7 +12,7 @@
 //  Built incrementally behind the existing styler; not wired until complete
 //  and visually verified. Covered so far: heading/paragraph/blockquote blocks;
 //  inline emphasis (font composition), strikethrough, inline code, markdown
-//  links, wiki links. Still TODO: images, image embeds, escapes,
+//  links. Still TODO: images, escapes,
 //  autolinks, marker-shrinking, paragraph styles, code/table blocks,
 //  bullets, task checkboxes, horizontal rules.
 //
@@ -28,7 +28,6 @@ enum MarkdownASTStyler {
         fontSize: CGFloat,
         caretLocation: Int = -1,
         selection: NSRange? = nil,
-        wikiLinkIDProvider: @escaping (NSRange) -> String? = { _ in nil },
         scopedRanges: [NSRange]? = nil,
         precomputedBlocks: [Block]? = nil,
         configuration: MarkdownEditorConfiguration = .default
@@ -69,7 +68,6 @@ enum MarkdownASTStyler {
             selection: selection,
             config: configuration,
             extensionsByID: configuration.extensionsByID,
-            wikiLinkID: wikiLinkIDProvider,
             scopedRanges: scopedRanges,
             orderedDisplayNumbers: computeOrderedDisplayNumbers(blocks: blocks, ns: ns)
         )
@@ -122,7 +120,7 @@ enum MarkdownASTStyler {
         codeRanges.contains { NSIntersectionRange($0, range).length > 0 }
     }
 
-    /// Full ranges of markdown links `[text](url)` and wiki links `[[…]]`. The NSDataDetector
+    /// Full ranges of markdown links `[text](url)`. The NSDataDetector
     /// auto-link pass skips URLs inside these, so a link's own `(url)` isn't independently
     /// linkified into a second, competing `.link` region overlapping the link (which offsets
     /// the click edit-zone and makes the raw URL navigable).
@@ -134,8 +132,6 @@ enum MarkdownASTStyler {
                 case .link(let range, _, _, _, let children):
                     ranges.append(range)
                     walk(children)
-                case .wikiLink(let range, _, _, _):
-                    ranges.append(range)
                 case .emphasis(_, _, _, let children):
                     walk(children)
                 case .ext(let node):
@@ -177,7 +173,7 @@ enum MarkdownASTStyler {
     // + 78ms (6 regexes) on a 346k note with hits=0 (ENG-8g1b/c).
     private static let autoLinkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
     private static let incompleteLinkPatterns: [NSRegularExpression] =
-        [#"\[\]"#, #"\[\[\]\]"#, #"\[[^\]\r\n]*$"#, #"\[[^\]\r\n]+\](?!\()"#,
+        [#"\[\]"#, #"\[[^\]\r\n]*$"#, #"\[[^\]\r\n]+\](?!\()"#,
          #"\[[^\]\r\n]+\]\([^)\r\n]*$"#, #"\[[^\]\r\n]+\]\(\)"#].compactMap { regex($0, false) }
 
     /// Tag a thematic-break line for a full-width rule (AST-driven); suppressed while the caret edits it.
@@ -510,7 +506,7 @@ enum MarkdownASTStyler {
         guard let detector = autoLinkDetector else { return }
         for scan in ctx.scanRanges {
             detector.enumerateMatches(in: ctx.text, range: scan) { match, _, _ in
-                // Skip URLs inside code and inside a markdown/wiki link's own range — a link's
+                // Skip URLs inside code and inside a Markdown link's own range — a link's
                 // `(url)` must not become a second `.link` region competing with the link itself.
                 guard let match, let url = match.url,
                       !isInCode(match.range, codeRanges),
@@ -580,7 +576,6 @@ enum MarkdownASTStyler {
         let selection: NSRange?
         let config: MarkdownEditorConfiguration
         let extensionsByID: [String: any MarkdownExtension]
-        let wikiLinkID: (NSRange) -> String?
         let scopedRanges: [NSRange]?
         let orderedDisplayNumbers: [Int: Int]
 
@@ -833,10 +828,7 @@ enum MarkdownASTStyler {
             case .link(let range, let textRange, let url, let markers, let children):
                 styleLink(range: range, textRange: textRange, url: url, markers: markers, children: children, font: font, ctx: ctx, into: &attrs)
 
-            case .wikiLink(let range, let name, _, let markers):
-                styleWikiLink(range: range, name: name, markers: markers, ctx: ctx, into: &attrs)
-
-            case .image, .imageEmbed, .escape:
+            case .image, .escape:
                 break   // ported in later increments
             }
         }
@@ -868,27 +860,6 @@ enum MarkdownASTStyler {
         // at body color it is louder than the label it belongs to.
         if isActive { attrs.append((urlRange, [.foregroundColor: ctx.theme.mutedText])) }
         styleInlines(children, font: font, ctx: ctx, into: &attrs)
-    }
-
-    private static func styleWikiLink(
-        range: NSRange, name: NSRange, markers: [NSRange], ctx: Ctx, into attrs: inout [StyledRange]
-    ) {
-        attrs.append((range, [.spellingState: 0]))
-        let nodeName = ctx.ns.substring(with: name)
-        let linkID = ctx.wikiLinkID(range)
-        var contentAttrs: [NSAttributedString.Key: Any] = [:]
-        if let linkID { contentAttrs[.wikiLinkID] = linkID }
-        if !ctx.isActive(range) {
-            // Resolve by the stable UUID when present 
-            let exists = ctx.config.services.wikiLinks.resolve(displayName: linkID ?? nodeName, range: name)?.exists ?? false
-            if exists {
-                contentAttrs[.link] = linkID ?? nodeName
-            } else {
-                contentAttrs[.foregroundColor] = ctx.theme.disabledText
-            }
-        }
-        if !contentAttrs.isEmpty { attrs.append((name, contentAttrs)) }
-        for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
     }
 
     // MARK: - Marker shrinking (hide syntax of inactive nodes)
@@ -936,13 +907,11 @@ enum MarkdownASTStyler {
                     }
                 }
                 shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
-            case .wikiLink(let range, _, _, let markers):
-                if !(forceReveal || ctx.isActive(range)) { shrink(markers, ctx: ctx, into: &attrs) }
             case .image(let range, _, _, let markers):
                 if !(forceReveal || ctx.isActive(range)) { shrink(markers, ctx: ctx, into: &attrs) }
             case .escape(let range, _, let marker):
                 if !(forceReveal || ctx.isActive(range)) { shrink([marker], ctx: ctx, into: &attrs) }
-            case .text, .code, .imageEmbed:
+            case .text, .code:
                 break   // own marker handling / not shrunk
             }
         }

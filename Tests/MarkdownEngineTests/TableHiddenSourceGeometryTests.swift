@@ -48,8 +48,7 @@ struct TableHiddenSourceGeometryTests {
             baseFont: font,
             paragraphStyle: style,
             caretLocation: (source as NSString).length,
-            activeTokenIndices: [],
-            wikiLinkIDProvider: { _ in nil }
+            activeTokenIndices: []
         )
         let tlm = try #require(tv.textLayoutManager)
         let tcm = try #require(tlm.textContentManager)

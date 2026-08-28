@@ -6,7 +6,7 @@
 //
 
 // Keeps the editor in sync while you type, updating formatting, selections,
-// links, and other editing behavior in one place.
+// and other editing behavior in one place.
 import AppKit
 import SwiftUI
 
@@ -15,7 +15,7 @@ import SwiftUI
 ///
 /// The coordinator is created automatically by SwiftUI; embedders never
 /// construct one directly. Behaviors that don't fit in the main file live
-/// in extensions (Autocorrect, CodeBlocks, Find, InlineSelection,
+/// in extensions (Autocorrect, CodeBlocks, Find,
 /// Notifications, Restyling, TextDelegate, WritingTools).
 public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var documentId: String?
@@ -40,12 +40,11 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// its own undo stack that survives switching away and back. Vended through
     /// the `undoManager(for:)` delegate method; pruned alongside `scrollOffsets`.
     var undoManagers: [String: UndoManager] = [:]
-    /// Per-`documentId` content snapshot (storage form) taken on switch-away. On
+    /// Per-`documentId` content snapshot taken on switch-away. On
     /// switch-back a mismatch means the file was rewritten while backgrounded, so
     /// the now-stale undo stack is dropped. Pruned alongside `undoManagers`.
     var undoContentSnapshots: [String: String] = [:]
     @Binding var text: String
-    @Binding var isWikiLinkActive: Bool
     var fontName: String
     var fontSize: CGFloat
     var configuration: MarkdownEditorConfiguration = .default {
@@ -60,33 +59,18 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     }
     /// Memoized `configuration.extensionRegistry` (see didSet).
     var cachedExtensionRegistry: ExtensionRegistry = .empty
-    /// Last `EmbeddedImageProvider.fingerprint()` value we've reflected in
-    /// the textView's attributes. We cache it here because embedders that
-    /// MUTATE the same provider over time (async URL fetches, etc.) would
-    /// otherwise fool the wrapper's "did the embedder hand us a new
-    /// fingerprint" check — re-reading the same object twice always
-    /// returns the current value, regardless of when state changed.
-    var lastImageFingerprint: AnyHashable?
-    var lastWikiFingerprint: AnyHashable?
     private var busObservers: [NSObjectProtocol] = []
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
-    /// Owns the scroll-away header (build, content refresh, collapse/expand,
-    /// teardown). Created on first reconcile with a non-nil header.
-    var headerController: ScrollingHeaderController?
     var layoutBridge: LayoutBridge?
     var layoutDelegate: MarkdownLayoutManagerDelegate?
     /// Embedder handle for external patches and the text-view seam. Weak: the
     /// embedder owns it and outlives the editor.
     weak var editorController: MarkdownEditorController?
-    var onLinkClick: ((String) -> Void)?
-    var onCaretRectChange: ((CGRect) -> Void)?
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
     /// default menu + current selection range, returns the menu to show.
     var onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)?
-    var onInlineSelectionChange: ((InlineSelectionState?) -> Void)?
-    var onInlinePreviewKey: ((InlinePreviewKey) -> Bool)?
     var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
     var didInitialFormatting: Bool = false
     /// One-shot guard so `updateCodeBlockSelection` only forces a full-document layout once per document.
@@ -109,10 +93,8 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var wtUndoObserverTokens: [NSObjectProtocol] = []
     var wtUndoneDuringSession: Bool = false
     var wtPostUndoSnapshot: String?
-    var lastAppliedInlineReplacementID: UUID?
     var activeTokenIndices: Set<Int> = []
     var previousActiveTokenIndices: Set<Int> = []
-    var wikiLinkMetadata: [WikiLinkService.RangeKey: WikiLinkService.LinkMetadata] = [:]
     var previousBacktickCount: Int = 0
     /// Backtick census baseline captured in shouldChangeTextIn: the pre-edit
     /// window count around the proposed edit, so textDidChange can update the
@@ -141,16 +123,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// change, textDidChange). Pure function of (version, selection, suppressed).
     var activeTokenMemo: (version: UInt64, selection: NSRange, suppressed: Bool, result: Set<Int>)?
 
-    /// Display-text length after the previous textDidChange — yields the edit's
+    /// Text length after the previous textDidChange — yields the edit's
     /// length delta without retaining the previous text.
     var previousDisplayLength: Int = -1
-    /// Storage form computed by the previous wiki sync, kept synchronously
-    /// (unlike `lastSyncedText`, which updates via async dispatch and can lag a
-    /// keystroke). This is the splice base for the incremental path.
-    var lastComputedStorage: String = ""
-    /// DEBUG-only sampling counter for verifying splices against full rebuilds.
-    var wikiVerifyCounter: UInt = 0
-
     var pendingEditedRange: NSRange? = nil
     /// Exact pre-edit descriptor paired with `pendingEditedRange`. It is
     /// published only when one accepted proposal produces the change event.
@@ -236,8 +211,6 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         /// (full buffer re-extraction + memcmp per keystroke).
         let blocks: [Block]
         let codeTokens: [MarkdownToken]
-        let wikiLinkTokens: [MarkdownToken]
-        let imageEmbedTokens: [MarkdownToken]
         let tableTokens: [MarkdownToken]
         /// Code-block tokens with their index into `tokens` (active-token
         /// checks need the original index) — collected in the same single
@@ -253,45 +226,12 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         let version: UInt64
     }
 
-    enum InlineTokenContext {
-        case wikiLink(token: MarkdownToken)
-        case imageEmbed(token: MarkdownToken)
-
-        var token: MarkdownToken {
-            switch self {
-            case .wikiLink(let token), .imageEmbed(let token):
-                return token
-            }
-        }
-
-        var selectionKind: InlineSelectionKind {
-            switch self {
-            case .wikiLink:
-                return .wikiLink
-            case .imageEmbed:
-                return .imageEmbed
-            }
-        }
-    }
-
-    var isImageEmbedActive: Bool = false
-
-    // Inline selection geometry, image-embed activation, and inline-token
-    // detection live in `NativeTextViewCoordinator+InlineSelection.swift`.
-
     init(text: Binding<String>,
          fontName: String,
-         fontSize: CGFloat,
-         isWikiLinkActive: Binding<Bool>,
-         onLinkClick: ((String) -> Void)?,
-         onInlineSelectionChange: ((InlineSelectionState?) -> Void)?) {
+         fontSize: CGFloat) {
         _text = text
         self.fontName = fontName
         self.fontSize = fontSize
-        _isWikiLinkActive = isWikiLinkActive
-        self.onLinkClick = onLinkClick
-        self.onCaretRectChange = nil
-        self.onInlineSelectionChange = onInlineSelectionChange
         self.lastSyncedText = text.wrappedValue
         super.init()
         // Init + didSet share this helper so the observer tracks whichever service is current.
@@ -421,35 +361,15 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     // Find-in-document highlight handlers live in
     // `NativeTextViewCoordinator+Find.swift`.
 
-    /// Four passes: a remount needs two (empty buffer, then the real content) and
-    /// the header's hosting view can still resolve its height after that.
+    /// Four passes: a remount needs two (empty buffer, then the real content).
     func armScrollRestore(for documentId: String) {
         pendingScrollRestoreDocumentId = documentId
         pendingScrollRestoreAttempts = 4
     }
 
-    func wikiLinkID(for range: NSRange) -> String? {
-        wikiLinkMetadata[WikiLinkService.RangeKey(range)]?.id
-    }
-
-    func storageRange(forDisplayRange range: NSRange) -> NSRange? {
-        wikiLinkMetadata[WikiLinkService.RangeKey(range)]?.storageRange
-    }
-
-    func storageRange(containingDisplayLocation location: Int) -> NSRange? {
-        for (key, value) in wikiLinkMetadata {
-            let displayRange = NSRange(location: key.location, length: key.length)
-            if NSLocationInRange(location, displayRange) {
-                return value.storageRange
-            }
-        }
-        return nil
-    }
-
     // Methods are split across the following extensions:
     //   - +TextDelegate    — NSTextViewDelegate hot path
     //   - +Restyling       — restyle pipeline + parsedDocument cache
-    //   - +InlineSelection — inline-token detection + image-embed activation
     //   - +CodeBlocks      — copy-button overlay
     //   - +Find            — find-in-document highlights
     //   - +Notifications   — bus + appearance bridge

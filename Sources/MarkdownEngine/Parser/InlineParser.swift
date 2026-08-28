@@ -15,7 +15,7 @@
 //    1. scanCodeSpans   — highest precedence, opaque interior.
 //    2. scanEscapes      — `\x` becomes a claimed span, so the escaped char is
 //                          automatically inert for every pass below.
-//    3. scanLinkFamily   — ![[…]], [[…]], ![…](…), […](…) (+ registered
+//    3. scanLinkFamily   — ![…](…), […](…) (+ registered
 //                          extension spans) in precedence order. URLs allow
 //                          balanced parens. A candidate overlapping a claimed
 //                          span is rejected (kept literal), except for opaque
@@ -26,7 +26,7 @@
 //                          claimed span; may wrap claimed spans.
 //    5. buildTree        — containment tree. Emphasis nests already-collected
 //                          spans; link/extension-span content is re-parsed
-//                          recursively; code/image/wiki/embed/escape are
+//                          recursively; code/image/escape are
 //                          opaque leaves.
 //
 //  Claimed spans are therefore either disjoint or properly NESTED — a link
@@ -52,10 +52,6 @@ indirect enum InlineNode: Equatable {
     case link(range: NSRange, textRange: NSRange, url: NSRange, markers: [NSRange], children: [InlineNode])
     /// `![alt](url)`. `markers` is `[ "![", "]", "(", ")" ]`. Alt is opaque.
     case image(range: NSRange, alt: NSRange, url: NSRange, markers: [NSRange])
-    /// `[[Name|id]]`. `markers` is `[ "[[", "]]" ]`; `id` is nil when no `|`.
-    case wikiLink(range: NSRange, name: NSRange, id: NSRange?, markers: [NSRange])
-    /// `![[target]]`. `markers` is `[ "![[", "]]" ]`.
-    case imageEmbed(range: NSRange, target: NSRange, markers: [NSRange])
     /// Backslash escape `\x`; `marker` is the `\`, `character` the now-literal punctuation.
     case escape(range: NSRange, character: NSRange, marker: NSRange)
     /// A span contributed by a registered `MarkdownExtension`
@@ -85,7 +81,6 @@ enum InlineParser {
     private static let rbracket: unichar = 0x5D
     private static let lparen: unichar = 0x28
     private static let rparen: unichar = 0x29
-    private static let pipe: unichar = 0x7C
     private static let backslash: unichar = 0x5C
 
     // MARK: - Entry point
@@ -114,15 +109,13 @@ enum InlineParser {
         case emphasis(kind: EmphasisKind, range: NSRange, open: NSRange, close: NSRange)
         case link(range: NSRange, textRange: NSRange, url: NSRange, markers: [NSRange])
         case image(range: NSRange, alt: NSRange, url: NSRange, markers: [NSRange])
-        case wikiLink(range: NSRange, name: NSRange, id: NSRange?, markers: [NSRange])
-        case imageEmbed(range: NSRange, target: NSRange, markers: [NSRange])
         case escape(range: NSRange, character: NSRange, marker: NSRange)
         case ext(id: String, range: NSRange, contentRange: NSRange, markers: [NSRange], parsesContent: Bool)
 
         var fullRange: NSRange {
             switch self {
             case .code(let r, _), .emphasis(_, let r, _, _), .link(let r, _, _, _),
-                 .image(let r, _, _, _), .wikiLink(let r, _, _, _), .imageEmbed(let r, _, _),
+                 .image(let r, _, _, _),
                  .escape(let r, _, _),
                  .ext(_, let r, _, _, _):
                 return r
@@ -296,9 +289,6 @@ enum InlineParser {
     private static func matchBuiltIn(_ ns: NSString, _ len: Int, at i: Int) -> Span? {
         let c = ns.character(at: i)
         let c1 = peek(ns, i + 1, len)
-        let c2 = peek(ns, i + 2, len)
-        if c == bang, c1 == lbracket, c2 == lbracket { return matchImageEmbed(ns, len, start: i) }
-        if c == lbracket, c1 == lbracket { return matchWikiLink(ns, len, start: i) }
         if c == bang, c1 == lbracket { return matchImage(ns, len, start: i) }
         if c == lbracket { return matchLink(ns, len, start: i) }
         return nil
@@ -350,45 +340,6 @@ enum InlineParser {
         (idx >= 0 && idx < len) ? ns.character(at: idx) : nil
     }
 
-    /// `![[ target ]]`
-    private static func matchImageEmbed(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        let contentStart = i + 3
-        guard let close = closeDoubleBracket(ns, len, from: contentStart) else { return nil }
-        return .imageEmbed(
-            range: NSRange(location: i, length: (close + 2) - i),
-            target: NSRange(location: contentStart, length: close - contentStart),
-            markers: [NSRange(location: i, length: 3), NSRange(location: close, length: 2)]
-        )
-    }
-
-    /// `[[ name (| id)? ]]`
-    private static func matchWikiLink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        let contentStart = i + 2
-        var k = contentStart
-        var pipeIdx = -1
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == pipe, pipeIdx == -1 { pipeIdx = k }
-            if ch == rbracket {
-                guard peek(ns, k + 1, len) == rbracket else { return nil }
-                let range = NSRange(location: i, length: (k + 2) - i)
-                let markers = [NSRange(location: i, length: 2), NSRange(location: k, length: 2)]
-                if pipeIdx >= 0 {
-                    return .wikiLink(range: range,
-                                     name: NSRange(location: contentStart, length: pipeIdx - contentStart),
-                                     id: NSRange(location: pipeIdx + 1, length: k - (pipeIdx + 1)),
-                                     markers: markers)
-                }
-                return .wikiLink(range: range,
-                                 name: NSRange(location: contentStart, length: k - contentStart),
-                                 id: nil, markers: markers)
-            }
-            k += 1
-        }
-        return nil
-    }
-
     /// `![ alt ]( url )`
     private static func matchImage(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
         let altStart = i + 2
@@ -430,17 +381,6 @@ enum InlineParser {
                 NSRange(location: closeParen, length: 1),
             ]
         )
-    }
-
-    private static func closeDoubleBracket(_ ns: NSString, _ len: Int, from: Int) -> Int? {
-        var k = from
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == rbracket { return peek(ns, k + 1, len) == rbracket ? k : nil }
-            k += 1
-        }
-        return nil
     }
 
     private static func findChar(_ ns: NSString, _ len: Int, from: Int, char: unichar) -> Int? {
@@ -621,10 +561,6 @@ enum InlineParser {
                                      children: reparse(textRange, ns: ns, registry: registry)))
             case .image(let range, let alt, let url, let markers):
                 result.append(.image(range: range, alt: alt, url: url, markers: markers))
-            case .wikiLink(let range, let name, let id, let markers):
-                result.append(.wikiLink(range: range, name: name, id: id, markers: markers))
-            case .imageEmbed(let range, let target, let markers):
-                result.append(.imageEmbed(range: range, target: target, markers: markers))
             case .escape(let range, let character, let marker):
                 result.append(.escape(range: range, character: character, marker: marker))
             case .ext(let id, let range, let contentRange, let markers, let parsesContent):
@@ -664,8 +600,6 @@ enum InlineParser {
         case .emphasis(let k, let r, let m, let ch): return .emphasis(k, range: s(r), markers: m.map(s), children: offsetNodes(ch, by: d))
         case .link(let r, let tr, let u, let m, let ch): return .link(range: s(r), textRange: s(tr), url: s(u), markers: m.map(s), children: offsetNodes(ch, by: d))
         case .image(let r, let a, let u, let m): return .image(range: s(r), alt: s(a), url: s(u), markers: m.map(s))
-        case .wikiLink(let r, let n, let id, let m): return .wikiLink(range: s(r), name: s(n), id: id.map(s), markers: m.map(s))
-        case .imageEmbed(let r, let t, let m): return .imageEmbed(range: s(r), target: s(t), markers: m.map(s))
         case .escape(let r, let c, let m): return .escape(range: s(r), character: s(c), marker: s(m))
         case .ext(let n): return .ext(ExtensionInlineNode(
             extensionID: n.extensionID, range: s(n.range), contentRange: s(n.contentRange),

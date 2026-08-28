@@ -19,8 +19,8 @@ import Foundation
 enum PerfTrace {
 #if DEBUG
     static var enabled = ProcessInfo.processInfo.environment["MD_PERF"] != "0"
-    /// Opt-in for the sampled full-rebuild verifier asserts (wiki splice,
-    /// backtick census, parse buffer). They run 3× O(doc) work synchronously
+    /// Opt-in for the sampled full-rebuild verifier asserts (backtick census,
+    /// parse buffer). They run 3× O(doc) work synchronously
     /// on every 64th keystroke — periodic spikes that pollute the PERF
     /// numbers — so they stay off unless explicitly requested.
     static let verifyEnabled = ProcessInfo.processInfo.environment["MD_PERF_VERIFY"] == "1"

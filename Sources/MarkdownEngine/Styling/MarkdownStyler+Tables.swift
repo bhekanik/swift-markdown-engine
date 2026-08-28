@@ -462,9 +462,7 @@ extension MarkdownStyler {
                     .font: codeFont, .backgroundColor: codeBackgroundColor, .foregroundColor: theme.bodyText
                 ]))
             case .link(let range, _, _, _, _),
-                 .image(let range, _, _, _),
-                 .wikiLink(let range, _, _, _),
-                 .imageEmbed(let range, _, _):
+                 .image(let range, _, _, _):
                 appendPlain(range, font)
             }
         }

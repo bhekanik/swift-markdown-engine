@@ -223,13 +223,6 @@ public enum MarkdownHTMLRenderer {
         case .image(_, let alt, let url, _):
             return "<img src=\"\(escape(ns.substring(with: url)))\" alt=\"\(escape(ns.substring(with: alt)))\">"
 
-        case .wikiLink(_, let name, _, _):
-            return escape(ns.substring(with: name))
-
-        case .imageEmbed(_, let target, _):
-            let t = escape(ns.substring(with: target))
-            return "<img src=\"\(t)\" alt=\"\(t)\">"
-
         case .ext(let node):
             guard let ext = env.byID[node.extensionID] else {
                 return escape(ns.substring(with: node.range))   // unknown id → literal

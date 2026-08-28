@@ -21,9 +21,6 @@ extension NSAttributedString.Key {
 }
 
 extension NativeTextViewCoordinator {
-    /// Legacy path: the host computes match ranges and posts them. Kept for compatibility, but
-    /// it trusts SOURCE-coordinate ranges, which misalign wherever the displayed text is shorter
-    /// than the source (node links etc.). Prefer `handleFindQuery`.
     @objc func handleFindScrollToRange(_ notification: Notification) {
         guard let info = notification.userInfo,
               let currentIndex = info["currentIndex"] as? Int,
@@ -31,10 +28,6 @@ extension NativeTextViewCoordinator {
         renderFindMatches(allRanges, currentIndex: currentIndex)
     }
 
-    /// Find against the engine's OWN displayed text (`tv.string`). Matches are computed in
-    /// DISPLAY coordinates, so highlights land correctly even where the displayed text differs
-    /// from the source (node links rendered shorter than `[[Name|UUID]]`, images). Posts
-    /// the match count back via `bus.findResults` so the host can show "x of y".
     @objc func handleFindQuery(_ notification: Notification) {
         guard let tv = textView,
               let info = notification.userInfo,
@@ -53,7 +46,7 @@ extension NativeTextViewCoordinator {
         postFindResults(count: allRanges.count)
     }
 
-    /// All ranges of `query` in `haystack` (display coordinates), case- and
+    /// All ranges of `query` in `haystack` (file coordinates), case- and
     /// diacritic-insensitive. Shared by find and replace.
     func findMatches(of query: String, in haystack: NSString) -> [NSRange] {
         guard !query.isEmpty else { return [] }

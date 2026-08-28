@@ -25,10 +25,6 @@ struct ContentView: View {
     // Base font size; all relative sizing (headings, code) tracks it.
     @State private var fontSize: CGFloat = 16
 
-    // Scroll-away header demo.
-    @State private var showHeader = false
-    @State private var headerExpanded = true
-
     var body: some View {
         NativeTextViewWrapper(
             text: $text,
@@ -41,10 +37,7 @@ struct ContentView: View {
                     .font: NSFont.systemFont(ofSize: fontSize),
                     .foregroundColor: NSColor.secondaryLabelColor,
                 ]
-            ),
-            header: showHeader ? AnyView(demoHeader) : nil,
-            headerCollapsedHeight: 40,
-            headerExpanded: headerExpanded
+            )
         )
         // `readingWidth` is applied when the underlying NSView is built, so
         // flipping the reading column recreates the editor via `.id`. The
@@ -88,38 +81,8 @@ struct ContentView: View {
                     .disabled(fontSize >= 28)
                 }
                 .help("Base font size — headings and code scale relative to it")
-
-                Menu {
-                    Toggle("Show header", isOn: $showHeader)
-                    Toggle("Expanded", isOn: $headerExpanded)
-                        .disabled(!showHeader)
-                } label: {
-                    Label("Header", systemImage: "rectangle.topthird.inset.filled")
-                }
-                .help("Scroll-away header: an embedder-supplied SwiftUI view hosted above the document")
             }
         }
-    }
-
-    /// Sample scroll-away header: a fixed top row (kept visible when collapsed)
-    /// plus detail rows that reveal/hide with the `headerExpanded` toggle.
-    private var demoHeader: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Scroll-away header").font(.headline)
-                Spacer()
-            }
-            .frame(height: 40)   // == headerCollapsedHeight: the always-visible row
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("These rows clip away when the header collapses.")
-                Text("The header scrolls with the document body and stays fully interactive.")
-                    .foregroundStyle(.secondary)
-            }
-            .font(.callout)
-            .padding(.bottom, 12)
-        }
-        .padding(.horizontal, 16)
     }
 
     private var configuration: MarkdownEditorConfiguration {

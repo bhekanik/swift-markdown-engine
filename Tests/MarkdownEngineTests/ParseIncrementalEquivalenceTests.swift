@@ -41,14 +41,13 @@ struct ParseIncrementalEquivalenceTests {
         "> a blockquote line",
         "| a | b |", "|---|---|", "| 1 | 2 |",
         "```swift", "let x = 1", "```",
-        "A [[Wiki Link]] and ==highlight== and ~~strike~~.",
-        "An ![[embed.png]] image.",
+        "A ==highlight== and ~~strike~~.",
         "",
     ]
 
     private static let editSnippets = [
         "x", "ab", " ", "\n", "`", "``", "```", "**", "- ", "# ",
-        "| c |", "[[N]]", "\n\n", "word and more",
+        "| c |", "\n\n", "word and more",
     ]
 
     private func makeDoc(_ rng: inout Rng, lines: Int) -> String {

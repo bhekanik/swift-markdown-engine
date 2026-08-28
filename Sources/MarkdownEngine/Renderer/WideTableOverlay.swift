@@ -272,8 +272,8 @@ extension NativeTextView {
             guard !anchorRect.isEmpty else { return }
 
             let totalHeight = (storage.attribute(.scrollableBlockTotalHeight, at: attrRange.location, effectiveRange: nil) as? CGFloat) ?? image.size.height
-            // In breakout the overlay lives in the container, so add the column's X
-            // offset and the text view's Y offset (the scroll-away header band).
+            // In breakout the overlay lives in the container, so add the column's
+            // offset.
             let columnLeft = (breakout ? frame.origin.x : 0) + textContainerOrigin.x + anchorRect.minX
             let breakoutTop = frame.origin.y + textContainerOrigin.y + anchorRect.minY
             let overlayFrame: NSRect = breakout

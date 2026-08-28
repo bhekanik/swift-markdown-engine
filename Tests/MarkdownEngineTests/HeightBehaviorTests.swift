@@ -102,31 +102,6 @@ struct FitsContentInflationTests {
         #expect(stack.container.frame.height == 100)
     }
 
-    @Test func fitsContentRestackNoInflation() {
-        let stack = HeightBehaviorStack(heightBehavior: .fitsContent)
-        stack.textView.baseContentHeight = 200
-        stack.textView.applyManagedFrameSize(width: 600)
-
-        // With a header band, the container should still be exactly header + text.
-        stack.container.headerHeight = 40
-
-        let expectedTextHeight = stack.textView.frame.height
-        let expectedContainerHeight = 40 + expectedTextHeight
-        #expect(stack.container.frame.height == expectedContainerHeight)
-    }
-
-    @Test func scrollsRestackInflatesToViewport() {
-        let stack = HeightBehaviorStack(heightBehavior: .scrolls)
-        stack.textView.baseContentHeight = 100
-        stack.textView.applyManagedFrameSize(width: 600)
-
-        // The container inflates to viewport height.
-        #expect(stack.container.frame.height == 800)
-
-        // Adding a header still keeps the container at viewport height.
-        stack.container.headerHeight = 40
-        #expect(stack.container.frame.height == 800)
-    }
 }
 
 // MARK: - Overscroll zeroing
@@ -200,17 +175,6 @@ struct ClampedScrollViewFitsContentTests {
         #expect(intrinsic.height == NSView.noIntrinsicMetric)
     }
 
-    @Test func intrinsicContentSizeIncludesHeaderHeight() {
-        let stack = HeightBehaviorStack(heightBehavior: .fitsContent)
-        stack.textView.baseContentHeight = 300
-        stack.textView.applyManagedFrameSize(width: 600)
-        stack.container.headerHeight = 50
-
-        let intrinsic = stack.scrollView.intrinsicContentSize
-        // scrollableContentHeight = headerHeight + textView.scrollableContentHeight
-        #expect(intrinsic.height == stack.container.scrollableContentHeight)
-        #expect(intrinsic.height == 50 + stack.textView.scrollableContentHeight)
-    }
 }
 
 // MARK: - Runtime heightBehavior switch
@@ -373,41 +337,6 @@ struct FitsContentEmptyDocMinHeightTests {
     }
 }
 
-// MARK: - Header + fitsContent height composition
-
-@MainActor
-@Suite("Header + fitsContent height")
-struct HeaderFitsContentTests {
-
-    @Test func staticHeaderIncludedInScrollableContentHeight() {
-        let stack = HeightBehaviorStack(heightBehavior: .fitsContent)
-        stack.textView.baseContentHeight = 300
-        stack.textView.applyManagedFrameSize(width: 600)
-        stack.container.headerHeight = 60
-
-        // scrollableContentHeight = header + text view's scrollableContentHeight
-        let expectedTotal: CGFloat = 60 + 300
-        #expect(stack.container.scrollableContentHeight == expectedTotal)
-        // Container frame matches exactly (no viewport inflation).
-        #expect(stack.container.frame.height == expectedTotal)
-        // Text view sits below the header.
-        #expect(stack.textView.frame.origin.y == 60)
-    }
-
-    @Test func headerChangeReReportsIntrinsicSize() {
-        let stack = HeightBehaviorStack(heightBehavior: .fitsContent)
-        stack.textView.baseContentHeight = 300
-        stack.textView.applyManagedFrameSize(width: 600)
-
-        let beforeHeader = stack.scrollView.intrinsicContentSize.height
-        stack.container.headerHeight = 80
-        let afterHeader = stack.scrollView.intrinsicContentSize.height
-
-        // Adding a header should increase the reported height by the header band.
-        #expect(afterHeader == beforeHeader + 80)
-    }
-}
-
 // MARK: - Scroll-wheel forwarding
 
 @MainActor
@@ -544,22 +473,6 @@ struct AsyncHeightChangeTests {
         #expect(stack.textView.frame.height == 800)
     }
 
-    @Test func asyncChangeWithHeaderUpdatesTotal() {
-        // Async height change with a header band present.
-        let stack = HeightBehaviorStack(heightBehavior: .fitsContent)
-        stack.textView.baseContentHeight = 200
-        stack.textView.applyManagedFrameSize(width: 600)
-        stack.container.headerHeight = 60
-
-        // Simulate async growth.
-        stack.textView.baseContentHeight = 400
-        stack.textView.applyManagedFrameSize(width: 600)
-
-        let expectedTotal: CGFloat = 60 + 400
-        #expect(stack.textView.frame.height == 400)
-        #expect(stack.container.frame.height == expectedTotal)
-        #expect(stack.scrollView.intrinsicContentSize.height == expectedTotal)
-    }
 }
 
 // MARK: - Per-keystroke recalc chain
@@ -783,32 +696,4 @@ struct FullRuntimeReconfigurationTests {
         #expect(stack.textView.frame.height == 800)
     }
 
-    @Test func switchWithHeaderPreservesTotal() {
-        // With a header band, switching should preserve the total
-        // scrollableContentHeight composition.
-        let stack = HeightBehaviorStack(
-            viewport: NSSize(width: 600, height: 800),
-            heightBehavior: .fitsContent
-        )
-        stack.textView.baseContentHeight = 250
-        stack.textView.applyManagedFrameSize(width: 600)
-        stack.container.headerHeight = 50
-
-        let expectedTotal: CGFloat = 50 + 250
-        #expect(stack.container.scrollableContentHeight == expectedTotal)
-
-        // Switch to .scrolls.
-        var sc = stack.textView.configuration
-        sc.heightBehavior = .scrolls
-        stack.textView.configuration = sc
-        stack.scrollView.fitsContent = false
-        stack.textView.reapplyOverscrollPolicy(for: stack.scrollView)
-        stack.textView.applyManagedFrameSize(width: 600)
-
-        // scrollableContentHeight still composes header + content.
-        // (The container inflates to viewport, but scrollableContentHeight
-        // is the real content height, used by clampToInsets.)
-        let scrollsTotal: CGFloat = 50 + stack.textView.scrollableContentHeight
-        #expect(stack.container.scrollableContentHeight == scrollsTotal)
-    }
 }

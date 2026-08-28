@@ -9,7 +9,7 @@
 // is now produced by the AST-native styler (`MarkdownASTStyler`); this type
 // builds the `StylingContext` and runs the NSImage rendering passes that still
 // consume tokens:
-//   - MarkdownStyler+Images.swift  (image embeds / image links)
+//   - MarkdownStyler+Images.swift  (image links)
 //   - MarkdownStyler+Tables.swift  (rendered tables)
 import AppKit
 import Foundation
@@ -24,7 +24,6 @@ extension MarkdownStyler {
     /// reused across keystrokes. Lets the NSImage passes iterate a small,
     /// scope-sliced array instead of walking every document token per pass.
     struct ClassifiedStyleTokens {
-        let imageEmbed: [IndexedToken]
         let imageLink: [IndexedToken]
         let table: [IndexedToken]
         let code: [MarkdownToken]   // codeBlock + inlineCode, for isInsideCodeBlock checks
@@ -41,7 +40,6 @@ extension MarkdownStyler {
         let codeBackgroundColor: NSColor
         let hiddenMarkerFont: NSFont
         let configuration: MarkdownEditorConfiguration
-        let wikiLinkIDProvider: (NSRange) -> String?
         /// Union bounds of the restyle's paragraph scope; nil = whole document
         /// (initial load). Attribute application clips per paragraph anyway,
         /// so the NSImage passes can skip tokens wholly outside these bounds
@@ -55,7 +53,6 @@ extension MarkdownStyler {
 
         // Per-kind indexed arrays: the cached classification, or a one-off
         // classification of `tokens` when a direct caller passed none.
-        var imageEmbedIndexed: [IndexedToken] { classified?.imageEmbed ?? Self.indexed(tokens, .imageEmbed) }
         var imageLinkIndexed: [IndexedToken] { classified?.imageLink ?? Self.indexed(tokens, .imageLink) }
         var tableIndexed: [IndexedToken] { classified?.table ?? Self.indexed(tokens, .table) }
 
@@ -197,7 +194,6 @@ enum MarkdownStyler {
         caretLocation: Int,
         selection: NSRange? = nil,
         activeTokenIndices: Set<Int>,
-        wikiLinkIDProvider: @escaping (NSRange) -> String? = { _ in nil },
         precomputedTokens: [MarkdownToken]? = nil,
         classified: ClassifiedStyleTokens? = nil,
         precomputedBlocks: [Block]? = nil,
@@ -232,7 +228,6 @@ enum MarkdownStyler {
             hiddenMarkerFont: NSFont(name: fontName, size: hiddenMarkerSize)
                 ?? NSFont.systemFont(ofSize: hiddenMarkerSize),
             configuration: configuration,
-            wikiLinkIDProvider: wikiLinkIDProvider,
             scopeBounds: scopeBounds,
             classified: classified
         )
@@ -242,14 +237,13 @@ enum MarkdownStyler {
         let astT0 = DispatchTime.now().uptimeNanoseconds
         result += MarkdownASTStyler.styleAttributes(
             text: text, fontName: fontName, fontSize: fontSize,
-            caretLocation: caretLocation, selection: selection, wikiLinkIDProvider: wikiLinkIDProvider,
+            caretLocation: caretLocation, selection: selection,
             scopedRanges: scopedRanges, precomputedBlocks: precomputedBlocks,
             configuration: configuration
         )
         let astMs = Double(DispatchTime.now().uptimeNanoseconds - astT0) / 1_000_000
         // NSImage rendering reuses the existing, proven machinery.
         let imgT0 = DispatchTime.now().uptimeNanoseconds
-        result += styleImageEmbeds(ctx)
         result += styleImageLinks(ctx)
         let imgMs = Double(DispatchTime.now().uptimeNanoseconds - imgT0) / 1_000_000
         result += styleTables(ctx)

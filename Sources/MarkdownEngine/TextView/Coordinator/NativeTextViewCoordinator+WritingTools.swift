@@ -53,22 +53,14 @@ extension NativeTextViewCoordinator {
         wtUndoneDuringSession = false
         wtPostUndoSnapshot = nil
 
-        let storageState = WikiLinkService.makeStorageState(
-            from: sourceText,
-            existingMetadata: wikiLinkMetadata,
-            textStorage: textView.textStorage
-        )
-        wikiLinkMetadata = storageState.metadata
-        let storage = storageState.storage
-
-        // Binding is already equal to `storage` after undo so SwiftUI won't re-render — rebuild the textView directly.
+        // Binding is already equal to `sourceText` after undo so SwiftUI won't re-render — rebuild the textView directly.
         if undoDuringSession {
-            rebuildTextStorageAndStyle(textView, from: storage)
+            rebuildTextStorageAndStyle(textView, from: sourceText)
         }
         // Don't pre-set `lastSyncedText` — leaving it stale lets updateNSView do its
         // normal rebuild (restyle + re-measure) so the accepted WT result stays visible.
         DispatchQueue.main.async { [self] in
-            text = storage
+            text = sourceText
         }
     }
 

@@ -54,15 +54,10 @@ extension NativeTextViewCoordinator {
     /// almost all of those into one patch through `applyProgrammaticPatch`,
     /// which preserves the caret and restyles only the touched paragraphs.
     ///
-    /// - Returns: `false` when the change cannot be expressed as one splice
-    ///   (a wiki-link display transform is in effect, or the diff is most of
-    ///   the document); the caller then falls back to the full rebuild.
+    /// - Returns: `false` when the diff is most of the document; the caller
+    ///   then falls back to the full rebuild.
     func spliceExternalText(_ newText: String, in textView: NSTextView) -> Bool {
-        // Display must equal storage, or the diff is computed in the wrong
-        // coordinate system. Raw mode is identity by definition; otherwise the
-        // check is whether the wiki transform actually changed anything.
         let currentDisplay = textView.string
-        guard configuration.rawSourceMode || lastComputedStorage == currentDisplay else { return false }
         guard currentDisplay != newText else { return true }
 
         let old = currentDisplay as NSString

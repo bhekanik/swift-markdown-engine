@@ -37,8 +37,7 @@ struct TableScopeSkipTests {
             baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor,
             hiddenMarkerFont: font,
-            configuration: .default,
-            wikiLinkIDProvider: { _ in nil }
+            configuration: .default
         )
         ctx.scopeBounds = scopeBounds
         return ctx

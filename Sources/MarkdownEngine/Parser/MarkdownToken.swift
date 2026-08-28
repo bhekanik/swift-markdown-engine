@@ -11,7 +11,6 @@ import AppKit
 import Foundation
 
 extension NSAttributedString.Key {
-    public static let wikiLinkID = NSAttributedString.Key("NodeLinkID")
     public static let taskCheckbox = NSAttributedString.Key("TaskCheckbox")
 }
 
@@ -20,13 +19,11 @@ enum MarkdownTokenKind: Equatable {
     case boldItalic
     case bold
     case link
-    case wikiLink
     case heading
     /// One blockquote line; `markerRanges[0]` is the `>` run, nesting = count of `>`.
     case blockquote
     case codeBlock
     case inlineCode
-    case imageEmbed
     case imageLink
     case table
     /// A CommonMark backslash escape; marker is the `\`, content the escaped literal char.

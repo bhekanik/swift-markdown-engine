@@ -41,7 +41,6 @@ struct EditorControllerPatchTests {
         coordinator.textView = textView
         coordinator.rebuildTextStorageAndStyle(textView, from: text)
         coordinator.lastSyncedText = text
-        coordinator.lastComputedStorage = text
         coordinator.previousDisplayLength = (text as NSString).length
         coordinator.didInitialFormatting = true
         controller.attach(textView: textView, coordinator: coordinator)
@@ -211,8 +210,7 @@ struct EditorControllerPatchTests {
         #expect(controller.textView == nil)
 
         let coordinator = NativeTextViewCoordinator(
-            text: .constant(""), fontName: "SF Pro", fontSize: 16,
-            isWikiLinkActive: .constant(false), onLinkClick: nil, onInlineSelectionChange: nil
+            text: .constant(""), fontName: "SF Pro", fontSize: 16
         )
         let textView = NativeTextView(frame: .zero)
         controller.attach(textView: textView, coordinator: coordinator)

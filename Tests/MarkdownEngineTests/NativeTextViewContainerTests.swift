@@ -2,8 +2,8 @@
 //  NativeTextViewContainerTests.swift
 //  MarkdownEngineTests
 //
-//  The container document view: header-band stacking, scrollable-height
-//  composition, and reading-column centering — headless (no window).
+//  The container document view: scrollable-height composition and
+//  reading-column centering — headless (no window).
 //
 
 import AppKit
@@ -43,21 +43,6 @@ struct NativeTextViewContainerTests {
         return Stack(scrollView: scrollView, container: container, textView: textView)
     }
 
-    @Test func headerBandMovesTextViewBelowIt() {
-        let stack = makeStack()
-        stack.textView.baseContentHeight = 900
-        stack.textView.applyManagedFrameSize(width: 600)
-        #expect(stack.textView.frame.height == 900)
-
-        stack.container.headerHeight = 40
-
-        #expect(stack.textView.frame.origin.y == 40)
-        // Band changes re-run the overscroll policy — assert slack-agnostic
-        // stacking so policy tuning can't break this test.
-        #expect(stack.textView.frame.height == 900 + stack.textView.activeBottomOverscroll)
-        #expect(stack.container.frame.height == 40 + stack.textView.frame.height)
-    }
-
     @Test func containerNeverShrinksBelowViewport() {
         let stack = makeStack()
         stack.textView.baseContentHeight = 100
@@ -78,20 +63,6 @@ struct NativeTextViewContainerTests {
         #expect(stack.container.frame.height == 800)
     }
 
-    @Test func scrollableContentHeightComposesHeaderAndContent() {
-        let stack = makeStack()
-        stack.textView.baseContentHeight = 500
-        stack.textView.activeBottomOverscroll = 60
-
-        stack.container.headerHeight = 40
-
-        // The band change re-runs the policy (slack > primed 60), while the primed
-        // base content height must survive un-clobbered (no re-measure).
-        #expect(stack.textView.activeBottomOverscroll > 60)
-        #expect(stack.container.scrollableContentHeight
-            == 40 + 500 + stack.textView.activeBottomOverscroll)
-    }
-
     @Test func readingColumnKeepsCenteredXThroughRestacks() {
         let stack = makeStack(readingWidth: 400)
         stack.textView.baseContentHeight = 500
@@ -100,10 +71,6 @@ struct NativeTextViewContainerTests {
         let expectedX = floor((600 - stack.textView.readingColumnWidth) / 2)
         #expect(stack.textView.frame.origin.x == expectedX)
 
-        // A height-only restack (header change) must not reset the centered X.
-        stack.container.headerHeight = 40
-        #expect(stack.textView.frame.origin.x == expectedX)
-        #expect(stack.textView.frame.origin.y == 40)
     }
 
     @Test func viewportWidthChangeRecentersReadingColumn() {
@@ -118,30 +85,6 @@ struct NativeTextViewContainerTests {
         #expect(stack.textView.frame.origin.x == expectedX)
         // The column keeps its fixed width — only its position moves.
         #expect(stack.textView.frame.width == stack.textView.readingColumnWidth)
-    }
-
-    @Test func headerGrowthOnShortDocAddsNoPhantomScrollRange() {
-        let stack = makeStack()
-        stack.textView.baseContentHeight = 100
-        stack.textView.applyManagedFrameSize(width: 600)
-        #expect(stack.container.frame.height == 800)
-
-        // Reserving a header band must re-apply the viewport-fill inflation:
-        // header + text view == viewport, otherwise a short doc grows a
-        // phantom scroll range (spurious scroller, clamp-fighting jitter).
-        stack.container.headerHeight = 40
-        #expect(stack.textView.frame.height == 760)
-        #expect(stack.container.frame.height == 800)
-
-        // Expanding the header (animation drives headerHeight per frame).
-        stack.container.headerHeight = 300
-        #expect(stack.textView.frame.height == 500)
-        #expect(stack.container.frame.height == 800)
-
-        // Collapsing back restores the band split.
-        stack.container.headerHeight = 40
-        #expect(stack.textView.frame.height == 760)
-        #expect(stack.container.frame.height == 800)
     }
 
     @Test func fullWidthModePropagatesViewportWidth() {

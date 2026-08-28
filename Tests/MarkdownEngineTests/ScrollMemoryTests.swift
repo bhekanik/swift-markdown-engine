@@ -17,14 +17,10 @@ import Testing
 @MainActor
 private func makeCoordinator(documentId: String?) -> NativeTextViewCoordinator {
     var text = ""
-    var wikiActive = false
     let coordinator = NativeTextViewCoordinator(
         text: Binding(get: { text }, set: { text = $0 }),
         fontName: "SF Pro",
-        fontSize: 16,
-        isWikiLinkActive: Binding(get: { wikiActive }, set: { wikiActive = $0 }),
-        onLinkClick: nil,
-        onInlineSelectionChange: nil
+        fontSize: 16
     )
     coordinator.documentId = documentId
     return coordinator

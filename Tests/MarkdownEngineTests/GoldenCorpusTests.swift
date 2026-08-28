@@ -135,24 +135,6 @@ Siehe [Anthropic](https://anthropic.com) hier.
 """#
         ),
         GoldenEntry(
-            name: "wiki-link",
-            markdown: #"""
-Verweis auf [[Mein Node|ABC-123]] fertig.
-"""#,
-            baselineHTML: #"""
-<p>Verweis auf Mein Node fertig.</p>
-"""#
-        ),
-        GoldenEntry(
-            name: "image-embed",
-            markdown: #"""
-![[bild.png|ABC|300]]
-"""#,
-            baselineHTML: #"""
-<p><img src="bild.png|ABC|300" alt="bild.png|ABC|300"></p>
-"""#
-        ),
-        GoldenEntry(
             name: "strikethrough",
             markdown: #"""
 Alt ~~gestrichen~~ neu.

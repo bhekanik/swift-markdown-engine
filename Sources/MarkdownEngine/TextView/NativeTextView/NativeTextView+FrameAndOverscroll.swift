@@ -55,8 +55,7 @@ extension NativeTextView {
         applyManagedFrameSize(width: targetWidth ?? frame.size.width)
     }
 
-    /// Re-run the policy with the CURRENT base content height — no TextKit
-    /// re-measure. For header-band changes (runs per animation frame).
+    /// Re-run the policy with the current base content height without re-measuring.
     func reapplyOverscrollPolicy(for scrollView: NSScrollView) {
         let lineHeight = layoutBridgeDefaultLineHeight(for: self.baseFont, using: layoutBridge)
         let resolved = resolvedOverscroll(
@@ -69,8 +68,6 @@ extension NativeTextView {
         applyManagedFrameSize(width: frame.size.width)
     }
 
-    /// Shared policy evaluation, including the header band stacked above the text —
-    /// without it, a short text under an expanded band gets no slack.
     private func resolvedOverscroll(
         baseContentHeight: CGFloat,
         visibleHeight: CGFloat,
@@ -78,7 +75,6 @@ extension NativeTextView {
     ) -> CGFloat {
         // Overscroll is a scroll-comfort affordance; meaningless without internal scrolling.
         guard configuration.heightBehavior == .scrolls else { return 0 }
-        let headerHeight = (superview as? NativeTextViewContainer)?.headerHeight ?? 0
         let policy = BottomOverscrollPolicy(
             overscrollPercent: overscrollPercent,
             minOverscrollPoints: minOverscrollPoints,
@@ -88,7 +84,6 @@ extension NativeTextView {
         )
         return policy.activeOverscroll(
             baseContentHeight: baseContentHeight,
-            headerHeight: headerHeight,
             visibleHeight: visibleHeight,
             lineHeight: lineHeight
         )
@@ -197,11 +192,7 @@ extension NativeTextView {
         let height: CGFloat
         switch configuration.heightBehavior {
         case .scrolls:
-            // The container stacks a header band ABOVE this text view, so the text view only
-            // needs to fill the viewport MINUS that band for the whole document view to fill
-            // the viewport on short docs (header + textView ≥ viewport).
-            let headerH = (superview as? NativeTextViewContainer)?.headerHeight ?? 0
-            let scrollViewHeight = max((enclosingScrollView?.contentView.bounds.height ?? 0) - headerH, 0)
+            let scrollViewHeight = enclosingScrollView?.contentView.bounds.height ?? 0
             height = max(contentHeight, scrollViewHeight)
         case .fitsContent:
             height = contentHeight
@@ -219,12 +210,11 @@ extension NativeTextView {
         isApplyingManagedFrameSize = true
         super.setFrameSize(targetSize)
         isApplyingManagedFrameSize = false
-        // Tell the container our height changed so it can re-stack (move us below the
-        // header) and size itself. Re-entrancy is guarded inside the container.
+        // Tell the container our height changed so it can size itself.
         (superview as? NativeTextViewContainer)?.textViewDidResize()
 
         // Nudge SwiftUI to re-query sizeThatFits when content height changes outside
-        // the text binding (e.g. image load, font-size change, header band).
+        // the text binding (e.g. font-size change).
         if configuration.heightBehavior == .fitsContent {
             enclosingScrollView?.invalidateIntrinsicContentSize()
         }
@@ -339,11 +329,7 @@ extension NativeTextView {
         tlm.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
             let cv = scrollView.contentView
             let insetsTop = scrollView.contentInsets.top
-            // Reveal the CARET's line, not the whole layout fragment. An active image embed
-            // renders its block below the source line via paragraphSpacing, so layoutFragmentFrame is
-            // as tall as the image; revealing its maxY would scroll the viewport down by the block
-            // height even though the caret sits on the source line at the top. Frames are text-view-
-            // local; lift by the text view's offset inside the container (the header band).
+            // Reveal the CARET's line, not the whole layout fragment.
             var revealRect = fragment.layoutFragmentFrame
             // Reveal the ACTUAL caret location's segment (not the stepped-back revealOffset), so a
             // freshly soft-wrapped last line at the document end still scrolls into view; fall back to

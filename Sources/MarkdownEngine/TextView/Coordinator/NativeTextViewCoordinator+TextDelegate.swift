@@ -5,7 +5,7 @@
 //  Created by Luca Chen on 16.03.26.
 //
 //  The hot NSTextViewDelegate path: keystroke handling, selection-change
-//  reaction, link-click forwarding, and the typing-attributes shim that
+//  reaction and the typing-attributes shim that
 //  prevents AppKit from leaking heading paragraphStyle into the trailing
 //  extra-line fragment. Restyle scoping (which paragraphs to re-tokenize on
 //  each event) lives here too — it sets up the inputs that
@@ -98,7 +98,7 @@ extension NativeTextViewCoordinator {
         pendingScrollRestoreDocumentId = nil
         // Before the early returns: the first keystroke must hide the placeholder.
         (tv as? NativeTextView)?.refreshPlaceholderVisibility()
-        // Raw mode: display IS storage — sync the binding, skip the restyle.
+        // Raw mode: sync the binding, skip the restyle.
         if configuration.rawSourceMode {
             pendingEditCount = 0
             pendingEditedRange = nil
@@ -151,8 +151,7 @@ extension NativeTextViewCoordinator {
         previousSelectedRange = safeSelRange
         PerfTrace.begin(docLength: fullLength)
 
-        // Edit descriptor, hoisted above the wiki sync so both it and the
-        // paragraph scoping below share it.
+        // Edit descriptor shared by the parse and paragraph scoping below.
         let editedRange = pendingEditedRange ?? tv.textStorage?.editedRange ?? safeSelRange
         pendingEditedRange = nil
         // Exactly one proposed edit since the last completed cycle means the
@@ -177,42 +176,11 @@ extension NativeTextViewCoordinator {
             parseGeneration &+= 1
         }
 
-        if !wtActive {
-            let storageState = PerfTrace.measure("wiki") {
-                WikiLinkService.updatedStorageState(
-                    displayText: docString,
-                    editedRange: editedRange,
-                    changeInLength: lengthDelta,
-                    previousStorage: lastComputedStorage,
-                    previousMetadata: wikiLinkMetadata
-                ) ?? WikiLinkService.makeStorageState(
-                    from: docString,
-                    existingMetadata: wikiLinkMetadata,
-                    textStorage: tv.textStorage
-                )
-            }
-            self.wikiLinkMetadata = storageState.metadata
-            self.lastComputedStorage = storageState.storage
-#if DEBUG
-            // Sampled safety net: every 64th keystroke, prove the splice equals
-            // a full rebuild. Opt-in (MD_PERF_VERIFY=1) — the O(doc) rebuild
-            // spikes pollute the PERF numbers. Remove with PerfTrace after sign-off.
-            wikiVerifyCounter &+= 1
-            if PerfTrace.verifyEnabled, wikiVerifyCounter % 64 == 0 {
-                let reference = WikiLinkService.makeStorageState(
-                    from: docString,
-                    existingMetadata: wikiLinkMetadata,
-                    textStorage: tv.textStorage
-                )
-                assert(reference.storage == storageState.storage,
-                       "wiki incremental splice diverged from full rebuild")
-            }
-#endif
-            if storageState.storage != self.lastSyncedText {
-                DispatchQueue.main.async {
-                    self.lastSyncedText = storageState.storage
-                    self.text = storageState.storage
-                }
+        if !wtActive, tv.string != lastSyncedText {
+            let changedText = tv.string
+            DispatchQueue.main.async {
+                self.lastSyncedText = changedText
+                self.text = changedText
             }
         }
 
@@ -263,7 +231,6 @@ extension NativeTextViewCoordinator {
         activeTokenIndices = PerfTrace.measure("activeTok") {
             activeTokenIndices(parsed: parsed, selection: safeSelRange, in: fullText, suppressed: !tv.isEditable)
         }
-        filterImageEmbedActiveTokens(parsed: parsed, text: fullText, selectionLocation: safeSelRange.location)
         updateAutocorrectSettings(
             tv,
             caretLocation: safeSelRange.location,
@@ -283,21 +250,6 @@ extension NativeTextViewCoordinator {
         if codeBlockStructureChanged || extFenceStructureChanged {
             effectiveParagraphCandidates = [NSRange(location: 0, length: fullText.length)]
         }
-        // Restyle only imageEmbed paragraphs the EDIT touches (mirrors the
-        // table loop below). Blanket-restyling every such paragraph made
-        // scopeBounds span the whole document, which defeated the per-pass
-        // scope culling in the styler.
-        let imageEmbedParagraphs = PerfTrace.measure("imageMap") { () -> [NSRange] in
-            var out: [NSRange] = []
-            // Binary-searched slices — the old loops walked each array from
-            // the document head to the edit on every keystroke.
-            for (_, token) in MarkdownStyler.scopedSlice(parsed.classified.imageEmbed, lo: safeEditedRange.location, hi: NSMaxRange(safeEditedRange))
-            where NSIntersectionRange(token.range, safeEditedRange).length > 0 {
-                out.append(fullText.paragraphRange(for: token.range))
-            }
-            return out
-        }
-        effectiveParagraphCandidates.append(contentsOf: imageEmbedParagraphs)
         // A table renders as ONE image anchored on the block's FIRST paragraph.
         // When an edit touches any of its rows (typing in a row, or a paste
         // that merges into an existing table), the styler re-emits the anchor
@@ -388,7 +340,7 @@ extension NativeTextViewCoordinator {
 
     public func textViewDidChangeSelection(_ notification: Notification) {
         guard let tv = notification.object as? NSTextView else { return }
-        // Raw mode: plain source — no reveal, snap-back, or inline previews.
+        // Raw mode: plain source — no reveal.
         if configuration.rawSourceMode { return }
         if isWritingToolsActive { return }
         PerfTrace.checkpoint("selIn")
@@ -407,16 +359,12 @@ extension NativeTextViewCoordinator {
         // ONE bridge of the document text — this handler fires on every
         // keystroke (mid-edit) and every caret move, and used to re-copy
         // `tv.string` (O(doc) each) at a dozen separate sites below. The
-        // snap-back branch mutates the text and re-reads explicitly.
         let docText = tv.string
         let nsText = docText as NSString
         // Mouse-/Wake-Fokus auf Link: kein Preview, erst Navigation. Gilt für alle Nicht-Key-Events.
         if currentEventType != .keyDown,
            selRange.location < nsText.length,
            tv.textStorage?.attribute(.link, at: selRange.location, effectiveRange: nil) != nil {
-            isImageEmbedActive = false
-            isWikiLinkActive = false
-            onInlineSelectionChange?(nil)
             return
         }
         PerfTrace.measure("selStates") { updateSelectionStates(tv, nsText: nsText) }
@@ -441,7 +389,6 @@ extension NativeTextViewCoordinator {
         let prevActive = activeTokenIndices
         PerfTrace.measure("selActive") {
             activeTokenIndices = activeTokenIndices(parsed: parsed, selection: selRange, in: nsText, suppressed: !tv.isEditable)
-            filterImageEmbedActiveTokens(parsed: parsed, text: nsText, selectionLocation: selRange.location)
         }
 
         // The caret takes the ink of the span it sits in — an inverted highlight
@@ -454,42 +401,6 @@ extension NativeTextViewCoordinator {
         if caretInk != resolvedCaretColor {
             resolvedCaretColor = caretInk
             if tv.isEditable { tv.insertionPointColor = caretInk }
-        }
-
-        // Snap-back: when the caret LEFT a wiki/image token, re-sync its displayed name to the live target name.
-        if selRange.length == 0,
-           currentEventType != .leftMouseDragged, currentEventType != .periodic,
-           !isProgrammaticEdit, !tv.hasMarkedText() {
-            let leftTokens = prevActive.subtracting(activeTokenIndices)
-            for idx in leftTokens.sorted() where idx >= 0 && idx < tokens.count {
-                let token = tokens[idx]
-                guard token.kind == .wikiLink || token.kind == .imageEmbed else { continue }
-                if let newCaret = resyncWikiLinkNameOnLeave(tv, token: token, caretLoc: selRange.location) {
-                    // Dismiss any inline preview before the early return (the nested setSelectedRange
-                    // re-entry recomputes it for the final caret, but clear it here too — mirrors :203-205).
-                    isImageEmbedActive = false
-                    isWikiLinkActive = false
-                    onInlineSelectionChange?(nil)
-                    let clamped = min(max(newCaret, 0), (tv.string as NSString).length)
-                    // Only re-settle (and suppress the reveal) when the caret actually moved. If the
-                    // link was AFTER the caret the location is unchanged → setSelectedRange would be a
-                    // no-op that never consumes suppressAutoRevealOnce, leaking it onto the next reveal.
-                    if clamped != selRange.location {
-                        (tv as? NativeTextView)?.suppressAutoRevealOnce = true
-                        tv.setSelectedRange(NSRange(location: clamped, length: 0))
-                    }
-                    // The snap-back's didChangeText restyles the CARET's paragraph, not the LINK's, so
-                    // the link keeps its pre-leave ACTIVE styling (raw [[ ]] stays visible). Restyle the
-                    // link's own paragraph (token.range.location is before the in-name edit, so it's
-                    // stable) — the caret is now outside, so its markers collapse to a rendered link.
-                    let healedNS = tv.string as NSString
-                    if healedNS.length > 0 {
-                        let linkPara = healedNS.paragraphRange(for: NSRange(location: min(token.range.location, healedNS.length - 1), length: 0))
-                        restyleParagraphs([linkPara], in: tv)
-                    }
-                    return
-                }
-            }
         }
 
         PerfTrace.measure("selAuto") {
@@ -588,14 +499,6 @@ extension NativeTextViewCoordinator {
                 let clamped = NSIntersectionRange(span, NSRange(location: 0, length: nsText.length))
                 if clamped.length > 0 { paragraphCandidates.append(nsText.paragraphRange(for: clamped)) }
             }
-            // Image-embed tokens only inside the caret/previous-caret
-            // paragraphs (binary-searched); the rendered↔raw flip of a token
-            // the caret entered or left is covered by tokenRestyleParagraphs.
-            let scopeLo = paragraphCandidates.map(\.location).min() ?? 0
-            let scopeHi = paragraphCandidates.map { NSMaxRange($0) }.max() ?? 0
-            for (_, token) in MarkdownStyler.scopedSlice(parsed.classified.imageEmbed, lo: scopeLo, hi: scopeHi) {
-                paragraphCandidates.append(nsText.paragraphRange(for: token.range))
-            }
             paragraphCandidates.append(contentsOf: tokenRestyleParagraphs(
                 in: nsText,
                 tokens: tokens,
@@ -606,96 +509,6 @@ extension NativeTextViewCoordinator {
                 restyleTextView(tv, paragraphCandidates: paragraphCandidates, tokens: tokens,
                                 classified: parsed.classified, blocks: parsed.blocks)
             }
-        }
-
-        // Auto-select content when clicking (mouse) into a rendered (previously inactive) image embed
-        if selRange.length == 0,
-           let eventType = currentEventType,
-           eventType == .leftMouseUp || eventType == .leftMouseDown {
-            let newlyActive = activeTokenIndices.subtracting(previousActiveTokenIndices)
-            for idx in newlyActive {
-                let token = tokens[idx]
-                guard token.kind == .imageEmbed else { continue }
-                let selectRange = token.contentRange
-                if selectRange.length > 0 {
-                    tv.setSelectedRange(selectRange)
-                    break
-                }
-            }
-        }
-
-        // Text unchanged past this point (the snap-back branch returned above);
-        // only the selection may have moved.
-        let selLocation = tv.selectedRange().location
-        let inlineContext = PerfTrace.measure("selCtx") {
-            inlineTokenContext(
-                at: selLocation,
-                parsed: parsed,
-                codeTokens: codeTokens,
-                text: nsText
-            )
-        }
-        let isInsideImageEmbed = {
-            guard case .imageEmbed = inlineContext else { return false }
-            return true
-        }()
-        // Preview must only trigger inside the `![[…]]` content area
-        let isInsideImageEmbedContent: Bool = {
-            guard case .imageEmbed(let token) = inlineContext else { return false }
-            let start = token.range.location + 3
-            let end = NSMaxRange(token.range) - 2
-            return selLocation >= start && selLocation <= end
-        }()
-
-        let isTyping = currentEventType == .keyDown
-        let imageEmbedShowsInlinePreview = isInsideImageEmbedContent && isTyping
-        var inlineSelectionState: InlineSelectionState? = nil
-        if let inlineContext {
-            let openingMarkerLength = inlineContext.selectionKind == .imageEmbed ? 3 : 2
-            let displayRange = selectionDisplayRange(for: inlineContext.token, openingMarkerLength: openingMarkerLength)
-            // Image embeds: rebuild the placeholder as the STORAGE form (`![[Name|uuid|width]]`) so
-            // NodeLinkPreview's ImageEmbedReference.parse can recover the width on re-pick. The width
-            // no longer lives in the editor text — it sits in the `.wikiLinkID` side-channel.
-            let placeholder: String
-            if case .imageEmbed(let token) = inlineContext {
-                let embedName = nsText.substring(with: token.contentRange)
-                if let suffix = wikiLinkID(for: token.range), !suffix.isEmpty {
-                    placeholder = "![[\(embedName)|\(suffix)]]"
-                } else {
-                    placeholder = "![[\(embedName)]]"
-                }
-            } else {
-                placeholder = nsText.substring(with: displayRange)
-            }
-            let storageRange = inlineContext.selectionKind == .wikiLink
-                ? storageRange(containingDisplayLocation: selLocation) ?? storageRange(forDisplayRange: displayRange)
-                : nil
-            let previewRect = tv.viewRect(forCharacterRange: displayRange, using: layoutBridge)
-                ?? tv.viewRect(forCharacterRange: tv.selectedRange(), using: layoutBridge)
-
-            // Only autocomplete while TYPING — not when the caret merely lands in an existing link via
-            // a click (mirrors the image-embed gate). Clicking into a complete [[Name]] shouldn't pop
-            // the picker; typing a name does.
-            let shouldShowInlinePreview =
-                (inlineContext.selectionKind == .wikiLink && isTyping)
-                || (inlineContext.selectionKind == .imageEmbed && imageEmbedShowsInlinePreview)
-            if shouldShowInlinePreview, let previewRect {
-                let selection = WikiLinkSelection(
-                    displayRange: displayRange,
-                    storageRange: storageRange,
-                    placeholder: placeholder
-                )
-                inlineSelectionState = InlineSelectionState(kind: inlineContext.selectionKind, selection: selection)
-                DispatchQueue.main.async {
-                    self.onCaretRectChange?(previewRect)
-                }
-            }
-        }
-
-        DispatchQueue.main.async {
-            self.isWikiLinkActive = inlineSelectionState?.kind == .wikiLink
-            self.isImageEmbedActive = isInsideImageEmbed
-            self.onInlineSelectionChange?(inlineSelectionState)
         }
 
         self.previousActiveTokenIndices = self.activeTokenIndices
@@ -837,11 +650,7 @@ extension NativeTextViewCoordinator {
             : nil
 
         parseGeneration &+= 1
-        // Refresh the descriptor for EVERY proposed edit — including programmatic
-        // ones. A smart-input interceptor that suppresses a keystroke and performs
-        // a different edit (auto-pair, "->"→"→", Tab indent, list-exit)
-        // would otherwise leave the suppressed edit's descriptor behind, and the
-        // wiki splice in textDidChange would corrupt the storage form from it.
+        // Refresh the descriptor for EVERY proposed edit, including programmatic ones.
         pendingEditedRange = NSRange(location: affectedCharRange.location, length: replacementString?.utf16.count ?? 0)
         // A nil replacement means AppKit is changing ATTRIBUTES over that range,
         // not text (data detection linkifying a phone number, Format > Font).
@@ -902,15 +711,6 @@ extension NativeTextViewCoordinator {
 
         defer { PerfTrace.checkpoint("shouldOut") }
         return PerfTrace.measure("smartInput") {
-            if MarkdownInputHandler.handleImageEmbedAutoWrap(
-                textView: textView,
-                affectedCharRange: affectedCharRange,
-                replacementString: replacementString,
-                imageEmbedTokens: parsed.imageEmbedTokens
-            ) {
-                return false
-            }
-
             if MarkdownInputHandler.handleTableCellNewline(
                 textView: textView,
                 affectedCharRange: affectedCharRange,
@@ -926,23 +726,10 @@ extension NativeTextViewCoordinator {
     }
 
     public func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
-        // Raw mode: default key handling (no ⇧⇥ outdent, no preview routing).
+        // Raw mode: default key handling (no ⇧⇥ outdent).
         if configuration.rawSourceMode { return false }
         if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
             return handleBacktab(textView)
-        }
-        // While an inline [[…]] / ![[…]] preview is open, route ↑/↓/Enter/Esc to the embedder's
-        // autocomplete list (it returns true to consume the key; false → normal editor handling).
-        if (isWikiLinkActive || isImageEmbedActive), let handler = onInlinePreviewKey {
-            let key: InlinePreviewKey?
-            switch commandSelector {
-            case #selector(NSResponder.moveUp(_:)): key = .moveUp
-            case #selector(NSResponder.moveDown(_:)): key = .moveDown
-            case #selector(NSResponder.insertNewline(_:)): key = .confirm   // ⌘↵ → handled in performKeyEquivalent
-            case #selector(NSResponder.cancelOperation(_:)): key = .cancel
-            default: key = nil
-            }
-            if let key, handler(key) { return true }
         }
         return false
     }
@@ -952,8 +739,7 @@ extension NativeTextViewCoordinator {
         // AppKit didn't drop the dispatch.
         (textView as? NativeTextView)?.linkClickDidFire = true
         // Edit zone: a click on the outer ~30% of a link's first/last visible char places the caret
-        // just outside the markers (before '[[' / '[' , after ']]' / ')') to reveal the source for
-        // editing instead of navigating. Applies to both wiki links [[…]] and web links [text](url).
+        // just outside the markers to reveal the source for editing.
         // Editable views only — read-only links must stay navigable.
         if textView.isEditable, let storage = textView.textStorage {
             var linkRange = NSRange(location: NSNotFound, length: 0)
@@ -961,41 +747,28 @@ extension NativeTextViewCoordinator {
             if storage.attribute(.link, at: charIndex, longestEffectiveRange: &linkRange,
                                  in: NSRange(location: 0, length: storage.length)) != nil,
                linkRange.length >= editZoneMinNameLength {
-                // Caret lands on the token's outer markers ('[['/'[' or ']]'/')'), which carry no
+                // Caret lands on the token's outer markers, which carry no
                 // .link, so the mouse-on-link guard in textViewDidChangeSelection doesn't suppress
-                // the reveal. Web links (.link) get the same edit zone as wiki links (.wikiLink); the
-                // .link attribute only spans the visible text, so without the full token range a web
+                // the reveal. The .link attribute only spans the visible text, so without the full token range a web
                 // link would drop the caret between its brackets instead of just outside them.
                 let token = parsedDocument(for: textView.string).tokens
-                    .first { ($0.kind == .wikiLink || $0.kind == .link) && NSLocationInRange(charIndex, $0.range) }
+                    .first { $0.kind == .link && NSLocationInRange(charIndex, $0.range) }
                 let edgeFraction: CGFloat = 0.3
                 let frac = clickFractionThroughGlyph(textView, charIndex: charIndex)
                 if charIndex == linkRange.location, frac.map({ $0 <= edgeFraction }) ?? true {
-                    let caret = token?.range.location ?? linkRange.location          // before '[[' / '['
+                    let caret = token?.range.location ?? linkRange.location
                     textView.setSelectedRange(NSRange(location: caret, length: 0))
                     return true
                 }
                 if charIndex == NSMaxRange(linkRange) - 1, frac.map({ $0 >= 1 - edgeFraction }) ?? true {
-                    let caret = token.map { NSMaxRange($0.range) } ?? NSMaxRange(linkRange)  // after ']]' / ')'
+                    let caret = token.map { NSMaxRange($0.range) } ?? NSMaxRange(linkRange)
                     textView.setSelectedRange(NSRange(location: caret, length: 0))
                     return true
                 }
             }
         }
-        guard let target = WikiLinkService.resolveIdentifier(link: link, textView: textView, at: charIndex) else {
-            // Web link (URL-valued): returning false lets AppKit open the URL
-            // (the mouseDown fallback mirrors that). Opening a link is navigation
-            // too — flag it so mouseDown restores the pre-click caret.
-            (textView as? NativeTextView)?.linkClickDidNavigate = true
-            return false
-        }
-        // Direkt deaktivieren, bevor der Navigation-Callback läuft.
         (textView as? NativeTextView)?.linkClickDidNavigate = true
-        self.isWikiLinkActive = false
-        DispatchQueue.main.async {
-            self.onLinkClick?(target)
-        }
-        return true
+        return false
     }
 
     /// Horizontal fraction (0 = leading, 1 = trailing) of the current click through the glyph at

@@ -42,12 +42,6 @@ enum InlineASTAdapter {
         case .image(let range, let alt, _, let markers):
             result.append(MarkdownToken(kind: .imageLink, range: range, contentRange: alt, markerRanges: markers))
 
-        case .wikiLink(let range, let name, _, let markers):
-            result.append(MarkdownToken(kind: .wikiLink, range: range, contentRange: name, markerRanges: markers))
-
-        case .imageEmbed(let range, let target, let markers):
-            result.append(MarkdownToken(kind: .imageEmbed, range: range, contentRange: target, markerRanges: markers))
-
         case .ext(let node):
             result.append(MarkdownToken(kind: .extensionSpan(node.extensionID), range: node.range,
                                         contentRange: node.contentRange, markerRanges: node.markers))

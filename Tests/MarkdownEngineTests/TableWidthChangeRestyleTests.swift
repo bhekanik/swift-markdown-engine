@@ -29,8 +29,7 @@ struct TableWidthChangeRestyleTests {
             baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor,
             hiddenMarkerFont: font,
-            configuration: .default,
-            wikiLinkIDProvider: { _ in nil }
+            configuration: .default
         )
 
         let attributes = MarkdownStyler.styleTables(context)

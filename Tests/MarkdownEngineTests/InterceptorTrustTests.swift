@@ -28,16 +28,12 @@ struct InterceptorTrustTests {
         let coordinator = NativeTextViewCoordinator(
             text: .constant(text),
             fontName: "SF Pro Text",
-            fontSize: 14,
-            isWikiLinkActive: .constant(false),
-            onLinkClick: nil,
-            onInlineSelectionChange: nil
+            fontSize: 14
         )
         coordinator.textView = textView
         textView.delegate = coordinator
         textView.string = text
         coordinator.lastSyncedText = text
-        coordinator.lastComputedStorage = text
         coordinator.previousDisplayLength = (text as NSString).length
         return (textView, coordinator)
     }
@@ -59,7 +55,6 @@ struct InterceptorTrustTests {
         tv.insertText(">", replacementRange: NSRange(location: 5, length: 0))
 
         #expect(tv.string == "abc → def")
-        #expect(coord.lastComputedStorage == "abc → def")
         #expect(coord.debugLastEditWasTrusted == true)
     }
 }

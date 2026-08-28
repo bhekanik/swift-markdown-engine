@@ -10,7 +10,6 @@
 //  paste handling, drag-select boost, task checkbox, spelling policy).
 //
 //  Bottom-overscroll math lives in `BottomOverscrollPolicy.swift`.
-//  Pasteboard image inspection lives in `PasteboardImageReader.swift`.
 //
 
 import AppKit
@@ -45,7 +44,6 @@ final class NativeTextView: NSTextView {
     var minOverscrollPoints: CGFloat = MarkdownEditorConfiguration.default.overscroll.minPoints
 
     // MARK: Editor wiring
-    var onPasteImage: ((NSPasteboard) -> String?)?
     weak var layoutBridge: LayoutBridge?
     var baseFont: NSFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
 

@@ -6,8 +6,7 @@
 //
 //  Protocols and default implementations for engine-side dependencies.
 //
-//  The Markdown editor engine resolves wiki-links, syntax highlighting and
-//  embedded image lookup through these protocols.
+//  The Markdown editor engine resolves syntax highlighting through this protocol.
 //  Embedders supply the concrete implementations; the engine never
 //  reaches into the host app for any of these concerns.
 //
@@ -15,110 +14,17 @@
 import AppKit
 import Foundation
 
-// MARK: - Wiki Links
-
-/// Resolves a wiki-link's display name to a stable storage identifier.
-///
-/// The engine stores wiki-links as `[[Name|<id>]]` and displays them as
-/// `[[Name]]`. The resolver maps a display name (and the range it occupies
-/// in the document) to whatever stable identifier the embedder uses for
-/// linked content. The identifier is opaque to the engine.
-public protocol WikiLinkResolver: Sendable {
-    /// Resolve a wiki-link by its visible name.
-    ///
-    /// - Parameters:
-    ///   - displayName: The text inside `[[ ]]` as the user sees it.
-    ///   - range: The character range the link occupies in the document.
-    /// - Returns: A resolution if the link points at known content; `nil` otherwise.
-    func resolve(displayName: String, range: NSRange) -> WikiLinkResolution?
-
-    /// Returns the target's CURRENT display name for a stable id, nil if unknown
-    /// (renderer falls back to the stored label).
-    func name(forID id: String) -> String?
-
-    /// Coarse fingerprint of the resolver's known targets (typically IDs + names).
-    /// A different value triggers a wiki-link restyle, so a rename refreshes link
-    /// clickability/display without waiting for the next keystroke.
-    func fingerprint() -> AnyHashable
-}
-
-public extension WikiLinkResolver {
-    func fingerprint() -> AnyHashable { 0 }
-    func name(forID id: String) -> String? { nil }
-}
-
-/// The result of resolving a wiki-link.
-public struct WikiLinkResolution: Sendable, Equatable {
-    /// Stable identifier persisted in the storage form `[[Name|<id>]]`.
-    public let id: String
-    /// Whether the linked target currently exists/is reachable.
-    public let exists: Bool
-
-    public init(id: String, exists: Bool) {
-        self.id = id
-        self.exists = exists
-    }
-}
-
-/// Default resolver that never resolves anything. Useful when an embedder
-/// doesn't ship wiki-link support.
-public struct NoOpWikiLinkResolver: WikiLinkResolver {
-    public init() {}
-    public func resolve(displayName: String, range: NSRange) -> WikiLinkResolution? { nil }
-}
-
-// MARK: - Embedded Images
-
-/// Loads an `NSImage` for an `![[...]]` embed reference.
-///
-/// The engine parses `![[name|optional-id|optional-width]]` into a
-/// reference and asks the provider for an image. The provider decides
-/// where the image actually lives (filesystem, remote, asset catalog).
-public protocol EmbeddedImageProvider: Sendable {
-    /// Returns an image for the given reference, or `nil` if no image
-    /// is available.
-    func image(for reference: EmbeddedImageRequest) -> NSImage?
-
-    /// A coarse fingerprint of the provider's current state. Returning
-    /// a different value invalidates the engine's image cache. Embedders
-    /// typically combine the IDs of all known images.
-    func fingerprint() -> AnyHashable
-}
-
-/// What the engine asks an `EmbeddedImageProvider` for.
-public struct EmbeddedImageRequest: Sendable, Equatable {
-    /// Display name of the embed (the part before any `|`).
-    public let name: String
-    /// Optional explicit identifier supplied as `![[name|id]]`.
-    public let id: String?
-    /// Optional explicit width supplied as `![[name|...|width]]`.
-    public let requestedWidth: CGFloat?
-
-    public init(name: String, id: String? = nil, requestedWidth: CGFloat? = nil) {
-        self.name = name
-        self.id = id
-        self.requestedWidth = requestedWidth
-    }
-}
-
-/// Default provider that never returns images.
-public struct NoOpEmbeddedImageProvider: EmbeddedImageProvider {
-    public init() {}
-    public func image(for reference: EmbeddedImageRequest) -> NSImage? { nil }
-    public func fingerprint() -> AnyHashable { 0 }
-}
-
 // MARK: - Syntax Highlighting
 
 /// Provides code-block font, background color, and syntax highlighting.
 public protocol SyntaxHighlighter: Sendable {
     /// Monospace font used for fenced code blocks at the requested size.
-    func codeFont(size: CGFloat) -> NSFont
+    func codeFont(size: CGFloat) -> PlatformFont
 
     /// Background color used to fill code-block paragraphs. The engine
     /// also uses this color to detect which fragments are code blocks
     /// when drawing custom backgrounds.
-    func backgroundColor() -> NSColor
+    func backgroundColor() -> PlatformColor
 
     /// Highlight `code` written in `language`. Return an attributed string
     /// whose attributes carry per-token foreground colors. Return `nil` if
@@ -137,12 +43,12 @@ public protocol SyntaxHighlighter: Sendable {
 public struct PlainTextSyntaxHighlighter: SyntaxHighlighter {
     public init() {}
 
-    public func codeFont(size: CGFloat) -> NSFont {
-        NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+    public func codeFont(size: CGFloat) -> PlatformFont {
+        .engineMonospaced(ofSize: size)
     }
 
-    public func backgroundColor() -> NSColor {
-        NSColor.textBackgroundColor.withAlphaComponent(0)
+    public func backgroundColor() -> PlatformColor {
+        PlatformColor.engineTextBackground.withAlphaComponent(0)
     }
 
     public func highlight(code: String, language: String?) -> NSAttributedString? {
@@ -187,7 +93,7 @@ public struct MarkdownEditorBus: Sendable {
     public var applyCodeBlockRequest: Notification.Name?
     /// Posted by the host UI to insert a horizontal rule (`---`) at the cursor.
     public var applyHorizontalRuleRequest: Notification.Name?
-    /// Posted by the host UI to insert an image embed.
+    /// Posted by the host UI to insert a Markdown image.
     /// Expected `userInfo["url"] as? String`.
     public var applyImageRequest: Notification.Name?
     /// Posted by the engine after every selection change with `userInfo["isBold"] as? Bool`.
@@ -202,20 +108,17 @@ public struct MarkdownEditorBus: Sendable {
     public var findScrollToRange: Notification.Name?
     /// Posted by the host UI to clear all in-document find highlights.
     public var findClearHighlights: Notification.Name?
-    /// Posted by the host UI to run an in-document find against the engine's OWN displayed
+    /// Posted by the host UI to run an in-document find against the engine's OWN
     /// text. Expected `userInfo["query"] as? String`, optional `userInfo["currentIndex"] as? Int`.
-    /// The engine matches in DISPLAY coordinates, so highlights land correctly even where the
-    /// displayed text differs from the source (e.g. node links rendered shorter than
-    /// `[[Name|UUID]]` and images). Preferred over `findScrollToRange`, which trusts
-    /// host-computed (source-coordinate) ranges.
+    /// Preferred over `findScrollToRange`, which trusts host-computed ranges.
     public var findQuery: Notification.Name?
     /// Posted by the engine in response to `findQuery` with `userInfo["count"] as? Int`
-    /// (number of matches in the displayed text), so the host can show "x of y".
+    /// (number of matches in the text), so the host can show "x of y".
     public var findResults: Notification.Name?
     /// Posted by the host UI to replace the current find match. Expected
     /// `userInfo["query"] as? String`, `userInfo["replacement"] as? String`,
     /// optional `userInfo["currentIndex"] as? Int`. The engine edits its own
-    /// displayed text (with undo), re-highlights the remaining matches, and
+    /// text (with undo), re-highlights the remaining matches, and
     /// posts `findResults` with the new count.
     public var replaceCurrent: Notification.Name?
     /// Posted by the host UI to replace every find match in one undo step.
@@ -283,19 +186,13 @@ public struct MarkdownEditorBus: Sendable {
 /// dependencies exclusively from this container; embedders inject the
 /// implementations they want.
 public struct MarkdownEditorServices: Sendable {
-    public var wikiLinks: any WikiLinkResolver
-    public var images: any EmbeddedImageProvider
     public var syntaxHighlighter: any SyntaxHighlighter
     public var bus: MarkdownEditorBus
 
     public init(
-        wikiLinks: any WikiLinkResolver = NoOpWikiLinkResolver(),
-        images: any EmbeddedImageProvider = NoOpEmbeddedImageProvider(),
         syntaxHighlighter: any SyntaxHighlighter = PlainTextSyntaxHighlighter(),
         bus: MarkdownEditorBus = .default
     ) {
-        self.wikiLinks = wikiLinks
-        self.images = images
         self.syntaxHighlighter = syntaxHighlighter
         self.bus = bus
     }

@@ -39,8 +39,7 @@ struct TableWrappingTests {
             baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor,
             hiddenMarkerFont: font,
-            configuration: .default,
-            wikiLinkIDProvider: { _ in nil }
+            configuration: .default
         )
         ctx.scopeBounds = nil
         let aqua = try #require(NSAppearance(named: .aqua))
@@ -105,7 +104,7 @@ struct TableWrappingTests {
             tokens: [], codeTokens: [], activeTokenIndices: [],
             baseFont: font, layoutBridge: nil, baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor, hiddenMarkerFont: font,
-            configuration: .default, wikiLinkIDProvider: { _ in nil }
+            configuration: .default
         )
         let aqua = try #require(NSAppearance(named: .aqua))
 

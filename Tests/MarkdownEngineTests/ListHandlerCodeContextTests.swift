@@ -27,16 +27,12 @@ struct ListHandlerCodeContextTests {
         let coordinator = NativeTextViewCoordinator(
             text: .constant(text),
             fontName: "SF Pro Text",
-            fontSize: 14,
-            isWikiLinkActive: .constant(false),
-            onLinkClick: nil,
-            onInlineSelectionChange: nil
+            fontSize: 14
         )
         coordinator.textView = textView
         textView.delegate = coordinator
         textView.string = text
         coordinator.lastSyncedText = text
-        coordinator.lastComputedStorage = text
         coordinator.previousDisplayLength = (text as NSString).length
         return textView
     }

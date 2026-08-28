@@ -34,7 +34,6 @@ public struct MarkdownEditorConfiguration: Sendable {
     public var lists: ListStyle
     public var taskCheckbox: TaskCheckboxStyle
     public var headings: HeadingStyle
-    public var imageEmbed: ImageEmbedStyle
     public var blockquote: BlockquoteStyle
     public var thematicBreak: ThematicBreakStyle
     public var link: LinkStyle
@@ -65,8 +64,7 @@ public struct MarkdownEditorConfiguration: Sendable {
     ///
     /// - SeeAlso: ``HeightBehavior``
     public var heightBehavior: HeightBehavior
-    /// Present the document as raw Markdown source: no syntax hiding, no
-    /// styling, no wiki-link display transform (`[[Name|UUID]]` shows verbatim).
+    /// Present the document as raw Markdown source: no syntax hiding or styling.
     /// Stays editable, but smart input (list continuation, auto-wrap, ⇧⇥) is off.
     /// Runtime-switchable; a flip rebuilds immediately and drops the document's
     /// undo stack (actions from the other mode would replay at stale ranges).
@@ -94,7 +92,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         lists: ListStyle = .default,
         taskCheckbox: TaskCheckboxStyle = .default,
         headings: HeadingStyle = .default,
-        imageEmbed: ImageEmbedStyle = .default,
         blockquote: BlockquoteStyle = .default,
         thematicBreak: ThematicBreakStyle = .default,
         link: LinkStyle = .default,
@@ -120,7 +117,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.lists = lists
         self.taskCheckbox = taskCheckbox
         self.headings = headings
-        self.imageEmbed = imageEmbed
         self.blockquote = blockquote
         self.thematicBreak = thematicBreak
         self.link = link
@@ -237,13 +233,11 @@ public struct TextInsets: Sendable {
 /// the cursor is not inside the corresponding token.
 ///
 /// The engine's default approach is to keep markers in the text storage but
-/// shrink them to a near-zero font size (`hiddenMarkerFontSize`). This avoids
-/// any range translation between displayed and stored text — cursor movement,
-/// find/replace, selection, and copy/paste all stay trivially correct.
+/// shrink them to a near-zero font size (`hiddenMarkerFontSize`).
 /// The trade-off is a sub-pixel residue at extreme zoom levels.
 public struct MarkerStyle: Sendable {
     /// Font size used for "hidden" inline markers. Effectively invisible at
-    /// normal zoom while keeping displayed-range == stored-range.
+    /// normal zoom.
     public var hiddenMarkerFontSize: CGFloat
     /// Alpha applied to inline-code's secondary marker color.
     public var inlineCodeMarkerAlpha: CGFloat
@@ -486,38 +480,6 @@ public struct HeadingStyle: Sendable {
     public static let `default` = HeadingStyle()
 }
 
-// MARK: - Image embeds (![[...]])
-
-/// Sizing and spacing rules for `![[Name]]` image embeds.
-public struct ImageEmbedStyle: Sendable {
-    /// Minimum allowed display width (points) for an embedded image.
-    public var minimumWidth: CGFloat
-    /// Fallback maximum width if no usable text container width is available.
-    public var fallbackMaxWidth: CGFloat
-    /// Sanity bound — container widths above this are treated as invalid.
-    public var unreasonableMaxWidth: CGFloat
-    /// Vertical paragraph spacing above/below the image paragraph.
-    public var paragraphSpacing: CGFloat
-    /// Gap between the source line and the rendered image (visibleSource mode).
-    public var imageGap: CGFloat
-
-    public init(
-        minimumWidth: CGFloat = 50,
-        fallbackMaxWidth: CGFloat = 650,
-        unreasonableMaxWidth: CGFloat = 1_000_000,
-        paragraphSpacing: CGFloat = 8,
-        imageGap: CGFloat = 8
-    ) {
-        self.minimumWidth = minimumWidth
-        self.fallbackMaxWidth = fallbackMaxWidth
-        self.unreasonableMaxWidth = unreasonableMaxWidth
-        self.paragraphSpacing = paragraphSpacing
-        self.imageGap = imageGap
-    }
-
-    public static let `default` = ImageEmbedStyle()
-}
-
 // MARK: - Blockquote
 
 /// Extra line height added to blockquote lines.
@@ -563,10 +525,20 @@ public struct ParagraphStyle: Sendable {
     public var spacingFactor: CGFloat
     /// Extra height (points) added to the default paragraph line height.
     public var lineHeightExtraSpacing: CGFloat
+    /// Letter spacing as a fraction of the font size, applied to body text.
+    /// Negative tightens. `0` (the default) leaves the face's own metrics
+    /// alone, which is what a UI font wants; a display serif set large usually
+    /// wants a little negative tracking.
+    public var trackingEm: CGFloat
 
-    public init(spacingFactor: CGFloat = 0.3, lineHeightExtraSpacing: CGFloat = 2) {
+    public init(
+        spacingFactor: CGFloat = 0.3,
+        lineHeightExtraSpacing: CGFloat = 2,
+        trackingEm: CGFloat = 0
+    ) {
         self.spacingFactor = spacingFactor
         self.lineHeightExtraSpacing = lineHeightExtraSpacing
+        self.trackingEm = trackingEm
     }
 
     public static let `default` = ParagraphStyle()
@@ -679,15 +651,14 @@ extension MarkdownEditorConfiguration {
     /// ## Behavior
     ///
     /// In `.fitsContent` mode:
-    /// - The editor reports `headerHeight + text content height` to SwiftUI.
+    /// - The editor reports its text content height to SwiftUI.
     /// - Typing grows/shrinks the block per keystroke; SwiftUI re-lays-out.
     /// - An empty document shows at least one body line of height.
     /// - Scroll-wheel events pass through to the enclosing scroll view.
     /// - Caret visibility propagates to the enclosing (page-level) scroll
     ///   view so editing at the bottom of a tall block keeps the caret
     ///   on-screen.
-    /// - Async content changes (image finishing layout, font-size
-    ///   change) re-report size via `invalidateIntrinsicContentSize`.
+    /// - Async font-size changes re-report size via `invalidateIntrinsicContentSize`.
     /// - Switching between `.scrolls` and `.fitsContent` at runtime is
     ///   supported; the editor reconfigures immediately.
     ///
@@ -695,11 +666,6 @@ extension MarkdownEditorConfiguration {
     ///
     /// - **Reading column** (`readingWidth`): the centered fixed-width column
     ///   is preserved; height grows to the column's content height.
-    /// - **Scroll-away header**: a static header's band is included in the
-    ///   reported height. The collapse-on-scroll animation is driven by the
-    ///   inner scroll offset, which is always zero in `.fitsContent`, so the
-    ///   collapse never triggers. Combining a collapsing header with
-    ///   `.fitsContent` is allowed but the collapse behavior is not meaningful.
     ///
     /// ## Trade-offs
     ///

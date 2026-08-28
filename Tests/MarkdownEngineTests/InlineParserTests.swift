@@ -116,29 +116,6 @@ struct InlineParserTests {
         #expect(InlineParser.parse("`*x*`") == [.code(range: r(0, 5), content: r(1, 3))])
     }
 
-    // MARK: - Wiki-links & image embeds
-
-    @Test("plain wiki-link")
-    func wikiLink() {
-        #expect(InlineParser.parse("[[Name]]") == [
-            .wikiLink(range: r(0, 8), name: r(2, 4), id: nil, markers: [r(0, 2), r(6, 2)]),
-        ])
-    }
-
-    @Test("wiki-link with id")
-    func wikiLinkWithId() {
-        #expect(InlineParser.parse("[[Name|abc]]") == [
-            .wikiLink(range: r(0, 12), name: r(2, 4), id: r(7, 3), markers: [r(0, 2), r(10, 2)]),
-        ])
-    }
-
-    @Test("image embed")
-    func imageEmbed() {
-        #expect(InlineParser.parse("![[Pic]]") == [
-            .imageEmbed(range: r(0, 8), target: r(3, 3), markers: [r(0, 3), r(6, 2)]),
-        ])
-    }
-
     // MARK: - Links & images
 
     @Test("markdown link, text recursively parsed")

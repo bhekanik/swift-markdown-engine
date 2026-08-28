@@ -55,9 +55,8 @@ Screen recordings welcome.
 Non-negotiable for the core `MarkdownEngine` target:
 
 - **Don't add external dependencies to the core `MarkdownEngine`
-  target.** App-specific behaviors plug in through the three service
-  protocols (`WikiLinkResolver`, `EmbeddedImageProvider`,
-  `SyntaxHighlighter`) instead. A new bridge or a new core dependency is a
+  target.** App-specific behaviors plug in through the `SyntaxHighlighter`
+  service protocol instead. A new bridge or a new core dependency is a
   bigger call — make the case in the PR description.
 - **New constructs are extensions, not core grammar.** A construct like
   `==highlight==` (inline) or a `::: … :::` fenced block belongs in

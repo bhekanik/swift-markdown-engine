@@ -28,8 +28,7 @@ struct TableImageCacheTests {
             baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor,
             hiddenMarkerFont: font,
-            configuration: configuration,
-            wikiLinkIDProvider: { _ in nil }
+            configuration: configuration
         )
     }
 

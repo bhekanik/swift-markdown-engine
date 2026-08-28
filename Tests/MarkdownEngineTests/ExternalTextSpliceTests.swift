@@ -27,7 +27,6 @@ struct ExternalTextSpliceTests {
         coordinator.textView = textView
         coordinator.rebuildTextStorageAndStyle(textView, from: text)
         coordinator.lastSyncedText = text
-        coordinator.lastComputedStorage = text
         coordinator.previousDisplayLength = (text as NSString).length
         coordinator.didInitialFormatting = true
         return (textView, coordinator)

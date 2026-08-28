@@ -35,8 +35,7 @@ struct CaretColorTests {
     ) -> (NativeTextViewCoordinator, NativeTextView) {
         _ = NSApplication.shared
         let coordinator = NativeTextViewCoordinator(
-            text: .constant(text), fontName: "SF Pro", fontSize: 16,
-            isWikiLinkActive: .constant(false), onLinkClick: nil, onInlineSelectionChange: nil
+            text: .constant(text), fontName: "SF Pro", fontSize: 16
         )
         coordinator.configuration.extensions = extensions
         coordinator.configuration.cursorFollowsSpanInk = followsInk
@@ -46,7 +45,6 @@ struct CaretColorTests {
         coordinator.textView = tv
         coordinator.rebuildTextStorageAndStyle(tv, from: text)
         coordinator.lastSyncedText = text
-        coordinator.lastComputedStorage = text
         coordinator.previousDisplayLength = (text as NSString).length
         return (coordinator, tv)
     }
