@@ -308,4 +308,105 @@ struct WritingToolsMutationTests {
         #expect(applying(mutations, to: before) == after)
         #expect(writingToolsView.string == after)
     }
+
+    @available(macOS 15.0, *)
+    @Test("an unpublished length change does not extend the listener's replacement range")
+    func unpublishedLengthChangeUsesListenerModelLength() throws {
+        _ = NSApplication.shared
+        let before = "The quik fox rests.\n"
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        let record: (MarkdownTextMutation) -> Void = { mutations.append($0) }
+        let (writingToolsView, writingToolsCoordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: record
+        )
+        let (secondView, _) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: record
+        )
+        writingToolsView.setSelectedRange(NSRange(location: 4, length: 4))
+
+        writingToolsCoordinator.textViewWritingToolsWillBegin(writingToolsView)
+        #expect(secondView.shouldChangeText(
+            in: NSRange(location: 13, length: 5),
+            replacementString: "sleeps soundly"
+        ))
+        secondView.textStorage?.replaceCharacters(
+            in: NSRange(location: 13, length: 5),
+            with: "sleeps soundly"
+        )
+        #expect(secondView.shouldChangeText(
+            in: NSRange(location: 13, length: 0),
+            replacementString: "really "
+        ))
+        secondView.textStorage?.replaceCharacters(
+            in: NSRange(location: 13, length: 0),
+            with: "really "
+        )
+        secondView.didChangeText()
+        replaceThroughWritingTools(
+            in: writingToolsView,
+            range: NSRange(location: 4, length: 4),
+            with: "quick"
+        )
+        writingToolsCoordinator.textViewWritingToolsDidEnd(writingToolsView)
+
+        let listenerModel = NSMutableString(string: before)
+        for mutation in mutations {
+            #expect(NSMaxRange(mutation.range) <= listenerModel.length)
+            guard NSMaxRange(mutation.range) <= listenerModel.length else { return }
+            listenerModel.replaceCharacters(in: mutation.range, with: mutation.replacement)
+        }
+        #expect(listenerModel as String == writingToolsView.string)
+    }
+
+    @available(macOS 15.0, *)
+    @Test("an accepted session restyles and invalidates peer parsing")
+    func acceptedSessionRebuildsLiveState() throws {
+        _ = NSApplication.shared
+        let before = "plainx title\nbody text\n"
+        let accepted = "## New title\nbody text\n"
+        let controller = MarkdownEditorController()
+        let (writingToolsView, writingToolsCoordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: { _ in }
+        )
+        let (_, secondCoordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: { _ in }
+        )
+        _ = secondCoordinator.parsedDocument(for: before)
+
+        writingToolsCoordinator.textViewWritingToolsWillBegin(writingToolsView)
+        writingToolsCoordinator.wtDetectedMode = .proofread
+        replaceThroughWritingTools(
+            in: writingToolsView,
+            range: NSRange(location: 0, length: (before as NSString).length),
+            with: accepted
+        )
+        let acceptedSelection = NSRange(location: 15, length: 4)
+        writingToolsView.setSelectedRange(acceptedSelection)
+        writingToolsCoordinator.textViewWritingToolsDidEnd(writingToolsView)
+
+        let markerFont = try #require(
+            writingToolsView.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        )
+        #expect(markerFont.pointSize < 1)
+        #expect(writingToolsCoordinator.lastSyncedText == accepted)
+
+        let reference = MarkdownTokenizer.parseTokensViaAST(in: accepted, registry: .empty)
+        let peerTokens = secondCoordinator.parsedDocument(for: accepted).tokens
+        #expect(peerTokens.count == reference.count)
+        #expect(zip(peerTokens, reference).allSatisfy {
+            $0.kind == $1.kind && $0.range == $1.range
+        })
+
+        #expect(writingToolsView.selectedRange() == acceptedSelection)
+        #expect(NSMaxRange(writingToolsView.selectedRange()) <= (accepted as NSString).length)
+    }
 }

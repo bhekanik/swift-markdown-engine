@@ -17,7 +17,7 @@ extension NativeTextViewCoordinator {
         wtStartDocumentId = documentId
         wtSourceSnapshot = textView.string
         wtStartDocumentRevision = editorController?.documentRevision
-        wtStartDocumentMutationDelta = editorController?.documentMutationDelta ?? 0
+        wtStartDocumentPublishedDelta = editorController?.documentPublishedDelta ?? 0
         wtStartDocumentLength = (textView.string as NSString).length
         wtChildWindow = nil
         wtInitialChildOrigin = nil
@@ -36,11 +36,11 @@ extension NativeTextViewCoordinator {
         let sourceBeforeWritingTools = wtSourceSnapshot
         let initialSelection = wtInitialSelectionRange
         let startRevision = wtStartDocumentRevision
-        let startDocumentMutationDelta = wtStartDocumentMutationDelta
+        let startDocumentPublishedDelta = wtStartDocumentPublishedDelta
         let startDocumentLength = wtStartDocumentLength
         wtSourceSnapshot = nil
         wtStartDocumentRevision = nil
-        wtStartDocumentMutationDelta = 0
+        wtStartDocumentPublishedDelta = 0
         wtStartDocumentLength = 0
         wtChildWindow = nil
         wtInitialChildOrigin = nil
@@ -56,21 +56,20 @@ extension NativeTextViewCoordinator {
 
         // Cmd+Z mid-session: Apple's stale accept-action corrupts text + contaminates attrs with 0.1pt marker font; the post-undo snapshot is the authoritative state.
         let sourceText: String
-        let undoDuringSession: Bool
         if wtUndoneDuringSession, let snapshot = wtPostUndoSnapshot {
             sourceText = snapshot
-            undoDuringSession = true
         } else {
             sourceText = textView.string
-            undoDuringSession = false
         }
         wtUndoneDuringSession = false
         wtPostUndoSnapshot = nil
 
-        // Binding is already equal to `sourceText` after undo so SwiftUI won't re-render — rebuild the textView directly.
-        if undoDuringSession {
-            rebuildTextStorageAndStyle(textView, from: sourceText)
-        }
+        let acceptedSelection = textView.selectedRange()
+            .clamped(toLength: (sourceText as NSString).length)
+        rebuildTextStorageAndStyle(textView, from: sourceText)
+        lastSyncedText = sourceText
+        editorController?.documentDidChange(from: self)
+        textView.setSelectedRange(acceptedSelection)
         if let sourceBeforeWritingTools, sourceBeforeWritingTools != sourceText {
             let mutation: MarkdownTextMutation
             if let startRevision,
@@ -81,7 +80,7 @@ extension NativeTextViewCoordinator {
                     sourceAfterWritingTools: sourceText,
                     initialSelection: initialSelection,
                     startRevision: startRevision,
-                    startDocumentMutationDelta: startDocumentMutationDelta,
+                    startDocumentPublishedDelta: startDocumentPublishedDelta,
                     startDocumentLength: startDocumentLength,
                     controller: editorController
                 )
@@ -97,8 +96,6 @@ extension NativeTextViewCoordinator {
             }
             onTextMutation?(mutation)
         }
-        // Don't pre-set `lastSyncedText` — leaving it stale lets updateNSView do its
-        // normal rebuild (restyle + re-measure) so the accepted WT result stays visible.
         DispatchQueue.main.async { [self] in
             text = sourceText
         }
@@ -109,13 +106,13 @@ extension NativeTextViewCoordinator {
         sourceAfterWritingTools: String,
         initialSelection: NSRange?,
         startRevision: UInt64,
-        startDocumentMutationDelta: Int,
+        startDocumentPublishedDelta: Int,
         startDocumentLength: Int,
         controller: MarkdownEditorController
     ) -> MarkdownTextMutation {
         let listenerModelLength = startDocumentLength
-            + controller.documentMutationDelta
-            - startDocumentMutationDelta
+            + controller.documentPublishedDelta
+            - startDocumentPublishedDelta
         func fullReplacement(because reason: String) -> MarkdownTextMutation {
             NSLog("MarkdownEngine: Writing Tools published a full replacement because \(reason)")
             return MarkdownTextMutation(

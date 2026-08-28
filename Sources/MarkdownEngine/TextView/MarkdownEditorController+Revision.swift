@@ -16,6 +16,7 @@ struct MarkdownDocumentMutationRecord {
 private final class MarkdownDocumentRevisionState {
     private(set) var revision: UInt64 = 0
     private(set) var mutationDelta = 0
+    private(set) var publishedDelta = 0
     private var records: [MarkdownDocumentMutationRecord] = []
 
     func record(
@@ -25,6 +26,9 @@ private final class MarkdownDocumentRevisionState {
     ) {
         revision &+= 1
         self.mutationDelta += mutationDelta
+        if mutation != nil {
+            publishedDelta += mutationDelta
+        }
         records.append(MarkdownDocumentMutationRecord(
             revision: revision,
             mutation: mutation,
@@ -69,6 +73,10 @@ extension MarkdownEditorController {
 
     var documentMutationDelta: Int {
         MarkdownDocumentRevisionStore.state(for: textContentStorage).mutationDelta
+    }
+
+    var documentPublishedDelta: Int {
+        MarkdownDocumentRevisionStore.state(for: textContentStorage).publishedDelta
     }
 
     func recordDocumentMutation(

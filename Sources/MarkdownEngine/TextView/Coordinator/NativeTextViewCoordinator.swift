@@ -93,7 +93,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var wtStartDocumentId: String?
     var wtSourceSnapshot: String?
     var wtStartDocumentRevision: UInt64?
-    var wtStartDocumentMutationDelta: Int = 0
+    var wtStartDocumentPublishedDelta: Int = 0
     var wtStartDocumentLength: Int = 0
     weak var wtChildWindow: NSWindow?
     var wtInitialChildOrigin: CGPoint?
