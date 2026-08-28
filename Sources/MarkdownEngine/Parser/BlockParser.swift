@@ -329,9 +329,31 @@ enum BlockParser {
         guard let last = blocks.last, NSMaxRange(last.range) >= windowEnd else {
             return false
         }
+        // The question is not "is this KIND context-sensitive" but "can the line
+        // that actually follows change THIS block". Answering it by kind alone
+        // extended the window for a list item followed by a blockquote, which
+        // cannot continue it — and in a document that alternates the two, the
+        // window never settles and walks to the end.
+        let next = lineAfter(windowEnd, in: text)
         switch last.kind {
-        case .paragraph, .table, .linkDefinition, .footnoteDefinition, .list, .blockquote:
-            return true
+        case .list:
+            // A list block groups list-item lines and their indented
+            // continuations; a blank line or anything else ends it.
+            guard let next else { return false }
+            return isListItem(next) || isIndentedCodeLine(next)
+        case .blockquote:
+            guard let next else { return false }
+            return isBlockquote(next)
+        case .table:
+            guard let next else { return false }
+            return isTableRow(next)
+        case .paragraph, .linkDefinition, .footnoteDefinition:
+            // A paragraph absorbs almost any non-blank line, and a following
+            // `===`/`---` turns it into a setext heading; definitions take
+            // indented continuations. A blank line ends all three, and that is
+            // the common case, so this is cheap in practice.
+            guard let next else { return false }
+            return !isBlank(next)
         case .frontmatter, .fencedCode, .ext:
             return !opaqueBlockClosesWithinRange(last, in: text, registry: registry)
         case .blank:
@@ -342,6 +364,12 @@ enum BlockParser {
         case .heading, .thematicBreak:
             return false
         }
+    }
+
+    /// The whole line beginning at `offset`, or nil at the end of the document.
+    private static func lineAfter(_ offset: Int, in text: NSString) -> String? {
+        guard offset >= 0, offset < text.length else { return nil }
+        return text.substring(with: text.lineRange(for: NSRange(location: offset, length: 0)))
     }
 
     private static func opaqueBlockClosesWithinRange(

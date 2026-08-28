@@ -3,15 +3,18 @@
 //  MarkdownEngineTests
 //
 //  The reparse window grows until its trailing block cannot be reinterpreted by
-//  the suffix. Every growth reparses the window from its start, so a document
-//  whose blocks are all context-sensitive — alternating list items and
-//  blockquote lines — never reaches a stable trailing block, the window walks to
-//  the end, and the whole thing is quadratic. Measured at 370 ms per keystroke
-//  on a 10 kB chain against an 8 ms budget.
+//  the suffix, and every growth reparses the window from its START — so a shape
+//  that never settles makes the whole thing quadratic. An alternating chain of
+//  list items and blockquote lines measured 370 ms per keystroke on 10 kB,
+//  against an 8 ms budget.
 //
-//  Giving up is the fix: past a bound, one full parse is cheaper than
-//  continuing. These hold both halves of that — the bound fires, and whatever
-//  path is taken still produces exactly the blocks a full parse would.
+//  Two things fix it, and both are held here. The stability test asks whether
+//  the line that actually FOLLOWS can change the trailing block, rather than
+//  assuming any block of a context-sensitive KIND might grow — a blockquote
+//  line cannot continue a list, so that chain settles at once. And a bound on
+//  extensions and window size backstops whatever shape still walks: past it the
+//  splice declines and the caller does one full parse, which at that size costs
+//  about the same and cannot mis-splice.
 //
 
 import Foundation
@@ -22,8 +25,8 @@ import Testing
 @Suite("Incremental window bounds")
 struct IncrementalWindowBoundsTests {
 
-    /// Blocks that each absorb the line after them, so the window can never
-    /// settle.
+    /// Blocks that alternate between two kinds, neither of which can continue
+    /// the other.
     private func alternatingChain(pairs: Int) -> String {
         var out = "# Notes\n\n"
         for index in 0..<pairs {
@@ -37,8 +40,8 @@ struct IncrementalWindowBoundsTests {
         BlockParser.computeBlocks(text)
     }
 
-    /// The splice, asked directly, so the test is about the bound rather than
-    /// about whatever the memo happens to hold.
+    /// The splice, asked directly, so the test is about the window rather than
+    /// about whatever the memo happens to be holding.
     private func splice(from old: String, to new: String) -> [Block]? {
         let oldChars = Array(old.utf16)
         let newChars = Array(new.utf16)
@@ -52,31 +55,63 @@ struct IncrementalWindowBoundsTests {
         )?.blocks
     }
 
-    @Test("an unstable chain gives up instead of walking the document")
-    func unstableChainRefusesToSplice() {
-        let old = alternatingChain(pairs: 400)
-        let range = (old as NSString).range(of: "item 200")
-        let new = (old as NSString).replacingCharacters(in: range, with: "item 200x")
-
-        #expect(splice(from: old, to: new) == nil,
-                "the window kept extending; every extension reparses from its start")
+    /// Every splice must produce exactly the block list a full parse produces.
+    private func expectAgreesWithFullParse(_ spliced: [Block], _ text: String) {
+        #expect(spliced == blocks(text), "the splice disagreed with a full parse")
+        var cursor = 0
+        for block in spliced {
+            #expect(block.range.location == cursor, "blocks must tile the document")
+            cursor = NSMaxRange(block.range)
+        }
+        #expect(cursor == (text as NSString).length)
     }
 
-    @Test("giving up still yields exactly what a full parse yields")
-    func fullParseAgreesAfterGivingUp() {
+    @Test("an alternating list/blockquote chain settles at once and splices")
+    func alternatingChainSplices() throws {
+        // The shape that used to walk the whole document on every keystroke.
         let old = alternatingChain(pairs: 400)
         let range = (old as NSString).range(of: "item 200")
         let new = (old as NSString).replacingCharacters(in: range, with: "item 200x")
 
-        // What the caller does when the splice declines.
+        let spliced = try #require(splice(from: old, to: new),
+                                   "the window failed to settle on a shape that cannot grow")
+        expectAgreesWithFullParse(spliced, new)
+    }
+
+    @Test("a window past the byte bound declines rather than splicing")
+    func oversizedWindowDeclines() {
+        // One paragraph larger than the ceiling: the edit's own block does not
+        // fit, so there is nothing to splice around.
+        let paragraph = String(repeating: "sediment settles into layers. ", count: 900)
+        let old = paragraph + "\n"
+        let new = "x" + paragraph + "\n"
+        #expect((old as NSString).length > 16_384)
+
+        #expect(splice(from: old, to: new) == nil)
+
+        // And the full parse the caller falls back to is well formed.
         let full = blocks(new)
-        #expect(full.count > 700)
         var cursor = 0
         for block in full {
-            #expect(block.range.location == cursor, "the full parse must tile the document")
+            #expect(block.range.location == cursor)
             cursor = NSMaxRange(block.range)
         }
         #expect(cursor == (new as NSString).length)
+    }
+
+    @Test("a genuinely growing trailing block still extends the window")
+    func growingTrailingBlockStillExtends() throws {
+        // A paragraph followed by a setext underline: the window MUST reach the
+        // `---` or it splices a paragraph plus a thematic break where a full
+        // parse gives an H2.
+        let old = "intro\n\nTitle\n---\n\nbody\n"
+        let range = (old as NSString).range(of: "intro")
+        let new = (old as NSString).replacingCharacters(in: range, with: "introx")
+
+        let spliced = try #require(splice(from: old, to: new))
+        expectAgreesWithFullParse(spliced, new)
+        #expect(spliced.contains { $0.kind == .heading },
+                "the setext heading was lost to a too-narrow window")
     }
 
     @Test("a short chain still splices — the bound is a ceiling, not a ban")
@@ -85,9 +120,8 @@ struct IncrementalWindowBoundsTests {
         let range = (old as NSString).range(of: "item 1")
         let new = (old as NSString).replacingCharacters(in: range, with: "item 1x")
 
-        let spliced = try #require(splice(from: old, to: new),
-                                   "a three-pair chain is well inside the bound")
-        #expect(spliced == blocks(new), "the splice disagreed with a full parse")
+        let spliced = try #require(splice(from: old, to: new))
+        expectAgreesWithFullParse(spliced, new)
     }
 
     @Test("an ordinary document is unaffected by the bound")
@@ -100,20 +134,6 @@ struct IncrementalWindowBoundsTests {
         let new = (old as NSString).replacingCharacters(in: range, with: "Section 100x")
 
         let spliced = try #require(splice(from: old, to: new))
-        #expect(spliced == blocks(new))
-    }
-
-    @Test("a window larger than the byte bound declines rather than splicing")
-    func oversizedWindowDeclines() {
-        // One paragraph bigger than the window ceiling: the edit's own block
-        // cannot fit, so there is nothing to splice around.
-        let paragraph = String(repeating: "sediment settles into layers. ", count: 900)
-        let old = paragraph + "\n"
-        let new = "x" + paragraph + "\n"
-        #expect((old as NSString).length > 16_384)
-
-        #expect(splice(from: old, to: new) == nil)
-        // And the full parse of the result is still well-formed.
-        #expect(blocks(new).count >= 1)
+        expectAgreesWithFullParse(spliced, new)
     }
 }
