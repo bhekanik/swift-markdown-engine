@@ -112,7 +112,7 @@ struct OrderedListDisplayNumberingTests {
         #expect(overlays(style("- outer\n  1. a\n  2. b")).isEmpty)
         #expect(overlays(style("- outer\n\t1. a\n\t2. b")).isEmpty)
         #expect(overlays(style("  1. alpha")).isEmpty)
-        #expect(overlays(style("1. top\n  1. nested\n  2. nested")).isEmpty)
+        #expect(overlays(style("1. top\n   1. nested\n   2. nested")).isEmpty)
     }
 
     /// A hole of blank lines between two scoped blocks is loose-list spacing,

@@ -167,7 +167,7 @@ extension MarkdownTokenizer {
         // Fenced code is opaque — no inline markup inside it. Extension blocks
         // parse inlines over their CONTENT only; the fence lines are syntax.
         let inline: [MarkdownToken]
-        if kind == .fencedCode {
+        if kind == .fencedCode || kind == .frontmatter {
             inline = []
         } else if case .ext = kind, let block = blockLevel.first {
             let ns = sub as NSString

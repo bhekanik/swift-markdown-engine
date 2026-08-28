@@ -18,6 +18,20 @@ struct MarkdownASTStylerTests {
     private var fontName: String { NSFont.systemFont(ofSize: 14).fontName }
 
     @MainActor
+    private func render(_ source: String, caret: Int = -1) -> NSAttributedString {
+        MarkdownRendering.attributedString(
+            for: source,
+            fontName: fontName,
+            fontSize: base,
+            caretLocation: caret
+        )
+    }
+
+    private func expectSourceBytesUnchanged(_ source: String, _ rendered: NSAttributedString) {
+        #expect(Array(rendered.string.utf8) == Array(source.utf8))
+    }
+
+    @MainActor
     @Test("scoped styling of a continuous list emits only intersecting ranges")
     func scopedContinuousListEmitsOnlyIntersectingRanges() {
         _ = NSApplication.shared
@@ -286,6 +300,83 @@ struct MarkdownASTStylerTests {
         for pos in [2, 3, 8, 9, 13, 14, 19, 20, 24, 25, 32, 33, 37, 44] {
             #expect(isHiddenMarkerFont(in: attrs, at: pos), "marker at \(pos) should be shrunk")
         }
+    }
+
+    @MainActor
+    @Test("frontmatter collapses outside and reveals as muted source inside")
+    func frontmatterCollapsesAndPreservesSource() throws {
+        let source = "---\ntitle: Note\n---\nBody"
+        let hidden = render(source)
+        expectSourceBytesUnchanged(source, hidden)
+        let hiddenFont = try #require(hidden.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let hiddenBodyFont = try #require(hidden.attribute(.font, at: 6, effectiveRange: nil) as? NSFont)
+        let hiddenColor = try #require(hidden.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        #expect(hiddenFont.pointSize < 1)
+        #expect(hiddenBodyFont.pointSize < 1)
+        #expect(hiddenColor.alphaComponent == 0)
+
+        let revealed = render(source, caret: 8)
+        let revealedFont = try #require(revealed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let revealedColor = try #require(revealed.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        #expect(revealedFont.pointSize == base)
+        #expect(revealedColor == MarkdownEditorTheme.default.mutedText)
+    }
+
+    @MainActor
+    @Test("setext underline hides and reveals with its heading")
+    func setextMarkerHidesAndPreservesSource() throws {
+        let source = "Title\n---\n"
+        let hidden = render(source)
+        expectSourceBytesUnchanged(source, hidden)
+        let titleFont = try #require(hidden.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let markerFont = try #require(hidden.attribute(.font, at: 6, effectiveRange: nil) as? NSFont)
+        #expect(titleFont.pointSize > base)
+        #expect(markerFont.pointSize < 1)
+
+        let revealed = render(source, caret: 7)
+        let revealedMarker = try #require(revealed.attribute(.font, at: 6, effectiveRange: nil) as? NSFont)
+        #expect(revealedMarker.pointSize > base)
+    }
+
+    @MainActor
+    @Test("tilde-fenced code styling preserves every source byte")
+    func tildeFencePreservesSource() {
+        let source = "~~~swift\nlet x = 1\n~~~~\n"
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.backgroundColor, at: 9, effectiveRange: nil) != nil)
+    }
+
+    @MainActor
+    @Test("indented code styling preserves indentation and source bytes")
+    func indentedCodePreservesSource() {
+        let source = "    let x = 1\n"
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.backgroundColor, at: 4, effectiveRange: nil) != nil)
+        #expect((rendered.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize ?? 0 > 1)
+    }
+
+    @MainActor
+    @Test("spaced thematic-break styling preserves source bytes")
+    func spacedThematicBreakPreservesSource() {
+        let source = "- - -\n"
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.thematicBreak, at: 0, effectiveRange: nil) as? Bool == true)
+    }
+
+    @MainActor
+    @Test("content-column list styling preserves source bytes")
+    func contentColumnListsPreserveSource() {
+        let source = "- root\n - sibling\n  - child\n\t- tab child\n"
+        expectSourceBytesUnchanged(source, render(source))
+
+        let sibling = render("- root\n - sibling\n")
+        let nested = render("- root\n  - child\n")
+        let siblingStyle = sibling.attribute(.paragraphStyle, at: 7, effectiveRange: nil) as? NSParagraphStyle
+        let nestedStyle = nested.attribute(.paragraphStyle, at: 7, effectiveRange: nil) as? NSParagraphStyle
+        #expect((nestedStyle?.headIndent ?? 0) > (siblingStyle?.headIndent ?? 0))
     }
 }
 

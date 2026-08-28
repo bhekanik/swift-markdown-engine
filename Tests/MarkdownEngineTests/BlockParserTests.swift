@@ -101,4 +101,100 @@ struct BlockParserTests {
         #expect(BlockParser.parse(text) == [b(.blockquote, 0, 8), b(.paragraph, 8, 1)])
         assertTiles(text)
     }
+
+    @Test("frontmatter only pairs at document start and unterminated openers stay thematic breaks")
+    func frontmatterPairingIsDocumentScoped() {
+        let text = "---\ntitle: x\n...\nbody"
+        #expect(BlockParser.parse(text) == [
+            b(.frontmatter, 0, 17),
+            b(.paragraph, 17, 4),
+        ])
+        #expect(BlockParser.parse("---\ntitle: x") == [
+            b(.thematicBreak, 0, 4),
+            b(.paragraph, 4, 8),
+        ])
+        #expect(BlockParser.parse("body\n\n---\n") == [
+            b(.paragraph, 0, 5),
+            b(.blank, 5, 1),
+            b(.thematicBreak, 6, 4),
+        ])
+        assertTiles(text)
+    }
+
+    @Test("frontmatter and tilde delimiters force a full incremental parse")
+    func newPairedDelimitersRipple() {
+        for text in ["---\n", "...\n", "~~~swift\n"] {
+            let chars = Array(text.utf16)
+            #expect(BlockParser.hasBlockDelimiter(chars, 0, chars.count))
+        }
+    }
+
+    @Test("setext underline closes a paragraph before thematic-break classification")
+    func setextHeadingPrecedesThematicBreak() {
+        let text = "Title\n---\nbody"
+        #expect(BlockParser.parse(text) == [
+            b(.heading, 0, 10),
+            b(.paragraph, 10, 4),
+        ])
+        if let first = DocumentAST.parse(text).first,
+           case .heading(let level, let range, let markers, _) = first {
+            #expect(level == 2)
+            #expect(range == NSRange(location: 0, length: 10))
+            #expect(markers == [NSRange(location: 6, length: 4)])
+        } else {
+            Issue.record("Expected setext heading node")
+        }
+        #expect(BlockParser.parse("Title\n = \t\n") == [b(.heading, 0, 11)])
+        assertTiles(text)
+    }
+
+    @Test("setext underline only closes paragraphs")
+    func setextDoesNotCloseOtherBlocks() {
+        #expect(BlockParser.parse("# Heading\n---\n").map(\.kind) == [.heading, .thematicBreak])
+        #expect(BlockParser.parse("- item\n---\n").map(\.kind) == [.list, .thematicBreak])
+        #expect(BlockParser.parse("> quote\n---\n").map(\.kind) == [.blockquote, .thematicBreak])
+        #expect(BlockParser.parse("\n---\n").map(\.kind) == [.blank, .thematicBreak])
+    }
+
+    @Test("tilde fences require matching characters and sufficient closing length")
+    func tildeFencePairing() {
+        let text = "~~~~swift\nx\n~~~~~\n"
+        #expect(BlockParser.parse(text) == [b(.fencedCode, 0, 18)])
+        let token = MarkdownTokenizer.parseTokensViaAST(in: text).first { $0.kind == .codeBlock }
+        #expect(token.flatMap { MarkdownTokenizer.extractLanguage(from: $0, in: text) } == "swift")
+        #expect(!BlockParser.parse("~~~~\nx\n~~~\n").contains { $0.kind == .fencedCode })
+        #expect(!BlockParser.parse("~~~\nx\n```\n").contains { $0.kind == .fencedCode })
+    }
+
+    @Test("indented code keeps internal blanks but leaves trailing blanks outside")
+    func indentedCodeBlock() {
+        let text = "    one\n\n\t two\n\nbody"
+        #expect(BlockParser.parse(text) == [
+            b(.fencedCode, 0, 15),
+            b(.blank, 15, 1),
+            b(.paragraph, 16, 4),
+        ])
+        #expect(BlockParser.parse("    # literal heading\n").map(\.kind) == [.fencedCode])
+        assertTiles(text)
+    }
+
+    @Test("indented code cannot interrupt a paragraph or split list content")
+    func indentedCodePrecedence() throws {
+        #expect(BlockParser.parse("paragraph\n    continuation\n").map(\.kind) == [.paragraph])
+        #expect(BlockParser.parse("- item\n    continuation\n").map(\.kind) == [.list])
+        let node = try #require(DocumentAST.parse("- item\n    continuation\n").first)
+        guard case .list(_, let items) = node else {
+            Issue.record("Expected list")
+            return
+        }
+        #expect(items.count == 1)
+    }
+
+    @Test("spaced thematic breaks win over lists while ordinary bullets remain lists")
+    func spacedThematicBreaks() {
+        for source in ["- - -\n", "* * *\n", "_ _ _\n", "-  -  -\n"] {
+            #expect(BlockParser.parse(source).map(\.kind) == [.thematicBreak], "source \(source.debugDescription)")
+        }
+        #expect(BlockParser.parse("- item\n").map(\.kind) == [.list])
+    }
 }

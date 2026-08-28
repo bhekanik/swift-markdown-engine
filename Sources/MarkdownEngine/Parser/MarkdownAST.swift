@@ -20,8 +20,22 @@ struct ListItem: Equatable {
     let checkbox: NSRange?
     let checked: Bool
     let indent: Int
+    let level: Int
     let contentRange: NSRange   // text after the marker (and checkbox)
     let inlines: [InlineNode]
+}
+
+struct ListLevelResolver {
+    private var contentColumns: [Int] = []
+
+    mutating func level(markerColumn: Int, contentColumn: Int) -> Int {
+        while let openColumn = contentColumns.last, markerColumn < openColumn {
+            contentColumns.removeLast()
+        }
+        let level = contentColumns.count
+        contentColumns.append(contentColumn)
+        return level
+    }
 }
 
 /// An extension-supplied fenced block. `closeFence` is nil when the block is
@@ -37,6 +51,7 @@ struct ExtensionBlockNode: Equatable {
 
 /// A top-level block in the document AST.
 indirect enum BlockNode: Equatable {
+    case frontmatter(range: NSRange)
     case paragraph(range: NSRange, inlines: [InlineNode])
     case heading(level: Int, range: NSRange, markers: [NSRange], inlines: [InlineNode])
     case blockquote(range: NSRange, inlines: [InlineNode])
@@ -49,7 +64,7 @@ indirect enum BlockNode: Equatable {
 
     var range: NSRange {
         switch self {
-        case .paragraph(let r, _), .heading(_, let r, _, _), .blockquote(let r, _),
+        case .frontmatter(let r), .paragraph(let r, _), .heading(_, let r, _, _), .blockquote(let r, _),
              .list(let r, _), .codeBlock(let r), .table(let r),
              .thematicBreak(let r), .blank(let r):
             return r
@@ -163,6 +178,8 @@ enum DocumentAST {
     private static func node(for block: Block, ns: NSString, scopedRanges: [NSRange]?, registry: ExtensionRegistry) -> BlockNode {
         let scoped = inScope(block.range, scopedRanges)
         switch block.kind {
+        case .frontmatter:
+            return .frontmatter(range: block.range)
         case .paragraph:
             return .paragraph(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range, registry: registry) : [])
         case .heading:
@@ -227,7 +244,7 @@ enum DocumentAST {
         ))
     }
 
-    /// ATX heading: optional indent, `#`×level, space(s), then inline content.
+    /// Excluding setext syntax keeps the underline out of inline styling.
     private static func heading(_ range: NSRange, _ ns: NSString, scoped: Bool = true, registry: ExtensionRegistry = .empty) -> BlockNode {
         let end = NSMaxRange(range)
         var i = range.location
@@ -235,6 +252,22 @@ enum DocumentAST {
         let hashStart = i
         var level = 0
         while i < end, ns.character(at: i) == hash { level += 1; i += 1 }
+
+        if level == 0 {
+            let underline = ns.lineRange(for: NSRange(location: max(range.location, end - 1), length: 0))
+            var marker = underline.location
+            while marker < end, ns.character(at: marker) == space { marker += 1 }
+            level = marker < end && ns.character(at: marker) == 0x3D ? 1 : 2
+            var contentEnd = underline.location
+            while contentEnd > range.location, isLineBreak(ns.character(at: contentEnd - 1)) { contentEnd -= 1 }
+            let contentRange = NSRange(location: range.location, length: contentEnd - range.location)
+            return .heading(
+                level: level,
+                range: range,
+                markers: [NSIntersectionRange(underline, range)],
+                inlines: scoped ? InlineParser.parse(ns, range: contentRange, registry: registry) : []
+            )
+        }
 
         var contentStart = i
         while contentStart < end, ns.character(at: contentStart) == space { contentStart += 1 }
@@ -248,73 +281,69 @@ enum DocumentAST {
                         inlines: scoped ? InlineParser.parse(ns, range: contentRange, registry: registry) : [])
     }
 
-    /// Split a list block into physical items. Scoped passes derive their lines
-    /// directly from the normalized scopes instead of walking the whole block.
     private static func list(
         _ range: NSRange,
         _ ns: NSString,
         scopedRanges: [NSRange]? = nil,
         registry: ExtensionRegistry = .empty
     ) -> BlockNode {
-        let lineRanges: [NSRange]
-        if let scopedRanges {
-            var selected: [NSRange] = []
-            for scope in scopedRanges {
-                let intersection = NSIntersectionRange(scope, range)
-                guard intersection.length > 0 else { continue }
-                let expanded = NSIntersectionRange(
-                    ns.lineRange(for: intersection),
-                    range
-                )
-                var cursor = expanded.location
-                let end = NSMaxRange(expanded)
-                while cursor < end {
-                    let line = NSIntersectionRange(
-                        ns.lineRange(
-                            for: NSRange(location: cursor, length: 0)
-                        ),
-                        range
-                    )
-                    if line.length > 0, selected.last != line {
-                        selected.append(line)
-                    }
-                    let next = NSMaxRange(line)
-                    guard next > cursor else { break }
-                    cursor = next
-                }
+        var itemRanges: [NSRange] = []
+        var cursor = range.location
+        let end = NSMaxRange(range)
+        while cursor < end {
+            let line = NSIntersectionRange(
+                ns.lineRange(for: NSRange(location: cursor, length: 0)),
+                range
+            )
+            if BlockParser.isListItem(ns.substring(with: line)) {
+                itemRanges.append(line)
+            } else if let last = itemRanges.indices.last {
+                itemRanges[last].length = NSMaxRange(line) - itemRanges[last].location
             }
-            lineRanges = selected
-        } else {
-            var all: [NSRange] = []
-            var cursor = range.location
-            let end = NSMaxRange(range)
-            while cursor < end {
-                let line = ns.lineRange(
-                    for: NSRange(location: cursor, length: 0)
-                )
-                all.append(line)
-                cursor = NSMaxRange(line)
-            }
-            lineRanges = all
+            let next = NSMaxRange(line)
+            guard next > cursor else { break }
+            cursor = next
         }
 
         var items: [ListItem] = []
-        items.reserveCapacity(lineRanges.count)
-        for line in lineRanges {
-            items.append(
-                listItem(line, ns, scoped: true, registry: registry)
+        items.reserveCapacity(itemRanges.count)
+        var levels = ListLevelResolver()
+        for itemRange in itemRanges {
+            let scoped = inScope(itemRange, scopedRanges)
+            let item = listItem(
+                itemRange,
+                ns,
+                scoped: scoped,
+                registry: registry,
+                levels: &levels
             )
+            if scoped { items.append(item) }
         }
         return .list(range: range, items: items)
     }
 
-    /// Parse one list-item line: indent, marker, optional task checkbox, inline content.
-    private static func listItem(_ lineRange: NSRange, _ ns: NSString, scoped: Bool = true, registry: ExtensionRegistry = .empty) -> ListItem {
+    private static func listItem(
+        _ lineRange: NSRange,
+        _ ns: NSString,
+        scoped: Bool = true,
+        registry: ExtensionRegistry = .empty,
+        levels: inout ListLevelResolver
+    ) -> ListItem {
         let end = NSMaxRange(lineRange)
         var i = lineRange.location
         var indent = 0
-        while i < end, ns.character(at: i) == space || ns.character(at: i) == tab { i += 1; indent += 1 }
+        var column = 0
+        while i < end, ns.character(at: i) == space || ns.character(at: i) == tab {
+            if ns.character(at: i) == tab {
+                column += 4 - column % 4
+            } else {
+                column += 1
+            }
+            i += 1
+            indent += 1
+        }
         let markerStart = i
+        let markerColumn = column
         var ordered = false
         var number: Int?
         let c = i < end ? ns.character(at: i) : 0
@@ -331,7 +360,16 @@ enum DocumentAST {
             if i < end { i += 1 }                       // the `.` or `)`
         }
         let marker = NSRange(location: markerStart, length: i - markerStart)
-        if i < end, ns.character(at: i) == space || ns.character(at: i) == tab { i += 1 }
+        column += marker.length
+        if i < end, ns.character(at: i) == space || ns.character(at: i) == tab {
+            if ns.character(at: i) == tab {
+                column += 4 - column % 4
+            } else {
+                column += 1
+            }
+            i += 1
+        }
+        let level = levels.level(markerColumn: markerColumn, contentColumn: column)
         var checkbox: NSRange?
         var checked = false
         if i + 2 < end, ns.character(at: i) == 0x5B, ns.character(at: i + 2) == 0x5D {   // [ x ]
@@ -347,7 +385,7 @@ enum DocumentAST {
         while contentEnd > i, isLineBreak(ns.character(at: contentEnd - 1)) { contentEnd -= 1 }
         let content = NSRange(location: i, length: max(0, contentEnd - i))
         return ListItem(range: lineRange, marker: marker, ordered: ordered, number: number,
-                        checkbox: checkbox, checked: checked, indent: indent,
+                        checkbox: checkbox, checked: checked, indent: indent, level: level,
                         contentRange: content, inlines: scoped ? InlineParser.parse(ns, range: content, registry: registry) : [])
     }
 

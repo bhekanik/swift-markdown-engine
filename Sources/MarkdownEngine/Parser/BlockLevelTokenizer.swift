@@ -43,6 +43,7 @@ enum BlockLevelTokenizer {
     /// Block-level tokens for one block substring, dispatched by its kind.
     static func tokens(for kind: BlockKind, in sub: NSString, registry: ExtensionRegistry = .empty) -> [MarkdownToken] {
         switch kind {
+        case .frontmatter: return []
         case .fencedCode:  return codeBlock(in: sub)
         case .heading:     return heading(in: sub)
         case .blockquote:  return blockquote(in: sub)
@@ -97,7 +98,8 @@ enum BlockLevelTokenizer {
         let hashStart = i
         while i < len, s.character(at: i) == hash { i += 1 }
         let hashEnd = i
-        guard hashEnd > hashStart, hashEnd - hashStart <= 6,
+        guard hashEnd > hashStart else { return setextHeading(in: s) }
+        guard hashEnd - hashStart <= 6,
               hashEnd < len, s.character(at: hashEnd) == space else { return [] }
         var contentStart = hashEnd
         while contentStart < len, s.character(at: contentStart) == space { contentStart += 1 }
@@ -107,6 +109,27 @@ enum BlockLevelTokenizer {
                        NSRange(location: hashEnd, length: 1)]
         let content = NSRange(location: contentStart, length: max(0, lineEnd - contentStart))
         return [MarkdownToken(kind: .heading, range: tokenRange, contentRange: content, markerRanges: markers)]
+    }
+
+    private static func setextHeading(in s: NSString) -> [MarkdownToken] {
+        let len = s.length
+        guard len > 0 else { return [] }
+        let underline = s.lineRange(for: NSRange(location: len - 1, length: 0))
+        var markerEnd = NSMaxRange(underline)
+        while markerEnd > underline.location,
+              s.character(at: markerEnd - 1) == lf || s.character(at: markerEnd - 1) == cr {
+            markerEnd -= 1
+        }
+        var contentEnd = underline.location
+        while contentEnd > 0, s.character(at: contentEnd - 1) == lf || s.character(at: contentEnd - 1) == cr {
+            contentEnd -= 1
+        }
+        return [MarkdownToken(
+            kind: .heading,
+            range: NSRange(location: 0, length: markerEnd),
+            contentRange: NSRange(location: 0, length: contentEnd),
+            markerRanges: [NSRange(location: underline.location, length: markerEnd - underline.location)]
+        )]
     }
 
     // MARK: - Blockquote  (legacy `^[ \t]{0,3}((?:>[ \t]?)+)(.*)$`, one token per line)
@@ -143,29 +166,52 @@ enum BlockLevelTokenizer {
 
     private static func codeBlock(in s: NSString) -> [MarkdownToken] {
         let len = s.length
-        guard len >= 3 else { return [] }
-        let afterOpenLine = line(in: s, from: 0).nextStart
+        guard len > 0 else { return [] }
+        let openingLine = line(in: s, from: 0)
+        let fenceCharacter = s.character(at: 0)
+        var openingRunEnd = 0
+        while openingRunEnd < openingLine.contentEnd,
+              s.character(at: openingRunEnd) == fenceCharacter { openingRunEnd += 1 }
+        let isFenced = (fenceCharacter == backtick || fenceCharacter == 0x7E) && openingRunEnd >= 3
+        if !isFenced {
+            var contentEnd = len
+            while contentEnd > 0,
+                  s.character(at: contentEnd - 1) == lf || s.character(at: contentEnd - 1) == cr {
+                contentEnd -= 1
+            }
+            let content = NSRange(location: 0, length: contentEnd)
+            return [MarkdownToken(kind: .codeBlock, range: content, contentRange: content, markerRanges: [])]
+        }
+
+        let afterOpenLine = openingLine.nextStart
         var lineStart = afterOpenLine
         var closingStart = -1
+        var closingEnd = -1
         while lineStart < len {
-            if lineStart + 3 <= len,
-               s.character(at: lineStart) == backtick,
-               s.character(at: lineStart + 1) == backtick,
-               s.character(at: lineStart + 2) == backtick {
-                closingStart = lineStart
-                break
+            let current = line(in: s, from: lineStart)
+            var runEnd = lineStart
+            while runEnd < current.contentEnd, s.character(at: runEnd) == fenceCharacter { runEnd += 1 }
+            if runEnd - lineStart >= openingRunEnd {
+                var suffix = runEnd
+                while suffix < current.contentEnd,
+                      s.character(at: suffix) == space || s.character(at: suffix) == tab { suffix += 1 }
+                if suffix == current.contentEnd {
+                    closingStart = lineStart
+                    closingEnd = runEnd
+                    break
+                }
             }
-            let next = line(in: s, from: lineStart).nextStart
+            let next = current.nextStart
             if next <= lineStart { break }
             lineStart = next
         }
         guard closingStart >= 0 else { return [] }   // no closing fence → legacy didn't match
         return [MarkdownToken(
             kind: .codeBlock,
-            range: NSRange(location: 0, length: closingStart + 3),
+            range: NSRange(location: 0, length: closingEnd),
             contentRange: NSRange(location: afterOpenLine, length: closingStart - afterOpenLine),
             markerRanges: [NSRange(location: 0, length: afterOpenLine),
-                           NSRange(location: closingStart, length: 3)])]
+                           NSRange(location: closingStart, length: closingEnd - closingStart)])]
     }
 
     // MARK: - Table  (legacy header `|…|` + separator `|-…-|` + data rows)

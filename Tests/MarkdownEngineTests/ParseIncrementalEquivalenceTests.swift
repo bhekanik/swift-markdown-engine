@@ -41,12 +41,15 @@ struct ParseIncrementalEquivalenceTests {
         "> a blockquote line",
         "| a | b |", "|---|---|", "| 1 | 2 |",
         "```swift", "let x = 1", "```",
+        "~~~swift", "let y = 2", "~~~~",
+        "Setext title", "===", "- - -",
+        "    indented code",
         "A ==highlight== and ~~strike~~.",
         "",
     ]
 
     private static let editSnippets = [
-        "x", "ab", " ", "\n", "`", "``", "```", "**", "- ", "# ",
+        "x", "ab", " ", "\n", "`", "``", "```", "~", "~~", "~~~", "**", "- ", "# ",
         "| c |", "\n\n", "word and more",
     ]
 
@@ -116,6 +119,27 @@ struct ParseIncrementalEquivalenceTests {
 
     @Test func scanDrivenMatchesFullParse() {
         runFuzz(seed: 0xD00D, useDescriptor: false)
+    }
+
+    @Test("frontmatter and tilde pairing edits match a full parse")
+    func pairedDialectEditsMatchFullParse() throws {
+        let cases = [
+            ("---\ntitle\nbody", "---\ntitle\n---\nbody"),
+            ("~~~swift\ncode\ntail", "~~~swift\ncode\n~~~\ntail"),
+        ]
+        for (before, after) in cases {
+            let state = DocumentParseState()
+            _ = state.tokens(for: before, edit: nil)
+            let diff = try #require(BlockParser.scanDiff(old: Array(before.utf16), new: Array(after.utf16)))
+            let edit = ParseEditDescriptor(
+                editedRange: NSRange(
+                    location: diff.changeStart,
+                    length: diff.changeEndNew - diff.changeStart
+                ),
+                delta: diff.delta
+            )
+            #expect(dump(state.tokens(for: after, edit: edit)) == groundTruth(after))
+        }
     }
 
     // MARK: - Backtick census

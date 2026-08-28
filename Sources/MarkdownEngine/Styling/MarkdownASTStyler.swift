@@ -233,12 +233,6 @@ enum MarkdownASTStyler {
     /// any edit renumbers correctly; the count carries across a blank line (a
     /// loose-list separator) so `1.`/`2.`⏎blank⏎`2.` shows 1,2,3 — real content
     /// between lists resets it. First item of a run keeps its own start value.
-    /// Like MarkdownLists.listRegex but also accepts `)` ordered markers (`5)`),
-    /// matching the AST — used by the backward seed scan (group 2 = digits).
-    private static let seedOrderedLineRegex = try! NSRegularExpression(
-        pattern: #"^\s*((?:(\d+)[.)]|[-•*+])(?:\s+\[[ xX]\])?\s+)"#
-    )
-
     /// First non-blank character in a range answers "was there content in the
     /// hole between two scoped blocks" without materializing the substring.
     private static let nonWhitespace = CharacterSet.whitespacesAndNewlines.inverted
@@ -249,7 +243,7 @@ enum MarkdownASTStyler {
     /// restyle that only sees a local window continue the document's numbering.
     private static func seedOrderedCounters(above loc: Int, in ns: NSString) -> [Int: Int] {
         guard loc > 0, loc <= ns.length else { return [:] }
-        var runLines: [(indent: Int, number: Int?)] = []   // bottom-to-top; nil = bullet/other list
+        var runLines: [(markerColumn: Int, contentColumn: Int, number: Int?)] = []
         // From the START of loc's line: callers pass a MARKER offset, which for
         // an indented item still sits inside its own line — scanning up from
         // there counted the item itself, so every nested list rendered one too
@@ -258,32 +252,70 @@ enum MarkdownASTStyler {
         while scan > 0 {
             let lineRange = ns.lineRange(for: NSRange(location: scan - 1, length: 0))
             let line = ns.substring(with: lineRange) as NSString
-            let full = NSRange(location: 0, length: line.length)
             if (line as String).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 scan = lineRange.location                    // blank line: loose-list spacing
                 continue
             }
-            guard let m = seedOrderedLineRegex.firstMatch(in: line as String, range: full) else { break }
-            let ws = MarkdownLists.leadingWhitespaceRegex.firstMatch(in: line as String, range: full)
-                .map { line.substring(with: $0.range) } ?? ""
-            let number = m.range(at: 2).location != NSNotFound ? Int(line.substring(with: m.range(at: 2))) : nil
-            // Key by the raw leading-whitespace char count to match the parser's
-            // `item.indent` used by computeOrderedDisplayNumbers — otherwise a
-            // nested item's seed counter wouldn't line up and it'd fall back to
-            // the literal digit.
-            runLines.append(((ws as NSString).length, number))
+            guard let item = listSeed(in: line) else { break }
+            runLines.append(item)
             scan = lineRange.location
         }
         var counters: [Int: Int] = [:]
+        var levels = ListLevelResolver()
         for item in runLines.reversed() {                    // replay top-to-bottom
+            let level = levels.level(
+                markerColumn: item.markerColumn,
+                contentColumn: item.contentColumn
+            )
             if let number = item.number {
-                counters[item.indent] = (counters[item.indent] ?? number) + 1
+                counters[level] = (counters[level] ?? number) + 1
             } else {
-                counters[item.indent] = nil
+                counters[level] = nil
             }
-            for key in counters.keys where key > item.indent { counters[key] = nil }
+            for key in counters.keys where key > level { counters[key] = nil }
         }
         return counters
+    }
+
+    private static func listSeed(in line: NSString) -> (markerColumn: Int, contentColumn: Int, number: Int?)? {
+        var i = 0
+        var column = 0
+        while i < line.length {
+            let c = line.character(at: i)
+            guard c == 0x20 || c == 0x09 else { break }
+            column += c == 0x09 ? 4 - column % 4 : 1
+            i += 1
+        }
+        let markerColumn = column
+        var number: Int?
+        let first = i < line.length ? line.character(at: i) : 0
+        if first == 0x2D || first == 0x2A || first == 0x2B || first == 0x2022 {
+            i += 1
+            column += 1
+        } else if first >= 0x30, first <= 0x39 {
+            var value = 0
+            var digits = 0
+            while i < line.length {
+                let c = line.character(at: i)
+                guard c >= 0x30, c <= 0x39, digits < 9 else { break }
+                value = value * 10 + Int(c - 0x30)
+                i += 1
+                digits += 1
+                column += 1
+            }
+            guard i < line.length,
+                  line.character(at: i) == 0x2E || line.character(at: i) == 0x29 else { return nil }
+            number = value
+            i += 1
+            column += 1
+        } else {
+            return nil
+        }
+        guard i < line.length,
+              line.character(at: i) == 0x20 || line.character(at: i) == 0x09 else { return nil }
+        let separator = line.character(at: i)
+        column += separator == 0x09 ? 4 - column % 4 : 1
+        return (markerColumn, column, number)
     }
 
     private static func computeOrderedDisplayNumbers(blocks: [BlockNode], ns: NSString) -> [Int: Int] {
@@ -330,13 +362,13 @@ enum MarkdownASTStyler {
                             counters = seedOrderedCounters(above: item.marker.location, in: ns)
                             needsSeed = false
                         }
-                        let n = counters[item.indent] ?? literal
+                        let n = counters[item.level] ?? literal
                         result[item.marker.location] = n
-                        counters[item.indent] = n + 1
+                        counters[item.level] = n + 1
                     } else {
-                        counters[item.indent] = nil
+                        counters[item.level] = nil
                     }
-                    for key in counters.keys where key > item.indent { counters[key] = nil }
+                    for key in counters.keys where key > item.level { counters[key] = nil }
                     previousItemEnd = NSMaxRange(item.range)
                 }
                 // Items the scope dropped from the TAIL are not "already counted".
@@ -373,8 +405,6 @@ enum MarkdownASTStyler {
         }
 
         // 1. Indent paragraph style (hanging indent so wrapped lines align).
-        let wsRange = NSRange(location: item.range.location, length: item.marker.location - item.range.location)
-        let ws = ctx.ns.substring(with: wsRange)
         // Revealed while the caret edits the syntax (same test as the early
         // return below): the raw `- [ ]` stays at full advance.
         let taskRevealed: Bool = {
@@ -422,7 +452,7 @@ enum MarkdownASTStyler {
             }
             return HeadingHelpers.textWidth(ctx.ns.substring(with: markerGroup), font: ctx.baseFont)
         }()
-        let depthIndent = CGFloat(MarkdownLists.indentLevel(from: ws)) * ctx.config.lists.indentPerLevel
+        let depthIndent = CGFloat(item.level) * ctx.config.lists.indentPerLevel
         let ps = NSMutableParagraphStyle()
         let lineHeight = ctx.baseLineHeight + ctx.config.lists.extraLineHeight
         ps.minimumLineHeight = lineHeight
@@ -609,6 +639,30 @@ enum MarkdownASTStyler {
 
     private static func styleBlock(_ block: BlockNode, font: NSFont, ctx: Ctx, into attrs: inout [StyledRange]) {
         switch block {
+        case .frontmatter(let range):
+            if ctx.isActive(range) {
+                attrs.append((range, [
+                    .font: font,
+                    .foregroundColor: ctx.theme.mutedText,
+                ]))
+            } else {
+                // Shrinking the characters is not enough: a newline starts a
+                // new line fragment whatever font it is set in, so a five-line
+                // block would still leave five empty lines above the body.
+                // Collapsing the line height is what actually removes them.
+                let collapsed = NSMutableParagraphStyle()
+                collapsed.minimumLineHeight = 0.01
+                collapsed.maximumLineHeight = 0.01
+                collapsed.paragraphSpacing = 0
+                collapsed.paragraphSpacingBefore = 0
+                attrs.append((range, [
+                    .font: ctx.inlineMarkerFont,
+                    .foregroundColor: NSColor.clear,
+                    .kern: -ctx.inlineMarkerFont.pointSize,
+                    .paragraphStyle: collapsed,
+                ]))
+            }
+
         case .paragraph(_, let inlines):
             styleInlines(inlines, font: font, ctx: ctx, into: &attrs)
 
@@ -757,30 +811,57 @@ enum MarkdownASTStyler {
         let markerAttrs: [NSAttributedString.Key: Any] = ctx.isActive(range)
             ? [.foregroundColor: ctx.theme.mutedText, .font: ctx.codeFont]
             : [.foregroundColor: NSColor.clear, .font: ctx.codeFont]   // hiddenMarkerFont == codeFont
-        attrs.append((parts.openFence, markerAttrs))
-        attrs.append((parts.closeFence, markerAttrs))
+        if let openFence = parts.openFence { attrs.append((openFence, markerAttrs)) }
+        if let closeFence = parts.closeFence { attrs.append((closeFence, markerAttrs)) }
     }
 
-    /// Split a fenced-code range into open fence (+language), content, close fence, and language.
+    /// Indented code has no marker ranges because hiding its indentation would move source columns.
     private static func codeBlockParts(_ range: NSRange, _ ns: NSString)
-        -> (codeRange: NSRange, openFence: NSRange, content: NSRange, closeFence: NSRange, language: String?) {
+        -> (codeRange: NSRange, openFence: NSRange?, content: NSRange, closeFence: NSRange?, language: String?) {
         let start = range.location
         let end = NSMaxRange(range)
-        var openEnd = start
-        while openEnd < end, ns.character(at: openEnd) != 0x0A { openEnd += 1 }
-        if openEnd < end { openEnd += 1 }
+        let firstLine = NSIntersectionRange(
+            ns.lineRange(for: NSRange(location: start, length: 0)),
+            range
+        )
+        var firstContentEnd = NSMaxRange(firstLine)
+        while firstContentEnd > start {
+            let c = ns.character(at: firstContentEnd - 1)
+            guard c == 0x0A || c == 0x0D else { break }
+            firstContentEnd -= 1
+        }
+        let fenceCharacter = start < firstContentEnd ? ns.character(at: start) : 0
+        var runEnd = start
+        while runEnd < firstContentEnd, ns.character(at: runEnd) == fenceCharacter { runEnd += 1 }
+        let isFenced = (fenceCharacter == 0x60 || fenceCharacter == 0x7E) && runEnd - start >= 3
+
+        if !isFenced {
+            var codeEnd = end
+            while codeEnd > start {
+                let c = ns.character(at: codeEnd - 1)
+                guard c == 0x0A || c == 0x0D else { break }
+                codeEnd -= 1
+            }
+            let codeRange = NSRange(location: start, length: codeEnd - start)
+            return (codeRange, nil, codeRange, nil, nil)
+        }
+
+        let openEnd = NSMaxRange(firstLine)
         let openFence = NSRange(location: start, length: openEnd - start)
 
-        let lastLine = ns.lineRange(for: NSRange(location: max(start, end - 1), length: 0))
-        var bt = lastLine.location
-        while bt < NSMaxRange(lastLine), ns.character(at: bt) == 0x60 { bt += 1 }
-        let closeFence = NSRange(location: lastLine.location, length: bt - lastLine.location)
+        let lastLine = NSIntersectionRange(
+            ns.lineRange(for: NSRange(location: max(start, end - 1), length: 0)),
+            range
+        )
+        var closeEnd = lastLine.location
+        while closeEnd < NSMaxRange(lastLine), ns.character(at: closeEnd) == fenceCharacter { closeEnd += 1 }
+        let closeFence = NSRange(location: lastLine.location, length: closeEnd - lastLine.location)
         let codeRange = NSRange(location: start, length: NSMaxRange(closeFence) - start)
         let content = NSRange(location: openEnd, length: max(0, lastLine.location - openEnd))
 
         var language: String?
-        if openFence.length > 3 {
-            let raw = ns.substring(with: NSRange(location: start + 3, length: openFence.length - 3))
+        if runEnd < firstContentEnd {
+            let raw = ns.substring(with: NSRange(location: runEnd, length: firstContentEnd - runEnd))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             language = raw.isEmpty ? nil : raw
         }
@@ -869,7 +950,16 @@ enum MarkdownASTStyler {
         for block in blocks where ctx.inScope(block.range) {
             switch block {
             case .heading(_, let range, let markers, let inlines):
-                if !ctx.isActive(range) { shrink(markers, ctx: ctx, into: &attrs) }
+                if !ctx.isActive(range) {
+                    shrink(markers, ctx: ctx, into: &attrs)
+                    // A setext underline is a whole line of its own, and a
+                    // newline starts a new line fragment whatever font it is
+                    // set in — shrinking the `===` alone would leave an empty
+                    // line under every setext heading. Collapse its height too.
+                    for marker in markers where isWholeLine(marker, ctx: ctx) {
+                        attrs.append((marker, [.paragraphStyle: collapsedLine]))
+                    }
+                }
                 shrinkInlineMarkers(inlines, ctx: ctx, into: &attrs)
             case .paragraph(_, let inlines), .blockquote(_, let inlines):
                 shrinkInlineMarkers(inlines, ctx: ctx, into: &attrs)
@@ -878,7 +968,7 @@ enum MarkdownASTStyler {
                 for item in items { shrinkInlineMarkers(item.inlines, ctx: ctx, into: &attrs) }
             case .ext(let node):
                 shrinkInlineMarkers(node.inlines, ctx: ctx, into: &attrs)
-            case .codeBlock, .table, .thematicBreak, .blank:
+            case .frontmatter, .codeBlock, .table, .thematicBreak, .blank:
                 break
             }
         }
@@ -915,6 +1005,22 @@ enum MarkdownASTStyler {
                 break   // own marker handling / not shrunk
             }
         }
+    }
+
+    /// A paragraph style with no height, for a line whose every character is
+    /// hidden syntax.
+    private static let collapsedLine: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.minimumLineHeight = 0.01
+        style.maximumLineHeight = 0.01
+        style.paragraphSpacing = 0
+        style.paragraphSpacingBefore = 0
+        return style
+    }()
+
+    /// Whether `range` covers a whole line, terminator included.
+    private static func isWholeLine(_ range: NSRange, ctx: Ctx) -> Bool {
+        range.length > 0 && ctx.ns.lineRange(for: range) == range
     }
 
     private static func shrink(_ markers: [NSRange], ctx: Ctx, into attrs: inout [StyledRange]) {

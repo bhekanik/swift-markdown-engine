@@ -46,6 +46,9 @@ public enum MarkdownHTMLRenderer {
 
     private static func block(for node: BlockNode, ns: NSString, env: Env) -> String? {
         switch node {
+        case .frontmatter:
+            return nil
+
         case .heading(let level, _, _, let inlines):
             let l = min(max(level, 1), 6)
             return "<h\(l)>\(renderInlines(inlines, ns: ns, env: env))</h\(l)>"
@@ -155,9 +158,15 @@ public enum MarkdownHTMLRenderer {
         var lines = raw.components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }   // drop trailing-newline artifact
 
-        let language = fenceLanguage(lines.first ?? "")
-        var body = Array(lines.dropFirst())
-        if let last = body.last, isFenceLine(last) { body.removeLast() }
+        let opening = fence(lines.first ?? "")
+        let language = opening?.language
+        var body: [String]
+        if let opening {
+            body = Array(lines.dropFirst())
+            if let last = body.last, isFenceLine(last, matching: opening) { body.removeLast() }
+        } else {
+            body = lines.map(stripCodeIndent)
+        }
 
         let escaped = escape(body.joined(separator: "\n"))
         if let language, !language.isEmpty {
@@ -166,16 +175,37 @@ public enum MarkdownHTMLRenderer {
         return "<pre><code>\(escaped)</code></pre>"
     }
 
-    /// The parser only produces column-0 backtick fences (BlockParser.isFence),
-    /// so match that contract when stripping the closing fence line.
-    private static func isFenceLine(_ line: String) -> Bool {
-        line.hasPrefix("```")
+    private static func isFenceLine(
+        _ line: String,
+        matching opening: (character: Character, count: Int, language: String?)
+    ) -> Bool {
+        let run = line.prefix { $0 == opening.character }
+        return run.count >= opening.count
+            && line.dropFirst(run.count).allSatisfy { $0 == " " || $0 == "\t" }
     }
 
-    /// Language info-string from an opening fence line (chars after the backticks).
-    private static func fenceLanguage(_ line: String) -> String? {
-        let lang = line.drop { $0 == "`" }.trimmingCharacters(in: .whitespaces)
-        return lang.isEmpty ? nil : lang
+    private static func fence(_ line: String) -> (character: Character, count: Int, language: String?)? {
+        guard let character = line.first, character == "`" || character == "~" else { return nil }
+        let count = line.prefix { $0 == character }.count
+        guard count >= 3 else { return nil }
+        let language = line.dropFirst(count).trimmingCharacters(in: .whitespaces)
+        return (character, count, language.isEmpty ? nil : language)
+    }
+
+    private static func stripCodeIndent(_ line: String) -> String {
+        var rest = Substring(line)
+        var column = 0
+        while column < 4, let character = rest.first {
+            if character == " " {
+                column += 1
+            } else if character == "\t" {
+                column = 4
+            } else {
+                break
+            }
+            rest = rest.dropFirst()
+        }
+        return String(rest)
     }
 
     private static func renderTable(range: NSRange, ns: NSString) -> String {

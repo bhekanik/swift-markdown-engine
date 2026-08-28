@@ -106,4 +106,20 @@ struct ASTPipelineTests {
         #expect(tokens.contains { $0.kind == .heading })
         #expect(tokens.contains { $0.kind == .italic })
     }
+
+    @Test("two-tildes on their own line remain an inline strikethrough")
+    func tildeFenceDoesNotConsumeStrikethrough() throws {
+        let registry = ExtensionRegistry(extensions: [StrikethroughExtension()])
+        let block = try #require(DocumentAST.parse("~~struck~~\n", registry: registry).first)
+        guard case .paragraph(_, let inlines) = block else {
+            Issue.record("Expected paragraph")
+            return
+        }
+        #expect(inlines.contains {
+            if case .ext(let node) = $0 {
+                return node.extensionID == StrikethroughExtension.identifier
+            }
+            return false
+        })
+    }
 }

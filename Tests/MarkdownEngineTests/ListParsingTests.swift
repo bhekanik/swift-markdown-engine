@@ -56,6 +56,17 @@ struct ListParsingTests {
         #expect(items("    - nested\n")?.first?.indent == 4)
     }
 
+    @Test("list levels use the previous item's content column")
+    func levelsUseContentColumns() {
+        #expect(items("- root\n - sibling\n")?.map(\.level) == [0, 0])
+        #expect(items("- root\n  - child\n")?.map(\.level) == [0, 1])
+    }
+
+    @Test("tabs advance list markers to the next four-column stop")
+    func tabsUseFourColumnStops() {
+        #expect(items("- root\n\t- child\n")?.map(\.level) == [0, 1])
+    }
+
     @Test func itemInlineContentIsParsed() {
         let inlines = items("- a **b** c\n")?.first?.inlines ?? []
         #expect(inlines.contains { if case .emphasis(.bold, _, _, _) = $0 { return true }; return false })
