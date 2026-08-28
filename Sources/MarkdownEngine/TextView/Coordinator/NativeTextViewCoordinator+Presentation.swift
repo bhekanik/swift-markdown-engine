@@ -117,5 +117,6 @@ extension NativeTextViewCoordinator {
         invalidateParseCache()
         rebuildTextStorageAndStyle(textView, from: authoritative, invalidateLayout: true)
         didInitialFormatting = true
+        reportAttachment(textView)
     }
 }

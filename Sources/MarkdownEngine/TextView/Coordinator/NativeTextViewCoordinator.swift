@@ -67,6 +67,22 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// Embedder handle for external patches and the text-view seam. Weak: the
     /// embedder owns it and outlives the editor.
     weak var editorController: MarkdownEditorController?
+    var onAttachmentChange: ((NSTextView?) -> Void)?
+    private weak var reportedAttachedTextView: NSTextView?
+    private var didReportAttachment = false
+
+    /// Publish this wrapper's attachment state without conflating it with
+    /// another wrapper using the same controller.
+    func reportAttachment(_ textView: NSTextView?) {
+        if didReportAttachment {
+            if let textView, reportedAttachedTextView === textView { return }
+            if textView == nil, reportedAttachedTextView == nil { return }
+        }
+        didReportAttachment = true
+        reportedAttachedTextView = textView
+        onAttachmentChange?(textView)
+    }
+
     /// Where this VIEW was in each document it has shown, keyed by controller
     /// identity. A window swapped between documents puts the reader back.
     var selectionByDocument: [ObjectIdentifier: NSRange] = [:]

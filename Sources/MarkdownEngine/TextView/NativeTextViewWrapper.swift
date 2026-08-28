@@ -65,6 +65,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     public var documentId: String
     /// When `false` the editor renders read-only with no caret.
     public var isEditable: Bool
+    /// Reports whether this wrapper owns its controller's one editor slot.
+    /// Called once when the native view is built and again when that state
+    /// changes. A refused second view reports `nil` and never observes the
+    /// first view's attachment lifecycle.
+    public var onAttachmentChange: ((NSTextView?) -> Void)?
     /// Reports one completed native edit in UTF-16 file coordinates.
     /// Multi-step smart-input transformations and ambiguous composition
     /// batches are omitted so embedders can treat every callback as exact.
@@ -109,6 +114,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         fontSize: CGFloat = 16,
         documentId: String = "default",
         isEditable: Bool = true,
+        onAttachmentChange: ((NSTextView?) -> Void)? = nil,
         onTextMutation: ((MarkdownTextMutation) -> Void)? = nil,
         onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)? = nil,
         onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)? = nil,
@@ -126,6 +132,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.fontSize = fontSize
         self.documentId = documentId
         self.isEditable = isEditable
+        self.onAttachmentChange = onAttachmentChange
         self.onTextMutation = onTextMutation
         self.onBuildContextMenu = onBuildContextMenu
         self.onCodeBlockSelectionChange = onCodeBlockSelectionChange
@@ -290,6 +297,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.editorController = owner
         if let owner {
             owner.attach(textView: textView, coordinator: context.coordinator)
+            context.coordinator.reportAttachment(textView)
         } else {
             // Refused above. Ask to be handed the controller when it frees up:
             // SwiftUI builds a remount's replacement before dismantling the
@@ -297,6 +305,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             // re-checking on the next pass would never happen.
             context.coordinator.isDetachedFromDocument = true
             controller?.awaitSlot(context.coordinator)
+            context.coordinator.reportAttachment(nil)
         }
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
@@ -374,6 +383,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // to reach the CURRENT closures even when the pass below returns early.
         context.coordinator.onPersistScrollOffset = onPersistScrollOffset
         context.coordinator.restoreScrollOffset = restoreScrollOffset
+        context.coordinator.onAttachmentChange = onAttachmentChange
 
         // Drop remembered offsets for documents no longer retained (always keep
         // the current one). Only rebuilds the dict when something must go.
@@ -451,6 +461,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 // coming back to it lands the reader where they left.
                 context.coordinator.selectionByDocument[ObjectIdentifier(previous)] =
                     textView.selectedRange()
+                context.coordinator.reportAttachment(nil)
                 previous.detach(textView: textView)
             }
             // A selection from the old document can be out of range for the new
@@ -480,6 +491,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         if let controller,
            !controller.attach(textView: textView, coordinator: context.coordinator) {
             return
+        }
+        if controller != nil {
+            context.coordinator.reportAttachment(textView)
         }
         context.coordinator.configuration.undo = configuration.undo
         textView.configuration.undo = configuration.undo
@@ -725,6 +739,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         )
         coordinator.documentId = documentId
         coordinator.onPersistScrollOffset = onPersistScrollOffset
+        coordinator.onAttachmentChange = onAttachmentChange
         coordinator.onTextMutation = onTextMutation
         coordinator.restoreScrollOffset = restoreScrollOffset
         // Seeding documentId above means the first update pass is not a switch, so
@@ -744,6 +759,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// different screen — and that is the only moment left to record where the
     /// reader was; the coordinator's own offsets die with it.
     public static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        coordinator.reportAttachment(nil)
+        coordinator.onAttachmentChange = nil
         if let textView = coordinator.textView {
             coordinator.editorController?.detach(textView: textView)
         }
