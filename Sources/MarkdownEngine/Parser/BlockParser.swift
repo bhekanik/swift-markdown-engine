@@ -57,6 +57,15 @@ struct BufferDiff {
 
 enum BlockParser {
 
+    /// How many times the reparse window may grow before the splice is
+    /// abandoned for one full parse. Each growth reparses the window from its
+    /// start, so this bounds an otherwise quadratic walk.
+    private static let maximumWindowExtensions = 8
+
+    /// The largest window worth splicing, in UTF-16 units. Past this a full
+    /// parse costs about the same and produces no risk of a mis-splice.
+    private static let maximumIncrementalWindow = 16_384
+
     private static let cacheLock = NSLock()
     private static var cachedChars: [unichar]?     // UTF-16 buffer of the last parse
     private static var cachedBlocks: [Block]?
@@ -234,11 +243,22 @@ enum BlockParser {
         // absorb or reinterpret untouched suffix lines. A fixed block margin
         // is insufficient because setext underlines, table separators and
         // continuation lines act on the block before them.
+        //
+        // Bounded, because each extension reparses from `winStart` again: a
+        // document of blocks that are all context-sensitive — alternating list
+        // items and blockquote lines, say — never reaches a stable trailing
+        // block, so the window walks to the end and the whole thing is
+        // quadratic. Measured before this bound: 370 ms per keystroke on a
+        // 10 kB alternating chain, against an 8 ms budget. Past either limit a
+        // single full parse is both cheaper and simpler than continuing, so
+        // give up and let the caller do exactly one.
         var winEndNew = 0
         var reparsed: [Block] = []
+        var extensions = 0
         while true {
             winEndNew = NSMaxRange(oldBlocks[winLast].range) + delta
             guard winEndNew >= winStart, winEndNew <= newLen else { return nil }
+            guard winEndNew - winStart <= maximumIncrementalWindow else { return nil }
             let windowText = newNS.substring(
                 with: NSRange(location: winStart, length: winEndNew - winStart)
             )
@@ -256,6 +276,8 @@ enum BlockParser {
                     registry: registry
                   )
             else { break }
+            extensions += 1
+            guard extensions <= maximumWindowExtensions else { return nil }
             winLast += 1
         }
         // A trailing fence or extension block reaching the window end might continue past it.
