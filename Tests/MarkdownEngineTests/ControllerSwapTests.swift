@@ -128,70 +128,23 @@ struct ControllerSwapTests {
         #expect(textView.delegate === rebuilt)
         #expect(textView.textLayoutManager?.textContentManager === documentB.textContentStorage)
         #expect(documentA.textContentStorage.textLayoutManagers.isEmpty)
-        #expect(documentB.textViews.count == 1)
+        #expect(documentB.textView === textView)
     }
 
     @Test("editing after a swap lands in the new document only")
     func editsLandInTheNewDocument() {
         let documentA = MarkdownEditorController()
         let documentB = MarkdownEditorController()
-        let (otherWindowOnA, _) = view(on: documentA, text: "document A\n")
         let (textView, _) = view(on: documentA, text: "document A\n")
 
         _ = swap(textView, from: documentA, to: documentB, text: "document B\n")
 
         #expect(documentB.applyPatch(range: NSRange(location: 10, length: 0), replacement: "!"))
         #expect(textView.string == "document B!\n")
-        #expect(otherWindowOnA.string == "document A\n",
+        // A is now viewless, so read its characters straight out of the storage
+        // the swapped-away view used to lay out.
+        #expect(documentA.textContentStorage.textStorage?.string == "document A\n",
                 "an edit to document B reached document A")
-    }
-
-    // MARK: - The presentation lock
-
-    @Test("a second view in a different presentation is refused before anything moves")
-    func mismatchedPresentationRefusedUpFront() {
-        let controller = MarkdownEditorController()
-        let (rich, _) = view(on: controller, text: "## Section\n")
-
-        // Asked on behalf of a NEW view, with the rich one still attached.
-        #expect(controller.canPresent(rawSourceMode: true, isEditable: true, from: nil) == false)
-        #expect(controller.canPresent(rawSourceMode: false, isEditable: false, from: nil) == false)
-        #expect(controller.canPresent(rawSourceMode: false, isEditable: true, from: nil))
-        #expect(rich.string == "## Section\n")
-    }
-
-    @Test("the only view may change its own presentation")
-    func soleViewMayChangePresentation() {
-        let controller = MarkdownEditorController()
-        let (only, _) = view(on: controller, text: "## Section\n")
-
-        // Switching the lens in a single window is the ordinary case.
-        #expect(controller.canPresent(rawSourceMode: true, isEditable: true, from: only))
-        #expect(controller.canPresent(rawSourceMode: false, isEditable: false, from: only))
-    }
-
-    @Test("a view cannot change presentation while another view is attached")
-    func presentationLockedByPeers() {
-        let controller = MarkdownEditorController()
-        let (first, _) = view(on: controller, text: "## Section\n")
-        let (second, _) = view(on: controller, text: "## Section\n")
-
-        #expect(controller.canPresent(rawSourceMode: true, isEditable: true, from: first) == false,
-                "one window switching to raw would rewrite the other's attributes")
-        #expect(controller.canPresent(rawSourceMode: true, isEditable: true, from: second) == false)
-        // Same presentation is always fine.
-        #expect(controller.canPresent(rawSourceMode: false, isEditable: true, from: first))
-    }
-
-    @Test("the lock lifts once the peers are gone")
-    func lockLiftsWithPeers() {
-        let controller = MarkdownEditorController()
-        let (first, _) = view(on: controller, text: "## Section\n")
-        let (second, _) = view(on: controller, text: "## Section\n")
-        #expect(controller.canPresent(rawSourceMode: true, isEditable: true, from: first) == false)
-
-        controller.detach(textView: second)
-
-        #expect(controller.canPresent(rawSourceMode: true, isEditable: true, from: first))
+        #expect(documentA.isAttached == false)
     }
 }

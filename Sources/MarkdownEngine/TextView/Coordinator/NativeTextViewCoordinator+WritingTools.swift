@@ -12,6 +12,18 @@ import AppKit
 extension NativeTextViewCoordinator {
     @available(macOS 15.0, *)
     public func textViewWritingToolsWillBegin(_ textView: NSTextView) {
+        // One session at a time. The snapshot taken at the FIRST `willBegin` is
+        // the only baseline the end-of-session diff can publish against: it is
+        // the last text the listener was told about. Re-snapshotting here would
+        // silently swallow everything the running session had already changed,
+        // because the second baseline already contains it. A controller drives
+        // one view, so AppKit is the only thing that can nest these, and the
+        // single `didEnd` that follows publishes both spans as one mutation.
+        guard !isWritingToolsActive else {
+            NSLog("MarkdownEngine: a second Writing Tools session began while one was "
+                  + "still active; it is folded into the running session.")
+            return
+        }
         let sel = textView.selectedRange()
         isWritingToolsActive = true
         wtStartDocumentId = documentId
@@ -68,7 +80,6 @@ extension NativeTextViewCoordinator {
             .clamped(toLength: (sourceText as NSString).length)
         rebuildTextStorageAndStyle(textView, from: sourceText)
         lastSyncedText = sourceText
-        editorController?.documentDidChange(from: self)
         textView.setSelectedRange(acceptedSelection)
         if let sourceBeforeWritingTools, sourceBeforeWritingTools != sourceText {
             let mutation: MarkdownTextMutation

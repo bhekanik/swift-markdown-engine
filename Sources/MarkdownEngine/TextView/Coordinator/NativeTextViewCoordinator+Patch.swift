@@ -85,10 +85,11 @@ extension NativeTextViewCoordinator {
 extension NativeTextViewCoordinator {
     /// Drop everything memoised about the document's structure.
     ///
-    /// Called on the OTHER coordinators when one of them edits the shared
-    /// storage. The caches key on a per-coordinator counter and on the
-    /// document's length, and a same-length edit moves neither — so without
-    /// this a second window keeps styling syntax that is no longer there.
+    /// The caches key on a generation counter and on the document's length,
+    /// and neither moves when the storage under the view is REPLACED rather
+    /// than edited — a controller swap points the view at a different
+    /// document's storage, and the memoised parse of the old one would
+    /// otherwise be styled onto the new text.
     func invalidateParseCache() {
         cachedParsedDocument = nil
         cachedParsedText = nil
@@ -99,44 +100,5 @@ extension NativeTextViewCoordinator {
         parseState.invalidate()
         backtickCensusNeedsRescan = true
         pendingBacktickWindow = nil
-    }
-}
-
-extension NativeTextViewCoordinator {
-    /// Try again to show this view in the presentation it asked for.
-    ///
-    /// Called when the document's lock changes — a peer detaching can make a
-    /// refused presentation legal, and the removal and the switch can arrive in
-    /// the same SwiftUI transaction, in which case the preflight saw the peer
-    /// and no further update pass comes to notice that it has gone.
-    func applyPendingPresentation() {
-        guard let controller = editorController,
-              let textView,
-              let desired = pendingPresentation,
-              controller.canPresent(rawSourceMode: desired.rawSourceMode,
-                                    isEditable: desired.isEditable,
-                                    from: textView)
-        else { return }
-        pendingPresentation = nil
-
-        if isolatedFromDocument {
-            // Only now does this view touch the shared storage: a refused view
-            // stays on its own until the moment it is admitted.
-            textView.setSelectedRange(NSRange(location: 0, length: 0))
-            if let layoutManager = textView.textLayoutManager {
-                controller.adopt(layoutManager: layoutManager)
-            }
-            textView.setSelectedRange(NSRange(location: 0, length: 0))
-        }
-        configuration.rawSourceMode = desired.rawSourceMode
-        (textView as? NativeTextView)?.configuration.rawSourceMode = desired.rawSourceMode
-        textView.isEditable = desired.isEditable
-        guard controller.attach(textView: textView, coordinator: self,
-                                rawSourceMode: desired.rawSourceMode,
-                                isEditable: desired.isEditable) else { return }
-        isolatedFromDocument = false
-        invalidateParseCache()
-        didInitialFormatting = false
-        rebuildTextStorageAndStyle(textView, from: lastSyncedText)
     }
 }

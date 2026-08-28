@@ -131,8 +131,7 @@ extension NativeTextViewCoordinator {
             editorController?.recordDocumentMutation(
                 completedTextMutation,
                 mutationDelta: completedMutationDelta,
-                documentLength: currentDocumentLength,
-                from: self
+                documentLength: currentDocumentLength
             )
             previousDisplayLength = currentDocumentLength
             if let completedTextMutation {
@@ -360,12 +359,10 @@ extension NativeTextViewCoordinator {
             }
         }
         previousActiveTokenIndices = activeTokenIndices
-        // Every other view of this document is now holding a stale parse.
         editorController?.recordDocumentMutation(
             completedTextMutation,
             mutationDelta: completedMutationDelta,
-            documentLength: fullLength,
-            from: self
+            documentLength: fullLength
         )
         if let completedTextMutation {
             onTextMutation?(completedTextMutation)

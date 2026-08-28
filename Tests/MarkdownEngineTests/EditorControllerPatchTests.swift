@@ -43,7 +43,7 @@ struct EditorControllerPatchTests {
         coordinator.lastSyncedText = text
         coordinator.previousDisplayLength = (text as NSString).length
         coordinator.didInitialFormatting = true
-        controller.attach(textView: textView, coordinator: coordinator, rawSourceMode: false, isEditable: textView.isEditable)
+        controller.attach(textView: textView, coordinator: coordinator)
         return (textView, controller, coordinator)
     }
 
@@ -231,7 +231,7 @@ struct EditorControllerPatchTests {
             text: .constant(""), fontName: "SF Pro", fontSize: 16
         )
         let textView = NativeTextView(frame: .zero)
-        controller.attach(textView: textView, coordinator: coordinator, rawSourceMode: false, isEditable: textView.isEditable)
+        controller.attach(textView: textView, coordinator: coordinator)
         #expect(controller.textView === textView)
         controller.detach(textView: textView)
         #expect(controller.textView == nil)

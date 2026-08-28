@@ -175,32 +175,31 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         )
 
         // With a controller, the DOCUMENT owns the content storage and this
-        // view gets its own layout manager and container on it — so two
-        // windows on one document share the characters and the attributes, and
-        // an edit through either is immediately the other's. Without one,
-        // NSTextView auto-initialises its own TextKit 2 stack via init(frame:),
-        // which is what an embedder with a single view has always had.
+        // view gets its own layout manager and container on it, so the view can
+        // later be pointed at a different document by moving that manager (see
+        // `MarkdownEditorController.adopt`). Without one, NSTextView
+        // auto-initialises its own TextKit 2 stack via init(frame:).
         //
-        // Admission is decided BEFORE the storage is touched. Adding a layout
-        // manager and then assigning `textView.string` below would rewrite the
-        // peers' document, and the old order did both before asking — so a
-        // refused view left the document with an extra layout manager and its
-        // text overwritten, in release, where the assertion does not fire.
-        let admitted = controller.map {
-            $0.canPresent(rawSourceMode: configuration.rawSourceMode,
-                          isEditable: isEditable, from: nil)
-        } ?? false
+        // A controller drives exactly one view. Whether this one gets it is
+        // settled HERE, before any storage is touched: joining the document's
+        // storage and then discovering the controller is taken would leave a
+        // second layout manager laying out a document this view is not attached
+        // to, and `textView.string = text` below would have overwritten it.
+        let owner = controller?.isAttached == true ? nil : controller
+        if controller != nil, owner == nil {
+            NSLog("MarkdownEngine: a view was built while its controller already had one, "
+                  + "so it shows its text on a storage of its own and reaches nothing. A "
+                  + "controller drives exactly one view — give a second window its own "
+                  + "MarkdownEditorController and forward onTextMutation into its applyPatch.")
+        }
         let textView: NativeTextView
-        if let controller, admitted {
+        if let controller = owner {
             let layoutManager = NSTextLayoutManager()
             let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
             layoutManager.textContainer = container
             controller.textContentStorage.addTextLayoutManager(layoutManager)
             textView = NativeTextView(frame: .zero, textContainer: container)
         } else {
-            // Its own TextKit 2 stack: with no controller this is what an
-            // embedder has always had, and when refused it is isolation — the
-            // view shows the text it was given and reaches nobody.
             textView = NativeTextView(frame: .zero)
         }
 
@@ -288,26 +287,15 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         scrollView.reflectScrolledClipView(scrollView.contentView)
 
         context.coordinator.textView = textView
-        context.coordinator.editorController = controller
-        if let controller {
-            if admitted {
-                controller.attach(textView: textView, coordinator: context.coordinator,
-                                  rawSourceMode: configuration.rawSourceMode,
-                                  isEditable: isEditable)
-            } else {
-                // Logged, not asserted: this refusal is fully handled — the
-                // view is isolated, the request is remembered, and it is
-                // retried when the lock lifts. Trapping would turn a
-                // recoverable composition mistake into a crash in every debug
-                // build, and would make the behaviour untestable in the one
-                // configuration where it matters most.
-                NSLog("MarkdownEngine: a view asked to show a document already presented "
-                      + "differently; it is isolated until that changes. Give each "
-                      + "presentation its own MarkdownEditorController.")
-                context.coordinator.isolatedFromDocument = true
-                context.coordinator.pendingPresentation = (configuration.rawSourceMode, isEditable)
-                controller.awaitAdmission(context.coordinator)
-            }
+        context.coordinator.editorController = owner
+        if let owner {
+            owner.attach(textView: textView, coordinator: context.coordinator)
+        } else {
+            // Refused above. Ask to be handed the controller when it frees up:
+            // SwiftUI builds a remount's replacement before dismantling the
+            // original and then sends this view no further update pass, so
+            // re-checking on the next pass would never happen.
+            controller?.awaitSlot(context.coordinator)
         }
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
@@ -379,30 +367,6 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         guard let textView = nsView.nativeTextView else {
             return
         }
-        // Asked BEFORE anything is moved or written. A document's views share
-        // one storage and presentation-dependent styling goes into it, so a
-        // second view in a different presentation would rewrite the first's
-        // attributes. Refusing has to stop the transition — including the
-        // rebuild — not report on one already made.
-        if let controller,
-           !controller.canPresent(rawSourceMode: configuration.rawSourceMode,
-                                  isEditable: isEditable,
-                                  from: textView) {
-            NSLog("MarkdownEngine: a view asked to change to a presentation the document "
-                  + "cannot accept while other views are attached; the request is held "
-                  + "until they detach.")
-            // Remembered, not dropped: the peer that blocks this can be removed
-            // in the same transaction as the switch, and then no further update
-            // pass arrives to ask again.
-            context.coordinator.pendingPresentation = (configuration.rawSourceMode, isEditable)
-            controller.awaitAdmission(context.coordinator)
-            return
-        }
-        // Admitted now, having been refused before — a peer went away between
-        // passes.
-        if context.coordinator.pendingPresentation != nil {
-            context.coordinator.applyPendingPresentation()
-        }
         let isNodeSwitch = context.coordinator.documentId != documentId
 
         // Refreshed here, not with the other callbacks at the bottom — teardown has
@@ -467,6 +431,18 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // attach and force a full rebuild — the storage under the view is a
         // different document now, so nothing about the old one is still true.
         let controllerChanged = context.coordinator.editorController !== controller
+        // Settled before anything moves, for the reason `makeNSView` settles it
+        // before building: a controller that already drives another view
+        // refuses this one, and the swap below would otherwise leave this view
+        // laying out through a document it is not attached to.
+        if controllerChanged, let controller, controller.isAttached,
+           controller.textView !== textView {
+            NSLog("MarkdownEngine: a view asked to show a document that already has one. "
+                  + "A controller drives exactly one view — give a second window its own "
+                  + "MarkdownEditorController and forward onTextMutation into its applyPatch.")
+            controller.awaitSlot(context.coordinator)
+            return
+        }
         if controllerChanged {
             if let previous = context.coordinator.editorController {
                 // Remember where this window was in the OUTGOING document, so
@@ -496,10 +472,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.invalidateParseCache()
             context.coordinator.pendingSelectionRestore = controller.map { ObjectIdentifier($0) }
         }
+        // A view this controller refused — another view already has it — must
+        // not go on to write the document's configuration or rebuild its
+        // storage from this view's text.
         if let controller,
-           !controller.attach(textView: textView, coordinator: context.coordinator,
-                              rawSourceMode: configuration.rawSourceMode,
-                              isEditable: isEditable) {
+           !controller.attach(textView: textView, coordinator: context.coordinator) {
             return
         }
         context.coordinator.configuration.undo = configuration.undo
@@ -530,20 +507,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             (nsView as? ClampedScrollView)?.clampToInsets()
             nsView.invalidateIntrinsicContentSize()
         }
-        // Sync rawSourceMode; a flip rebuilds in the new presentation.
+        // A presentation flip is applied in one piece further down, where the
+        // rebuild it needs already happens — see `applyPresentationChange`.
         let rawSourceModeChanged = context.coordinator.configuration.rawSourceMode != configuration.rawSourceMode
-        if rawSourceModeChanged {
-            if configuration.rawSourceMode {
-                context.coordinator.enterRawSourceMode(textView)
-            } else {
-                context.coordinator.restoreRawSourceInputSettings(textView)
-            }
-            context.coordinator.configuration.rawSourceMode = configuration.rawSourceMode
-            textView.configuration.rawSourceMode = configuration.rawSourceMode
-            textView.breakUndoCoalescing()
-            context.coordinator.undoManagers[documentId]?.removeAllActions()
-            context.coordinator.didInitialFormatting = false
-        }
         // Sync the input-behavior toggles (auto-close pairs, list helpers).
         // The keystroke handlers read textView.configuration live, but only
         // makeNSView used to write it — an embedder settings change was inert
@@ -582,10 +548,15 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             ? (context.coordinator.resolvedCaretColor ?? context.coordinator.configuration.theme.bodyText)
             : .clear
         let fontChanged = (context.coordinator.fontName != fontName) || (context.coordinator.fontSize != fontSize)
+        // `rawSourceModeChanged` is named here rather than left to a
+        // `didInitialFormatting = false` set forty lines above: an embedder
+        // whose two presentations share a font changes nothing else about this
+        // pass, and the switch was dropped on the floor.
         if context.coordinator.didInitialFormatting
             && context.coordinator.lastSyncedText == text
             && !fontChanged
-            && !controllerChanged {
+            && !controllerChanged
+            && !rawSourceModeChanged {
             return
         }
         if fontChanged {
@@ -665,13 +636,19 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // reads the current values from the View struct.
         context.coordinator.fontName = fontName
         context.coordinator.fontSize = fontSize
-        context.coordinator.rebuildTextStorageAndStyle(
-            textView,
-            from: text,
-            invalidateLayout: isNodeSwitch || rawSourceModeChanged
-        )
-        if rawSourceModeChanged && !configuration.rawSourceMode {
-            context.coordinator.finishLeavingRawSourceMode(textView)
+        if rawSourceModeChanged {
+            context.coordinator.applyPresentationChange(
+                to: configuration.rawSourceMode,
+                in: textView,
+                documentId: documentId,
+                text: text
+            )
+        } else {
+            context.coordinator.rebuildTextStorageAndStyle(
+                textView,
+                from: text,
+                invalidateLayout: isNodeSwitch
+            )
         }
         textView.recalcOverscroll(for: nsView)
         (nsView as? ClampedScrollView)?.clampToInsets()
@@ -765,8 +742,6 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// different screen — and that is the only moment left to record where the
     /// reader was; the coordinator's own offsets die with it.
     public static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
-        // Detach THIS view only: another window may still be showing the same
-        // document through the same controller.
         if let textView = coordinator.textView {
             coordinator.editorController?.detach(textView: textView)
         }

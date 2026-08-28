@@ -63,6 +63,70 @@ struct WritingToolsMutationTests {
         return result as String
     }
 
+    /// Several edits landing in the storage before a single `didChangeText` —
+    /// the shape that leaves the revision ledger with a length change but no
+    /// exact patch, because the coordinator can only name the edited range when
+    /// there was exactly one.
+    ///
+    /// Marked programmatic, which is what an edit from outside the Writing
+    /// Tools session is: `textDidChange` defers only Apple's own session edits.
+    private func coalescedExternalEdits(
+        in textView: NSTextView,
+        coordinator: NativeTextViewCoordinator,
+        edits: [(NSRange, String)]
+    ) {
+        coordinator.isProgrammaticEdit = true
+        defer { coordinator.isProgrammaticEdit = false }
+        for (range, replacement) in edits {
+            guard textView.shouldChangeText(in: range, replacementString: replacement) else {
+                Issue.record("text view refused an external edit")
+                return
+            }
+            textView.textStorage?.replaceCharacters(in: range, with: replacement)
+        }
+        textView.didChangeText()
+    }
+
+    @available(macOS 15.0, *)
+    @Test("a second session while one is running is folded into it")
+    func overlappingSessionIsFoldedIntoTheRunningOne() throws {
+        _ = NSApplication.shared
+        let before = "The quik fox rests.\n"
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, coordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: { mutations.append($0) }
+        )
+        textView.setSelectedRange(NSRange(location: 4, length: 4))
+
+        coordinator.textViewWritingToolsWillBegin(textView)
+        replaceThroughWritingTools(
+            in: textView,
+            range: NSRange(location: 4, length: 4),
+            with: "quick"
+        )
+        // A second session begins before the first ends. Re-snapshotting here
+        // would make the end-of-session diff publish only what came after,
+        // silently dropping "quik" -> "quick" from the listener's model.
+        coordinator.textViewWritingToolsWillBegin(textView)
+        replaceThroughWritingTools(
+            in: textView,
+            range: NSRange(location: 14, length: 5),
+            with: "sleeps"
+        )
+        coordinator.textViewWritingToolsDidEnd(textView)
+        // The nested session's own end is a no-op: the first one already
+        // published everything.
+        coordinator.textViewWritingToolsDidEnd(textView)
+
+        #expect(textView.string == "The quick fox sleeps.\n")
+        #expect(mutations.count == 1, "two sessions published two overlapping mutations")
+        #expect(applying(mutations, to: before) == "The quick fox sleeps.\n",
+                "replaying the feed does not reproduce the document")
+    }
+
     @available(macOS 15.0, *)
     @Test("an accepted session publishes one reproducible mutation")
     func acceptedSessionPublishesOneMutation() throws {
@@ -143,47 +207,6 @@ struct WritingToolsMutationTests {
         ])
         #expect(applying(mutations, to: before) == "The quick fox sleeps.\n")
         #expect(textView.string == "The quick fox sleeps.\n")
-        #expect(try #require(mutations.last).range.length < (before as NSString).length)
-    }
-
-    @available(macOS 15.0, *)
-    @Test("a second view edit and Writing Tools publish each character change once")
-    func secondViewEditDuringSessionIsNotRepublished() throws {
-        _ = NSApplication.shared
-        let before = "The quik fox rests.\n"
-        let controller = MarkdownEditorController()
-        var mutations: [MarkdownTextMutation] = []
-        let record: (MarkdownTextMutation) -> Void = { mutations.append($0) }
-        let (writingToolsView, writingToolsCoordinator) = makeAttachedView(
-            text: before,
-            controller: controller,
-            onTextMutation: record
-        )
-        let (secondView, _) = makeAttachedView(
-            text: before,
-            controller: controller,
-            onTextMutation: record
-        )
-        writingToolsView.setSelectedRange(NSRange(location: 4, length: 4))
-
-        writingToolsCoordinator.textViewWritingToolsWillBegin(writingToolsView)
-        secondView.insertText(
-            "sleeps",
-            replacementRange: NSRange(location: 13, length: 5)
-        )
-        replaceThroughWritingTools(
-            in: writingToolsView,
-            range: NSRange(location: 4, length: 4),
-            with: "quick"
-        )
-        writingToolsCoordinator.textViewWritingToolsDidEnd(writingToolsView)
-
-        #expect(mutations == [
-            MarkdownTextMutation(range: NSRange(location: 13, length: 5), replacement: "sleeps"),
-            MarkdownTextMutation(range: NSRange(location: 7, length: 0), replacement: "c"),
-        ])
-        #expect(applying(mutations, to: before) == "The quick fox sleeps.\n")
-        #expect(writingToolsView.string == "The quick fox sleeps.\n")
         #expect(try #require(mutations.last).range.length < (before as NSString).length)
     }
 
@@ -270,31 +293,17 @@ struct WritingToolsMutationTests {
             controller: controller,
             onTextMutation: record
         )
-        let (secondView, _) = makeAttachedView(
-            text: before,
-            controller: controller,
-            onTextMutation: record
-        )
         writingToolsView.setSelectedRange(NSRange(location: 4, length: 4))
 
         writingToolsCoordinator.textViewWritingToolsWillBegin(writingToolsView)
-        #expect(secondView.shouldChangeText(
-            in: NSRange(location: 13, length: 5),
-            replacementString: "sleep"
-        ))
-        secondView.textStorage?.replaceCharacters(
-            in: NSRange(location: 13, length: 5),
-            with: "sleep"
+        coalescedExternalEdits(
+            in: writingToolsView,
+            coordinator: writingToolsCoordinator,
+            edits: [
+                (NSRange(location: 13, length: 5), "sleep"),
+                (NSRange(location: 0, length: 3), "Aha"),
+            ]
         )
-        #expect(secondView.shouldChangeText(
-            in: NSRange(location: 0, length: 3),
-            replacementString: "Aha"
-        ))
-        secondView.textStorage?.replaceCharacters(
-            in: NSRange(location: 0, length: 3),
-            with: "Aha"
-        )
-        secondView.didChangeText()
         replaceThroughWritingTools(
             in: writingToolsView,
             range: NSRange(location: 4, length: 4),
@@ -322,31 +331,17 @@ struct WritingToolsMutationTests {
             controller: controller,
             onTextMutation: record
         )
-        let (secondView, _) = makeAttachedView(
-            text: before,
-            controller: controller,
-            onTextMutation: record
-        )
         writingToolsView.setSelectedRange(NSRange(location: 4, length: 4))
 
         writingToolsCoordinator.textViewWritingToolsWillBegin(writingToolsView)
-        #expect(secondView.shouldChangeText(
-            in: NSRange(location: 13, length: 5),
-            replacementString: "sleeps soundly"
-        ))
-        secondView.textStorage?.replaceCharacters(
-            in: NSRange(location: 13, length: 5),
-            with: "sleeps soundly"
+        coalescedExternalEdits(
+            in: writingToolsView,
+            coordinator: writingToolsCoordinator,
+            edits: [
+                (NSRange(location: 13, length: 5), "sleeps soundly"),
+                (NSRange(location: 13, length: 0), "really "),
+            ]
         )
-        #expect(secondView.shouldChangeText(
-            in: NSRange(location: 13, length: 0),
-            replacementString: "really "
-        ))
-        secondView.textStorage?.replaceCharacters(
-            in: NSRange(location: 13, length: 0),
-            with: "really "
-        )
-        secondView.didChangeText()
         replaceThroughWritingTools(
             in: writingToolsView,
             range: NSRange(location: 4, length: 4),
@@ -364,7 +359,7 @@ struct WritingToolsMutationTests {
     }
 
     @available(macOS 15.0, *)
-    @Test("an accepted session restyles and invalidates peer parsing")
+    @Test("an accepted session restyles the live document")
     func acceptedSessionRebuildsLiveState() throws {
         _ = NSApplication.shared
         let before = "plainx title\nbody text\n"
@@ -375,12 +370,6 @@ struct WritingToolsMutationTests {
             controller: controller,
             onTextMutation: { _ in }
         )
-        let (_, secondCoordinator) = makeAttachedView(
-            text: before,
-            controller: controller,
-            onTextMutation: { _ in }
-        )
-        _ = secondCoordinator.parsedDocument(for: before)
 
         writingToolsCoordinator.textViewWritingToolsWillBegin(writingToolsView)
         writingToolsCoordinator.wtDetectedMode = .proofread
@@ -399,10 +388,12 @@ struct WritingToolsMutationTests {
         #expect(markerFont.pointSize < 1)
         #expect(writingToolsCoordinator.lastSyncedText == accepted)
 
+        // The session's own parse must describe the accepted text, not the
+        // text the session started from.
         let reference = MarkdownTokenizer.parseTokensViaAST(in: accepted, registry: .empty)
-        let peerTokens = secondCoordinator.parsedDocument(for: accepted).tokens
-        #expect(peerTokens.count == reference.count)
-        #expect(zip(peerTokens, reference).allSatisfy {
+        let tokens = writingToolsCoordinator.parsedDocument(for: accepted).tokens
+        #expect(tokens.count == reference.count)
+        #expect(zip(tokens, reference).allSatisfy {
             $0.kind == $1.kind && $0.range == $1.range
         })
 

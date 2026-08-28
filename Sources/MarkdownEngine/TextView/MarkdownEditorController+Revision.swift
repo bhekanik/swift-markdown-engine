@@ -82,8 +82,7 @@ extension MarkdownEditorController {
     func recordDocumentMutation(
         _ mutation: MarkdownTextMutation?,
         mutationDelta: Int,
-        documentLength: Int,
-        from coordinator: NativeTextViewCoordinator
+        documentLength: Int
     ) {
         MarkdownDocumentRevisionStore.state(for: textContentStorage)
             .record(
@@ -91,7 +90,6 @@ extension MarkdownEditorController {
                 mutationDelta: mutationDelta,
                 documentLength: documentLength
             )
-        documentDidChange(from: coordinator)
     }
 
     func documentMutationRecords(
