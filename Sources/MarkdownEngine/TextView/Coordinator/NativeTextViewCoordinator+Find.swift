@@ -21,25 +21,22 @@ extension NSAttributedString.Key {
 }
 
 extension NativeTextViewCoordinator {
-    @objc func handleFindScrollToRange(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let currentIndex = info["currentIndex"] as? Int,
-              let allRanges = info["allRanges"] as? [NSRange] else { return }
+    func handleFindScrollToRange(
+        range _: NSRange?,
+        currentIndex: Int,
+        allRanges: [NSRange]
+    ) {
         renderFindMatches(allRanges, currentIndex: currentIndex)
     }
 
-    @objc func handleFindQuery(_ notification: Notification) {
-        guard let tv = textView,
-              let info = notification.userInfo,
-              let query = info["query"] as? String else { return }
+    func handleFindQuery(query: String, currentIndex requestedIndex: Int) {
+        guard let tv = textView else { return }
         // Every live coordinator hears this (`object: nil`), and an editor the host
         // has routed away from can outlive its view for a while — it is not the
         // document being searched, and its answer would overwrite the real one's.
         // Measured: 24 coordinators replying to one ⌘F, 22 of them windowless with
         // an empty buffer, each reporting 0 matches and resetting the host's index.
         guard tv.window != nil else { return }
-        let requestedIndex = info["currentIndex"] as? Int ?? 0
-
         let allRanges = findMatches(of: query, in: tv.string as NSString)
         let currentIndex = allRanges.isEmpty ? 0 : min(max(requestedIndex, 0), allRanges.count - 1)
         renderFindMatches(allRanges, currentIndex: currentIndex)
@@ -71,12 +68,9 @@ extension NativeTextViewCoordinator {
 
     /// Replace the current find match with the replacement string (one undo
     /// step), then re-highlight and report the remaining match count.
-    @objc func handleReplaceCurrent(_ notification: Notification) {
+    func handleReplaceCurrent(query: String, replacement: String, currentIndex requestedIndex: Int) {
         guard let tv = textView, tv.isEditable,
-              let info = notification.userInfo,
-              let query = info["query"] as? String, !query.isEmpty,
-              let replacement = info["replacement"] as? String else { return }
-        let requestedIndex = info["currentIndex"] as? Int ?? 0
+              !query.isEmpty else { return }
 
         let matches = findMatches(of: query, in: tv.string as NSString)
         guard !matches.isEmpty else { postFindResults(count: 0); return }
@@ -102,11 +96,9 @@ extension NativeTextViewCoordinator {
     }
 
     /// Replace every find match in a single undo step, then re-highlight.
-    @objc func handleReplaceAll(_ notification: Notification) {
+    func handleReplaceAll(query: String, replacement: String) {
         guard let tv = textView, tv.isEditable,
-              let info = notification.userInfo,
-              let query = info["query"] as? String, !query.isEmpty,
-              let replacement = info["replacement"] as? String else { return }
+              !query.isEmpty else { return }
 
         let matches = findMatches(of: query, in: tv.string as NSString)
         guard !matches.isEmpty else { postFindResults(count: 0); return }
@@ -225,7 +217,7 @@ extension NativeTextViewCoordinator {
         }
     }
 
-    @objc func handleFindClearHighlights(_ notification: Notification) {
+    func handleFindClearHighlights() {
         guard let tv = textView else { return }
         let scrollView = tv.enclosingScrollView
         let preY = scrollView?.contentView.bounds.origin.y ?? 0

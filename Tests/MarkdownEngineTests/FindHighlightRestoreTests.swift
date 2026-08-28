@@ -66,17 +66,11 @@ struct FindHighlightRestoreTests {
     }
 
     private func find(_ query: String, _ coordinator: NativeTextViewCoordinator) {
-        coordinator.handleFindQuery(Notification(
-            name: Notification.Name("findQuery"),
-            object: nil,
-            userInfo: ["query": query, "currentIndex": 0]
-        ))
+        coordinator.handleFindQuery(query: query, currentIndex: 0)
     }
 
     private func done(_ coordinator: NativeTextViewCoordinator) {
-        coordinator.handleFindClearHighlights(
-            Notification(name: Notification.Name("findClearHighlights"), object: nil)
-        )
+        coordinator.handleFindClearHighlights()
     }
 
     @Test("searching the highlighted word and dismissing leaves the block painted")

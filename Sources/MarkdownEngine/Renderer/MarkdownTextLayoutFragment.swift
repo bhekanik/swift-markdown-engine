@@ -13,7 +13,7 @@ import CoreText
 
 // MARK: - Custom attribute keys for rendering overlays
 
-extension NSAttributedString.Key {
+nonisolated extension NSAttributedString.Key {
     static let renderedImage = NSAttributedString.Key("MarkdownRenderedImage")
     static let renderedImageBounds = NSAttributedString.Key("MarkdownRenderedImageBounds")
     static let renderedImageIsBlock = NSAttributedString.Key("MarkdownRenderedImageIsBlock")
@@ -43,7 +43,7 @@ extension NSAttributedString.Key {
     static let scrollableBlockFullRange = NSAttributedString.Key("ScrollableBlockFullRange")
 }
 
-public extension NSAttributedString.Key {
+public nonisolated extension NSAttributedString.Key {
     /// NSColor — a background painted across the whole LINE BOX (the line
     /// fragment's typographic bounds) instead of the glyph box AppKit's
     /// `.backgroundColor` covers. Use it for marker-style fills: a span that
@@ -57,7 +57,15 @@ public extension NSAttributedString.Key {
     static let markdownBlockBackground = NSAttributedString.Key("MarkdownBlockBackground")
 }
 
-final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
+nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
+
+    override nonisolated init(textElement: NSTextElement, range rangeInElement: NSTextRange?) {
+        super.init(textElement: textElement, range: rangeInElement)
+    }
+
+    required nonisolated init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
 
     /// Horizontal space (points) each blockquote nesting level occupies —
     /// shared so the styler's text indent and the painted bars line up.
@@ -77,7 +85,12 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     /// Extend rendering bounds for code-block backgrounds (full container width)
     /// and block images drawn below text via paragraphSpacing.
-    override var renderingSurfaceBounds: CGRect {
+    nonisolated override var renderingSurfaceBounds: CGRect {
+        // The class is nonisolated because NSTextLayoutFragment is, but every
+        // caller is a TextKit 2 layout callback and those run on the main
+        // thread. Assert it rather than assume it: an off-main call would
+        // otherwise read main-actor state with no diagnostic.
+        MainActor.preconditionIsolated("TextKit 2 measures fragments on the main thread")
         var bounds = super.renderingSurfaceBounds
         // Task checkboxes too: the box draws left of the first glyph (marker
         // slot), outside the default text surface — TextKit would clip it.
@@ -101,7 +114,8 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     // MARK: - Drawing
 
-    override func draw(at point: CGPoint, in context: CGContext) {
+    nonisolated override func draw(at point: CGPoint, in context: CGContext) {
+        MainActor.preconditionIsolated("TextKit 2 draws fragments on the main thread")
         // 1. Code-block backgrounds (behind text)
         drawCodeBlockBackground(at: point, in: context)
 
@@ -142,6 +156,15 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     private var textStorage: NSTextStorage? {
         (textLayoutManager?.textContentManager as? NSTextContentStorage)?.textStorage
+    }
+
+    private var configurationSnapshot: MarkdownEditorConfiguration {
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        return MainActor.assumeIsolated { textView?.configuration ?? .default }
+    }
+
+    private static var taskCheckboxKey: NSAttributedString.Key {
+        MainActor.assumeIsolated { .taskCheckbox }
     }
 
     /// Returns the drawing position for a character at `docIndex` (document-level NSRange location).
@@ -221,7 +244,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     private var hasTaskCheckbox: Bool {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return false }
         var found = false
-        ts.enumerateAttribute(.taskCheckbox, in: range, options: []) { value, _, stop in
+        ts.enumerateAttribute(Self.taskCheckboxKey, in: range, options: []) { value, _, stop in
             if value is Bool {
                 found = true
                 stop.pointee = true
@@ -318,10 +341,12 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     }
 
     private func isCodeBlockBackgroundColor(_ color: NSColor) -> Bool {
-        let highlighter = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.services.syntaxHighlighter
-            ?? PlainTextSyntaxHighlighter()
-        let currentBg = highlighter.backgroundColor()
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        let currentBg = MainActor.assumeIsolated {
+            let highlighter = textView?.configuration.services.syntaxHighlighter
+                ?? PlainTextSyntaxHighlighter()
+            return highlighter.backgroundColor()
+        }
         guard let colorRGB = color.usingColorSpace(.deviceRGB),
               let currentBgRGB = currentBg.usingColorSpace(.deviceRGB) else { return false }
         let tolerance: CGFloat = 0.03
@@ -610,8 +635,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let decorations = thematicBreakDecorations(at: point)
         guard !decorations.isEmpty else { return }
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -648,8 +672,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         }
         guard anyLevel else { return }
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
         let indentPerLevel = Self.blockquoteIndentPerLevel
         let barWidth = Self.blockquoteBarWidth
 
@@ -700,8 +723,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
         let storageString = ts.string as NSString
 
         ts.enumerateAttribute(.bulletMarker, in: range, options: []) { [weak self] value, attrRange, _ in
@@ -748,8 +770,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
 
         ts.enumerateAttribute(.orderedMarker, in: range, options: []) { [weak self] value, attrRange, _ in
             guard let self, let number = value as? String else { return }
@@ -778,7 +799,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        ts.enumerateAttribute(.taskCheckbox, in: range, options: []) { [weak self] value, attrRange, _ in
+        ts.enumerateAttribute(Self.taskCheckboxKey, in: range, options: []) { [weak self] value, attrRange, _ in
             guard let self, value != nil else { return }
             // A `.taskCheckbox` range means the styler cleared the raw `- [ ]`
             // (and collapsed the box's advance), so the box must ALWAYS be
@@ -814,13 +835,13 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
             let iconInset = max(0.0, size * 0.01)
             let iconRect = boxRect.insetBy(dx: iconInset, dy: iconInset)
-            let configuration = (textLayoutManager?.textContainer?.textView as? NativeTextView)?.configuration
-                ?? .default
+            let configuration = configurationSnapshot
             let style = configuration.taskCheckbox
             let symbolName = isChecked ? style.checkedSymbolName : style.uncheckedSymbolName
+            let fallbackStyle = MainActor.assumeIsolated { TaskCheckboxStyle.default }
             let fallbackName = isChecked
-                ? TaskCheckboxStyle.default.checkedSymbolName
-                : TaskCheckboxStyle.default.uncheckedSymbolName
+                ? fallbackStyle.checkedSymbolName
+                : fallbackStyle.uncheckedSymbolName
             if let baseSymbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
                 ?? NSImage(systemSymbolName: fallbackName, accessibilityDescription: nil) {
                 let sizeConfig = NSImage.SymbolConfiguration(pointSize: iconRect.height, weight: .regular)

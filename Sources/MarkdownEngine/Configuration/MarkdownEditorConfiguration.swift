@@ -672,7 +672,7 @@ extension MarkdownEditorConfiguration {
     /// `.fitsContent` forces full-document layout so the total height is known.
     /// For small-to-medium documents this is fine; for very large documents it
     /// forgoes TextKit-2 viewport virtualization.
-    public enum HeightBehavior: Sendable {
+    public enum HeightBehavior: Sendable, nonisolated Equatable {
         /// The editor scrolls internally within the height SwiftUI gives it.
         /// This is the historical behavior and the default.
         case scrolls

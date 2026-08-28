@@ -59,32 +59,19 @@ extension NativeTextViewCoordinator {
     func spliceExternalText(_ newText: String, in textView: NSTextView) -> Bool {
         let currentDisplay = textView.string
         guard currentDisplay != newText else { return true }
-
-        let old = currentDisplay as NSString
-        let new = newText as NSString
-        var prefix = 0
-        let maxPrefix = min(old.length, new.length)
-        while prefix < maxPrefix, old.character(at: prefix) == new.character(at: prefix) { prefix += 1 }
-        var suffix = 0
-        let maxSuffix = maxPrefix - prefix
-        while suffix < maxSuffix,
-              old.character(at: old.length - 1 - suffix) == new.character(at: new.length - 1 - suffix) {
-            suffix += 1
-        }
-        let replacedLength = old.length - suffix - prefix
-        let replacement = new.substring(with: NSRange(location: prefix, length: new.length - suffix - prefix))
+        let patch = MarkdownTextPatch.diff(from: currentDisplay, to: newText)
 
         // A change spanning nearly the whole document is a different document,
         // not an edit: the rebuild is both cheaper and the correct reset.
-        let touched = max(replacedLength, (replacement as NSString).length)
-        guard old.length == 0 || touched * 4 < old.length * 3 else { return false }
+        let oldLength = (currentDisplay as NSString).length
+        let touched = max(patch.range.length, (patch.replacement as NSString).length)
+        guard oldLength == 0 || touched * 4 < oldLength * 3 else { return false }
 
         let selection = textView.selectedRange()
-        let patch = MarkdownTextPatch(range: NSRange(location: prefix, length: replacedLength),
-                                      replacement: replacement)
         guard applyProgrammaticPatch(patch, to: textView) else { return false }
         let adjusted = selection
-            .adjusting(forReplacementOf: patch.range, withLength: (replacement as NSString).length)
+            .adjusting(forReplacementOf: patch.range,
+                       withLength: (patch.replacement as NSString).length)
             .clamped(toLength: (textView.string as NSString).length)
         textView.setSelectedRange(adjusted)
         // textDidChange writes the binding back asynchronously; record the

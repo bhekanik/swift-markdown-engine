@@ -35,7 +35,7 @@ import Testing
 ///
 /// `corpusFingerprint` is the regression net that DOES hold everywhere, and it
 /// stays on by default.
-private let perfGateEnabled = ProcessInfo.processInfo.environment["MDE_PERF"] != nil
+nonisolated private let perfGateEnabled = ProcessInfo.processInfo.environment["MDE_PERF"] != nil
 
 @Suite("Inline parse cost vs. span density")
 struct InlineSpanDensityTests {

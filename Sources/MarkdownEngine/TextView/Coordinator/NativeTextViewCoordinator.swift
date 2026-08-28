@@ -267,93 +267,126 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         let center = NotificationCenter.default
 
         if let name = bus.applyBoldRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleBoldNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                // OperationQueue.main is the runtime guarantee for this synchronous actor hop.
+                MainActor.assumeIsolated { self?.handleBoldNotification() }
             })
         }
         if let name = bus.applyItalicRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleItalicNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleItalicNotification() }
             })
         }
         if let name = bus.applyHeadingRequest {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleHeadingNotification(notification)
+                guard let level = notification.userInfo?["level"] as? Int else { return }
+                MainActor.assumeIsolated { self?.handleHeadingNotification(level: level) }
             })
         }
         if let name = bus.applyHighlightRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleHighlightNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleHighlightNotification() }
             })
         }
         if let name = bus.applyStrikethroughRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleStrikethroughNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleStrikethroughNotification() }
             })
         }
         if let name = bus.applyInlineCodeRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleInlineCodeNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleInlineCodeNotification() }
             })
         }
         if let name = bus.applyBlockquoteRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleBlockquoteNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleBlockquoteNotification() }
             })
         }
         if let name = bus.applyUnorderedListRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleUnorderedListNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleUnorderedListNotification() }
             })
         }
         if let name = bus.applyOrderedListRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleOrderedListNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleOrderedListNotification() }
             })
         }
         if let name = bus.applyLinkRequest {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleLinkNotification(notification)
+                let url = notification.userInfo?["url"] as? String ?? ""
+                MainActor.assumeIsolated { self?.handleLinkNotification(url: url) }
             })
         }
         if let name = bus.applyCodeBlockRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleCodeBlockNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleCodeBlockNotification() }
             })
         }
         if let name = bus.applyHorizontalRuleRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleHorizontalRuleNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleHorizontalRuleNotification() }
             })
         }
         if let name = bus.applyImageRequest {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleImageNotification(notification)
+                let url = notification.userInfo?["url"] as? String ?? ""
+                MainActor.assumeIsolated { self?.handleImageNotification(url: url) }
             })
         }
         if let name = bus.findScrollToRange {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleFindScrollToRange(notification)
+                guard let info = notification.userInfo,
+                      let currentIndex = info["currentIndex"] as? Int,
+                      let allRanges = info["allRanges"] as? [NSRange] else { return }
+                let range = info["range"] as? NSRange
+                MainActor.assumeIsolated {
+                    self?.handleFindScrollToRange(
+                        range: range,
+                        currentIndex: currentIndex,
+                        allRanges: allRanges
+                    )
+                }
             })
         }
         if let name = bus.findClearHighlights {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleFindClearHighlights(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleFindClearHighlights() }
             })
         }
         if let name = bus.findQuery {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleFindQuery(notification)
+                guard let query = notification.userInfo?["query"] as? String else { return }
+                let currentIndex = notification.userInfo?["currentIndex"] as? Int ?? 0
+                MainActor.assumeIsolated {
+                    self?.handleFindQuery(query: query, currentIndex: currentIndex)
+                }
             })
         }
         if let name = bus.replaceCurrent {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleReplaceCurrent(notification)
+                guard let info = notification.userInfo,
+                      let query = info["query"] as? String,
+                      let replacement = info["replacement"] as? String else { return }
+                let currentIndex = info["currentIndex"] as? Int ?? 0
+                MainActor.assumeIsolated {
+                    self?.handleReplaceCurrent(
+                        query: query,
+                        replacement: replacement,
+                        currentIndex: currentIndex
+                    )
+                }
             })
         }
         if let name = bus.replaceAll {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleReplaceAll(notification)
+                guard let info = notification.userInfo,
+                      let query = info["query"] as? String,
+                      let replacement = info["replacement"] as? String else { return }
+                MainActor.assumeIsolated {
+                    self?.handleReplaceAll(query: query, replacement: replacement)
+                }
             })
         }
     }
@@ -376,7 +409,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     //   - +Autocorrect     — spell/grammar/quote toggles
     //   - +WritingTools    — macOS 15+ Writing Tools session
 
-    deinit {
+    isolated deinit {
         NotificationCenter.default.removeObserver(self)
         busObservers.forEach(NotificationCenter.default.removeObserver(_:))
     }

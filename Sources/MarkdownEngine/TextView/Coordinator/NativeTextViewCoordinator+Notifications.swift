@@ -13,59 +13,58 @@
 import AppKit
 
 extension NativeTextViewCoordinator {
-    @objc func handleBoldNotification(_ notification: Notification) {
+    func handleBoldNotification() {
         didMarkdownBold(nil)
     }
 
-    @objc func handleItalicNotification(_ notification: Notification) {
+    func handleItalicNotification() {
         didMarkdownItalic(nil)
     }
 
-    @objc func handleHighlightNotification(_ notification: Notification) {
+    func handleHighlightNotification() {
         didMarkdownHighlight(nil)
     }
 
-    @objc func handleHeadingNotification(_ notification: Notification) {
-        guard let level = notification.userInfo?["level"] as? Int else { return }
+    func handleHeadingNotification(level: Int) {
         let item = NSMenuItem()
         item.tag = level
         didMarkdownHeading(item)
     }
 
-    @objc func handleStrikethroughNotification(_ notification: Notification) {
+    func handleStrikethroughNotification() {
         didMarkdownStrikethrough(nil)
     }
 
-    @objc func handleInlineCodeNotification(_ notification: Notification) {
+    func handleInlineCodeNotification() {
         didMarkdownInlineCode(nil)
     }
 
-    @objc func handleBlockquoteNotification(_ notification: Notification) {
+    func handleBlockquoteNotification() {
         didMarkdownBlockquote(nil)
     }
 
-    @objc func handleUnorderedListNotification(_ notification: Notification) {
+    func handleUnorderedListNotification() {
         didMarkdownUnorderedList(nil)
     }
 
-    @objc func handleOrderedListNotification(_ notification: Notification) {
+    func handleOrderedListNotification() {
         didMarkdownOrderedList(nil)
     }
 
-    @objc func handleLinkNotification(_ notification: Notification) {
-        didMarkdownLink(notification)
+    func handleLinkNotification(url: String) {
+        didMarkdownLink(url: url)
     }
 
-    @objc func handleCodeBlockNotification(_ notification: Notification) {
+    func handleCodeBlockNotification() {
         didMarkdownCodeBlock(nil)
     }
 
-    @objc func handleHorizontalRuleNotification(_ notification: Notification) {
+    func handleHorizontalRuleNotification() {
         didMarkdownHorizontalRule(nil)
     }
 
-    @objc func handleImageNotification(_ notification: Notification) {
-        didMarkdownImage(notification)
+    func handleImageNotification(url: String) {
+        didMarkdownImage(url: url)
     }
 
     @objc func handleAppearanceChange(_ notification: Notification) {

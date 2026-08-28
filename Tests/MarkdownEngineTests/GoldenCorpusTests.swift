@@ -16,7 +16,7 @@ import Foundation
 import Testing
 @testable import MarkdownEngine
 
-struct GoldenEntry {
+nonisolated struct GoldenEntry {
     let name: String
     let markdown: String
     let baselineHTML: String
@@ -25,7 +25,7 @@ struct GoldenEntry {
 @Suite("Golden corpus — HTML per construct")
 struct GoldenCorpusTests {
 
-    static let corpus: [GoldenEntry] = [
+    nonisolated static let corpus: [GoldenEntry] = [
         GoldenEntry(
             name: "heading",
             markdown: #"""

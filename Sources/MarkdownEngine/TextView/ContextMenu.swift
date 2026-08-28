@@ -392,9 +392,13 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownLink(_ sender: Any?) {
+        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
+        didMarkdownLink(url: url)
+    }
+
+    func didMarkdownLink(url: String) {
         guard let tv = textView else { return }
         let range = tv.selectedRange()
-        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
 
         if range.length > 0 {
             let nsText = tv.string as NSString
@@ -449,9 +453,13 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownImage(_ sender: Any?) {
+        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
+        didMarkdownImage(url: url)
+    }
+
+    func didMarkdownImage(url: String) {
         guard let tv = textView else { return }
         let range = tv.selectedRange()
-        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
         let insertion = "![](\(url))"
         if tv.shouldChangeText(in: range, replacementString: insertion) {
             tv.replaceCharacters(in: range, with: insertion)

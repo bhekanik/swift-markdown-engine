@@ -121,8 +121,22 @@ public final class MarkdownEditorController {
     /// Apply several patches as one edit.
     ///
     /// Ranges address the document *before any* of them is applied, so a caller
-    /// can hand over a diff computed in one pass. They must not overlap; they
-    /// are applied back to front so earlier ranges stay valid.
+    /// can hand over a diff computed in one pass. The whole batch is validated
+    /// first and then applied back to front, so either all of it lands or none
+    /// of it does.
+    ///
+    /// Rules, all of them checked:
+    /// - Ranges must be in bounds, and must not split a surrogate pair (see
+    ///   ``applyPatch(range:replacement:actionName:registersUndo:)``).
+    /// - Ranges must not overlap. A zero-length insertion counts as touching
+    ///   the character positions on both sides, so an insertion at the start or
+    ///   end of another patch's range is an overlap and is refused: there is no
+    ///   defensible order for it, and silently picking one produced `BA` for
+    ///   `["A", "B"]` at the same offset.
+    /// - Two insertions at the same offset are refused for the same reason.
+    ///   Combine them into one patch; only the caller knows which comes first.
+    ///
+    /// With `registersUndo: true` the whole batch is one undo action.
     @discardableResult
     public func applyPatches(
         _ patches: [MarkdownTextPatch],
@@ -130,20 +144,39 @@ public final class MarkdownEditorController {
         registersUndo: Bool = false
     ) -> Bool {
         guard let textView, let coordinator, !patches.isEmpty else { return false }
-        let length = (textView.string as NSString).length
-        let ordered = patches.sorted { $0.range.location > $1.range.location }
-        guard ordered.allSatisfy({ $0.range.location != NSNotFound && $0.range.location >= 0
-            && $0.range.length >= 0 && NSMaxRange($0.range) <= length }) else { return false }
-        // Overlap would make the "ranges are all pre-edit" contract unsatisfiable.
-        for (a, b) in zip(ordered, ordered.dropFirst())
-        where b.range.location + b.range.length > a.range.location { return false }
+        let text = textView.string as NSString
+        guard patches.allSatisfy({ isApplicable($0, in: text) }) else { return false }
+
+        // Ascending for the overlap check, descending to apply — a later patch
+        // must not shift the range of one that has not been applied yet.
+        let ascending = patches.sorted { $0.range.location < $1.range.location }
+        for (earlier, later) in zip(ascending, ascending.dropFirst()) {
+            // `<` and not `<=`: an insertion exactly where the previous patch
+            // ends is ambiguous, not adjacent.
+            guard NSMaxRange(earlier.range) < later.range.location
+                || (earlier.range.length > 0 && later.range.length > 0
+                    && NSMaxRange(earlier.range) <= later.range.location)
+            else { return false }
+        }
+
+        // One undo group and one coalescing boundary for the batch, not one per
+        // patch — the API promises a single edit.
+        textView.breakUndoCoalescing()
+        let undoManager = textView.undoManager
+        if registersUndo { undoManager?.beginUndoGrouping() }
+        defer {
+            if registersUndo {
+                undoManager?.endUndoGrouping()
+                if let actionName { undoManager?.setActionName(actionName) }
+            }
+            textView.breakUndoCoalescing()
+        }
 
         var selection = textView.selectedRange()
         var applied = false
-        for patch in ordered {
+        for patch in ascending.reversed() {
             guard coordinator.applyProgrammaticPatch(
-                patch, to: textView, actionName: actionName,
-                registersUndo: registersUndo) else { continue }
+                patch, to: textView, registersUndo: registersUndo) else { continue }
             selection = selection.adjusting(
                 forReplacementOf: patch.range,
                 withLength: (patch.replacement as NSString).length
@@ -151,9 +184,26 @@ public final class MarkdownEditorController {
             applied = true
         }
         guard applied else { return false }
-        let newLength = (textView.string as NSString).length
-        textView.setSelectedRange(selection.clamped(toLength: newLength))
+        textView.setSelectedRange(
+            selection.clamped(toLength: (textView.string as NSString).length))
         return true
+    }
+
+    /// In bounds, and not cutting a character in half.
+    ///
+    /// An `NSRange` addresses UTF-16 code units, and an emoji is two of them.
+    /// A range that starts or ends between a high and a low surrogate would
+    /// build a replacement string containing half a character: the text storage
+    /// reassembles the document correctly from the units, but the
+    /// ``MarkdownTextMutation`` published to the embedder is not valid UTF-8,
+    /// and a sync outbox that JSON-encodes it fails.
+    private func isApplicable(_ patch: MarkdownTextPatch, in text: NSString) -> Bool {
+        patch.range.location != NSNotFound
+            && patch.range.location >= 0
+            && patch.range.length >= 0
+            && NSMaxRange(patch.range) <= text.length
+            && !text.splitsSurrogatePair(at: patch.range.location)
+            && !text.splitsSurrogatePair(at: NSMaxRange(patch.range))
     }
 
     /// Bring the editor to `text` by patching the one run that changed.
@@ -172,28 +222,11 @@ public final class MarkdownEditorController {
         registersUndo: Bool = false
     ) -> Bool {
         guard let textView else { return false }
-        let old = textView.string as NSString
-        guard old as String != text else { return true }
-        let new = text as NSString
-        var prefix = 0
-        let maxPrefix = min(old.length, new.length)
-        while prefix < maxPrefix, old.character(at: prefix) == new.character(at: prefix) {
-            prefix += 1
-        }
-        var suffix = 0
-        let maxSuffix = maxPrefix - prefix
-        while suffix < maxSuffix,
-              old.character(at: old.length - 1 - suffix)
-                == new.character(at: new.length - 1 - suffix) {
-            suffix += 1
-        }
-        return applyPatch(
-            range: NSRange(location: prefix, length: old.length - suffix - prefix),
-            replacement: new.substring(
-                with: NSRange(location: prefix, length: new.length - suffix - prefix)),
-            actionName: actionName,
-            registersUndo: registersUndo
-        )
+        let old = textView.string
+        guard old != text else { return true }
+        let patch = MarkdownTextPatch.diff(from: old, to: text)
+        return applyPatch(range: patch.range, replacement: patch.replacement,
+                          actionName: actionName, registersUndo: registersUndo)
     }
 
     // MARK: - Attachment (engine-internal)

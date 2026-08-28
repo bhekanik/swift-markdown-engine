@@ -18,9 +18,10 @@ let engineSettings: [SwiftSetting] = [
     // cache, the tokenizer's per-block memos, the table bitmap caches), which
     // under Swift 6 concurrency checking are only sound because they are
     // main-actor. `defaultIsolation` states that once instead of annotating
-    // ~200 declarations. Language mode stays 5 — see README.
+    // ~200 declarations. Swift 6 language mode makes that isolation part of
+    // the module's enforced public contract.
     .defaultIsolation(MainActor.self),
-    .swiftLanguageMode(.v5),
+    .swiftLanguageMode(.v6),
 ]
 
 let package = Package(
