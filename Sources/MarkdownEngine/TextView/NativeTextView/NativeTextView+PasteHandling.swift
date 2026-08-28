@@ -138,6 +138,7 @@ extension NativeTextView {
     }
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if let answer = validateTextFinderAction(item) { return answer }
         if item.action == #selector(paste(_:)) {
             let pasteboard = NSPasteboard.general
             if textFromPastedFileURL(pasteboard: pasteboard) != nil { return true }

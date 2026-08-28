@@ -662,6 +662,11 @@ extension NativeTextViewCoordinator {
         // four of them per keystroke.
         let preText = textView.string
         let preNS = preText as NSString
+        if replacementString != nil,
+           affectedCharRange.location >= 0,
+           NSMaxRange(affectedCharRange) <= preNS.length {
+            editorController?.textFinderActionResponder?.textFinderClientStringWillChange()
+        }
         // Open the keystroke's PERF frame HERE: the pre-edit parse and the
         // smart-input interceptors below used to run before the frame existed
         // and were invisible in the printed totals.

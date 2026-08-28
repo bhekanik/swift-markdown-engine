@@ -66,6 +66,18 @@ final class NativeTextView: NSTextView {
     /// Return `true` to show the arrow cursor instead of the edit-mode I-beam.
     var isCursorExcluded: ((CGPoint) -> Bool)?
 
+    // MARK: Accessibility projection cache
+    var accessibilityProjectionCache: MarkdownAccessibilityProjection?
+    var accessibilityProjectionGeneration: UInt64 = .max
+    var accessibilityProjectionRawSourceMode = false
+    var accessibilityProjectionRegistryFingerprint = ""
+
+    private var textFinderActionResponder: (any MarkdownTextFinderActionResponder)? {
+        (delegate as? NativeTextViewCoordinator)?
+            .editorController?
+            .textFinderActionResponder
+    }
+
     // MARK: Wide-table overlay state
     /// Live NSScrollView per wide table; keyed by source-ID hash.
     var wideTableOverlays: [Int: WideTableOverlay] = [:]
@@ -97,6 +109,23 @@ final class NativeTextView: NSTextView {
         let nsText = self.string as NSString
         let paragraph = nsText.paragraphRange(for: marked)
         coord.restyleParagraphs([paragraph], in: self)
+    }
+
+    override func performTextFinderAction(_ sender: Any?) {
+        guard let item = sender as? any NSValidatedUserInterfaceItem,
+              let action = NSTextFinder.Action(rawValue: item.tag),
+              let textFinderActionResponder else {
+            super.performTextFinderAction(sender)
+            return
+        }
+        textFinderActionResponder.performTextFinderAction(action)
+    }
+
+    func validateTextFinderAction(_ item: any NSValidatedUserInterfaceItem) -> Bool? {
+        guard item.action == #selector(performTextFinderAction(_:)),
+              let action = NSTextFinder.Action(rawValue: item.tag),
+              let textFinderActionResponder else { return nil }
+        return textFinderActionResponder.validateTextFinderAction(action)
     }
 
     deinit { caretIndicatorObservation?.invalidate() }

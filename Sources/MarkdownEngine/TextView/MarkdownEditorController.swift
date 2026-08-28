@@ -32,6 +32,18 @@ public enum MarkdownScrollPosition: Sendable, Equatable {
     case center
 }
 
+/// Handles the standard AppKit Find actions for an attached editor.
+///
+/// The engine owns the concrete `NSTextView`, so it must intercept the
+/// responder-chain action. The embedder owns search semantics: a Markdown
+/// editor may expose a projection instead of its source string.
+@MainActor
+public protocol MarkdownTextFinderActionResponder: AnyObject {
+    func performTextFinderAction(_ action: NSTextFinder.Action)
+    func validateTextFinderAction(_ action: NSTextFinder.Action) -> Bool
+    func textFinderClientStringWillChange()
+}
+
 /// Handle on one live ``NativeTextViewWrapper``.
 ///
 /// Construct one, hold it (`@State` / a store), and pass it to the wrapper.
@@ -96,6 +108,12 @@ public final class MarkdownEditorController {
     /// ``MarkdownEditorConfiguration/undo`` is ``UndoPolicy/external``.
     /// Ignored under ``UndoPolicy/engine``.
     public weak var undoManager: UndoManager?
+
+    /// Optional owner of the standard Find responder-chain actions.
+    ///
+    /// Weak because the embedder owns both this controller and the responder.
+    /// With no responder installed, `NSTextView` keeps its normal behavior.
+    public weak var textFinderActionResponder: (any MarkdownTextFinderActionResponder)?
 
     /// Fires once the controller is attached to (or detached from) a live
     /// editor, so an embedder can install a finder / key layer at the right

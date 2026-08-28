@@ -23,6 +23,26 @@ import Testing
 @Suite("One view per controller", .serialized)
 struct SingleViewTests {
 
+    private final class TextFinderResponder: MarkdownTextFinderActionResponder {
+        var performed: [NSTextFinder.Action] = []
+        var validated: [NSTextFinder.Action] = []
+        var stringWillChangeCount = 0
+        var validationResult = false
+
+        func performTextFinderAction(_ action: NSTextFinder.Action) {
+            performed.append(action)
+        }
+
+        func validateTextFinderAction(_ action: NSTextFinder.Action) -> Bool {
+            validated.append(action)
+            return validationResult
+        }
+
+        func textFinderClientStringWillChange() {
+            stringWillChangeCount += 1
+        }
+    }
+
     /// A view on `controller`'s storage, driven by a coordinator, without
     /// SwiftUI — the AppKit entry point.
     private func view(on controller: MarkdownEditorController,
@@ -114,6 +134,29 @@ struct SingleViewTests {
         #expect(controller.isAttached == false)
         #expect(controller.applyPatch(range: NSRange(location: 0, length: 1),
                                       replacement: "b") == false)
+    }
+
+    @Test("the embedder owns Find actions and pre-edit invalidation")
+    func findActionsReachTheEmbedder() {
+        let controller = MarkdownEditorController()
+        let responder = TextFinderResponder()
+        controller.textFinderActionResponder = responder
+        let (textView, _) = view(on: controller, text: "alpha\n")
+        let item = NSMenuItem(
+            title: "Find",
+            action: #selector(NSTextView.performTextFinderAction(_:)),
+            keyEquivalent: ""
+        )
+        item.tag = NSTextFinder.Action.showFindInterface.rawValue
+
+        textView.performTextFinderAction(item)
+
+        #expect(responder.performed == [.showFindInterface])
+        #expect(textView.validateUserInterfaceItem(item) == false)
+        #expect(responder.validated == [.showFindInterface])
+
+        textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        #expect(responder.stringWillChangeCount == 1)
     }
 
     // MARK: - A refused view reaches nothing
