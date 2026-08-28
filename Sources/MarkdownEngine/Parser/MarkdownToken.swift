@@ -6,7 +6,7 @@
 //
 
 // Defines the basic Markdown building blocks the editor works with (bold,
-// links, code, LaTeX, etc.), plus shared text attributes.
+// links, code, etc.), plus shared text attributes.
 import AppKit
 import Foundation
 
@@ -26,8 +26,6 @@ enum MarkdownTokenKind: Equatable {
     case blockquote
     case codeBlock
     case inlineCode
-    case blockLatex
-    case inlineLatex
     case imageEmbed
     case imageLink
     case table

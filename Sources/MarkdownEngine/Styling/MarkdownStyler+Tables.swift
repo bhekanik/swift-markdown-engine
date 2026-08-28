@@ -3,7 +3,7 @@
 //  MarkdownEngine
 //
 //  GFM tables. The block is rendered to a single NSImage and emitted via
-//  the same collapsedSource path block-LaTeX uses, so the source stays
+//  the collapsedSource path, so the source stays
 //  in sync with the document but the user only sees the rendered grid
 //  when the caret is outside the table.
 //
@@ -52,8 +52,8 @@ extension MarkdownStyler {
                       c.redComponent, c.greenComponent, c.blueComponent, c.alphaComponent)
     }
 
-    /// Resolving six colors per table per keystroke is measurable (10 tables ×
-    /// 6 appearance-scoped resolutions). The resolved prefix depends only on
+    /// Resolving four colors per table per keystroke is measurable (10 tables ×
+    /// 4 appearance-scoped resolutions). The resolved prefix depends only on
     /// the color INSTANCES + appearance + font, so memoize it by identity —
     /// theme copies keep the same NSColor references across keystrokes.
     private static let themeKeyLock = NSLock()
@@ -63,9 +63,7 @@ extension MarkdownStyler {
         let theme = ctx.configuration.theme
         let identity = "\(ctx.baseFont.fontName)|\(ctx.baseFont.pointSize)|\(appearance.name.rawValue)|"
             + "\(ObjectIdentifier(theme.bodyText))|\(ObjectIdentifier(theme.mutedText))|"
-            + "\(ObjectIdentifier(theme.highlightColor))|\(ObjectIdentifier(ctx.codeBackgroundColor))|"
-            + "\(ObjectIdentifier(theme.latexLightModeText))|\(ObjectIdentifier(theme.latexDarkModeText))|"
-            + "\(ObjectIdentifier(type(of: ctx.services.latex)))"
+            + "\(ObjectIdentifier(theme.highlightColor))|\(ObjectIdentifier(ctx.codeBackgroundColor))"
 
         themeKeyLock.lock()
         if let cached = themeKeyCache[identity] {
@@ -74,9 +72,8 @@ extension MarkdownStyler {
         }
         themeKeyLock.unlock()
 
-        // Every input renderTable reads must be in the key: fonts, all theme
-        // colors it draws with, and the latex renderer (by type — a NoOp and a
-        // real renderer must not share entries).
+        // Every input renderTable reads must be in the key: fonts and all theme
+        // colors it draws with.
         let prefix = [
             ctx.baseFont.fontName,
             "\(ctx.baseFont.pointSize)",
@@ -85,9 +82,6 @@ extension MarkdownStyler {
             colorKey(theme.mutedText, under: appearance),
             colorKey(theme.highlightColor, under: appearance),
             colorKey(ctx.codeBackgroundColor, under: appearance),
-            colorKey(theme.latexLightModeText, under: appearance),
-            colorKey(theme.latexDarkModeText, under: appearance),
-            "\(ObjectIdentifier(type(of: ctx.services.latex)))",
         ].joined(separator: "|")
 
         themeKeyLock.lock()
@@ -155,7 +149,6 @@ extension MarkdownStyler {
             baseFont: ctx.baseFont,
             theme: ctx.configuration.theme,
             codeBackgroundColor: ctx.codeBackgroundColor,
-            latex: ctx.services.latex,
             appearance: appearance,
             availableWidth: availableWidth,
             extensions: ctx.configuration.extensions
@@ -369,14 +362,13 @@ extension MarkdownStyler {
         )
     }
 
-    /// Raw cell → `NSAttributedString`: inline markdown applied, markers stripped, LaTeX as attachments.
+    /// Raw cell → `NSAttributedString`: inline markdown applied, markers stripped.
     static func formattedCellString(
         _ raw: String,
         baseFont: NSFont,
         header: Bool,
         theme: MarkdownEditorTheme,
         codeBackgroundColor: NSColor,
-        latex: any LatexRenderer,
         extensions: [any MarkdownExtension] = []
     ) -> NSAttributedString {
         let descriptor = baseFont.fontDescriptor
@@ -395,7 +387,7 @@ extension MarkdownStyler {
             InlineParser.parse(raw, registry: ExtensionRegistry(extensions: extensions)),
             in: raw as NSString, into: out,
             font: startFont, baseDescriptor: descriptor, pointSize: pointSize,
-            codeFont: codeFont, theme: theme, codeBackgroundColor: codeBackgroundColor, latex: latex,
+            codeFont: codeFont, theme: theme, codeBackgroundColor: codeBackgroundColor,
             extensionsByID: extensionsByID
         )
         return out
@@ -415,7 +407,7 @@ extension MarkdownStyler {
         return NSFont(descriptor: baseDescriptor.withSymbolicTraits(traits), size: pointSize) ?? current
     }
 
-    /// Walk the inline AST into marker-stripped runs; LaTeX as attachments, links/embeds emitted raw.
+    /// Walk the inline AST into marker-stripped runs; links/embeds emitted raw.
     private static func appendInlineCell(
         _ nodes: [InlineNode],
         in ns: NSString,
@@ -426,13 +418,12 @@ extension MarkdownStyler {
         codeFont: NSFont,
         theme: MarkdownEditorTheme,
         codeBackgroundColor: NSColor,
-        latex: any LatexRenderer,
         extensionsByID: [String: any MarkdownExtension] = [:]
     ) {
         func recurse(_ children: [InlineNode], _ f: NSFont) {
             appendInlineCell(children, in: ns, into: out, font: f, baseDescriptor: baseDescriptor,
                              pointSize: pointSize, codeFont: codeFont, theme: theme,
-                             codeBackgroundColor: codeBackgroundColor, latex: latex,
+                             codeBackgroundColor: codeBackgroundColor,
                              extensionsByID: extensionsByID)
         }
         func appendPlain(_ range: NSRange, _ f: NSFont) {
@@ -470,16 +461,6 @@ extension MarkdownStyler {
                 out.append(NSAttributedString(string: ns.substring(with: content), attributes: [
                     .font: codeFont, .backgroundColor: codeBackgroundColor, .foregroundColor: theme.bodyText
                 ]))
-            case .inlineLatex(let range, let content, _):
-                if let entry = latex.render(latex: ns.substring(with: content), fontSize: pointSize, theme: theme) {
-                    let attachment = NSTextAttachment()
-                    attachment.image = entry.image
-                    attachment.bounds = CGRect(x: 0, y: entry.baselineOffset,
-                                               width: entry.size.width, height: entry.size.height)
-                    out.append(NSAttributedString(attachment: attachment))
-                } else {
-                    appendPlain(range, font)   // renderer unavailable → keep raw `$…$`
-                }
             case .link(let range, _, _, _, _),
                  .image(let range, _, _, _),
                  .wikiLink(let range, _, _, _),
@@ -496,7 +477,6 @@ extension MarkdownStyler {
         baseFont: NSFont,
         theme: MarkdownEditorTheme,
         codeBackgroundColor: NSColor,
-        latex: any LatexRenderer,
         appearance: NSAppearance,
         availableWidth: CGFloat,
         extensions: [any MarkdownExtension] = []
@@ -521,7 +501,7 @@ extension MarkdownStyler {
         let headerCells = table.header.map {
             formattedCellString(
                 $0, baseFont: baseFont, header: true, theme: theme,
-                codeBackgroundColor: codeBackgroundColor, latex: latex,
+                codeBackgroundColor: codeBackgroundColor,
                 extensions: extensions
             )
         }
@@ -529,7 +509,7 @@ extension MarkdownStyler {
             row.map {
                 formattedCellString(
                     $0, baseFont: baseFont, header: false, theme: theme,
-                    codeBackgroundColor: codeBackgroundColor, latex: latex,
+                    codeBackgroundColor: codeBackgroundColor,
                     extensions: extensions
                 )
             }

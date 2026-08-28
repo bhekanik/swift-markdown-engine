@@ -257,8 +257,6 @@ extension NativeTextViewCoordinator {
         }
         let tokens = parsed.tokens
         let codeTokens = parsed.codeTokens
-        let latexTokens = parsed.latexTokens
-        let blockLatexTokens = parsed.blockLatexTokens
         let preEditActiveTokenIndices = pendingPreEditActiveTokenIndices ?? previousActiveTokenIndices
         pendingPreEditActiveTokenIndices = nil
 
@@ -270,7 +268,6 @@ extension NativeTextViewCoordinator {
             tv,
             caretLocation: safeSelRange.location,
             codeTokens: codeTokens,
-            latexTokens: latexTokens,
             allTokens: tokens
         )
 
@@ -286,24 +283,21 @@ extension NativeTextViewCoordinator {
         if codeBlockStructureChanged || extFenceStructureChanged {
             effectiveParagraphCandidates = [NSRange(location: 0, length: fullText.length)]
         }
-        // Restyle only latex/imageEmbed paragraphs the EDIT touches (mirrors the
-        // table loop below); the caret entering/leaving a formula, which flips
-        // rendered↔raw, is covered by tokenRestyleParagraphs. Blanket-restyling
-        // every such paragraph made scopeBounds span the whole document, which
-        // defeated the per-pass scope culling in the styler.
-        let latexParagraphs = PerfTrace.measure("latexMap") { () -> [NSRange] in
+        // Restyle only imageEmbed paragraphs the EDIT touches (mirrors the
+        // table loop below). Blanket-restyling every such paragraph made
+        // scopeBounds span the whole document, which defeated the per-pass
+        // scope culling in the styler.
+        let imageEmbedParagraphs = PerfTrace.measure("imageMap") { () -> [NSRange] in
             var out: [NSRange] = []
             // Binary-searched slices — the old loops walked each array from
             // the document head to the edit on every keystroke.
-            for group in [parsed.classified.inlineLatex, parsed.classified.blockLatex, parsed.classified.imageEmbed] {
-                for (_, token) in MarkdownStyler.scopedSlice(group, lo: safeEditedRange.location, hi: NSMaxRange(safeEditedRange))
-                where NSIntersectionRange(token.range, safeEditedRange).length > 0 {
-                    out.append(fullText.paragraphRange(for: token.range))
-                }
+            for (_, token) in MarkdownStyler.scopedSlice(parsed.classified.imageEmbed, lo: safeEditedRange.location, hi: NSMaxRange(safeEditedRange))
+            where NSIntersectionRange(token.range, safeEditedRange).length > 0 {
+                out.append(fullText.paragraphRange(for: token.range))
             }
             return out
         }
-        effectiveParagraphCandidates.append(contentsOf: latexParagraphs)
+        effectiveParagraphCandidates.append(contentsOf: imageEmbedParagraphs)
         // A table renders as ONE image anchored on the block's FIRST paragraph.
         // When an edit touches any of its rows (typing in a row, or a paste
         // that merges into an existing table), the styler re-emits the anchor
@@ -443,8 +437,6 @@ extension NativeTextViewCoordinator {
         let parsed = PerfTrace.measure("selParse") { parsedDocument(for: docText, edit: selectionEdit) }
         let tokens = parsed.tokens
         let codeTokens = parsed.codeTokens
-        let latexTokens = parsed.latexTokens
-        let blockLatexTokens = parsed.blockLatexTokens
 
         let prevActive = activeTokenIndices
         PerfTrace.measure("selActive") {
@@ -505,7 +497,6 @@ extension NativeTextViewCoordinator {
                 tv,
                 caretLocation: selLoc,
                 codeTokens: codeTokens,
-                latexTokens: latexTokens,
                 allTokens: tokens
             )
         }
@@ -597,18 +588,13 @@ extension NativeTextViewCoordinator {
                 let clamped = NSIntersectionRange(span, NSRange(location: 0, length: nsText.length))
                 if clamped.length > 0 { paragraphCandidates.append(nsText.paragraphRange(for: clamped)) }
             }
-            // Latex/imageEmbed tokens only inside the caret/previous-caret
+            // Image-embed tokens only inside the caret/previous-caret
             // paragraphs (binary-searched); the rendered↔raw flip of a token
             // the caret entered or left is covered by tokenRestyleParagraphs.
-            // The old blanket map over EVERY formula in the document widened
-            // scopeBounds to the whole document on every caret-move restyle,
-            // defeating the styler's per-pass culling — O(#formulas) each.
             let scopeLo = paragraphCandidates.map(\.location).min() ?? 0
             let scopeHi = paragraphCandidates.map { NSMaxRange($0) }.max() ?? 0
-            for group in [parsed.classified.inlineLatex, parsed.classified.blockLatex, parsed.classified.imageEmbed] {
-                for (_, token) in MarkdownStyler.scopedSlice(group, lo: scopeLo, hi: scopeHi) {
-                    paragraphCandidates.append(nsText.paragraphRange(for: token.range))
-                }
+            for (_, token) in MarkdownStyler.scopedSlice(parsed.classified.imageEmbed, lo: scopeLo, hi: scopeHi) {
+                paragraphCandidates.append(nsText.paragraphRange(for: token.range))
             }
             paragraphCandidates.append(contentsOf: tokenRestyleParagraphs(
                 in: nsText,
@@ -622,18 +608,14 @@ extension NativeTextViewCoordinator {
             }
         }
 
-        // Auto-select content when clicking (mouse) into a rendered (previously inactive) latex or image embed
+        // Auto-select content when clicking (mouse) into a rendered (previously inactive) image embed
         if selRange.length == 0,
            let eventType = currentEventType,
            eventType == .leftMouseUp || eventType == .leftMouseDown {
             let newlyActive = activeTokenIndices.subtracting(previousActiveTokenIndices)
             for idx in newlyActive {
                 let token = tokens[idx]
-                guard token.kind == .inlineLatex
-                    || token.kind == .blockLatex
-                    || token.kind == .imageEmbed else {
-                    continue
-                }
+                guard token.kind == .imageEmbed else { continue }
                 let selectRange = token.contentRange
                 if selectRange.length > 0 {
                     tv.setSelectedRange(selectRange)
@@ -857,7 +839,7 @@ extension NativeTextViewCoordinator {
         parseGeneration &+= 1
         // Refresh the descriptor for EVERY proposed edit — including programmatic
         // ones. A smart-input interceptor that suppresses a keystroke and performs
-        // a different edit (auto-pair, "->"→"→", Tab indent, list-exit, $$-wrap)
+        // a different edit (auto-pair, "->"→"→", Tab indent, list-exit)
         // would otherwise leave the suppressed edit's descriptor behind, and the
         // wiki splice in textDidChange would corrupt the storage form from it.
         pendingEditedRange = NSRange(location: affectedCharRange.location, length: replacementString?.utf16.count ?? 0)
@@ -920,16 +902,6 @@ extension NativeTextViewCoordinator {
 
         defer { PerfTrace.checkpoint("shouldOut") }
         return PerfTrace.measure("smartInput") {
-            // Block LaTeX auto-wrap: insert newlines to keep $$ on its own line
-            if MarkdownInputHandler.handleBlockLatexAutoWrap(
-                textView: textView,
-                affectedCharRange: affectedCharRange,
-                replacementString: replacementString,
-                blockLatexTokens: parsed.blockLatexTokens
-            ) {
-                return false
-            }
-
             if MarkdownInputHandler.handleImageEmbedAutoWrap(
                 textView: textView,
                 affectedCharRange: affectedCharRange,

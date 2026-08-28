@@ -473,7 +473,7 @@ struct ScrollWheelForwardingTests {
 struct AsyncHeightChangeTests {
 
     @Test func contentHeightChangeUpdatesFrame() {
-        // Simulate an async content height change (e.g. image/LaTeX finishing layout)
+        // Simulate an async content height change (e.g. image finishing layout)
         // by mutating baseContentHeight and calling applyManagedFrameSize.
         let stack = HeightBehaviorStack(heightBehavior: .fitsContent)
         stack.textView.baseContentHeight = 200

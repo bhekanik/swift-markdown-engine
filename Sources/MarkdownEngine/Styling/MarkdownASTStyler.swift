@@ -12,8 +12,8 @@
 //  Built incrementally behind the existing styler; not wired until complete
 //  and visually verified. Covered so far: heading/paragraph/blockquote blocks;
 //  inline emphasis (font composition), strikethrough, inline code, markdown
-//  links, wiki links. Still TODO: images, image embeds, inline LaTeX, escapes,
-//  autolinks, marker-shrinking, paragraph styles, code/table/latex blocks,
+//  links, wiki links. Still TODO: images, image embeds, escapes,
+//  autolinks, marker-shrinking, paragraph styles, code/table blocks,
 //  bullets, task checkboxes, horizontal rules.
 //
 
@@ -560,7 +560,6 @@ enum MarkdownASTStyler {
 
     /// Shared inputs threaded through the walk.
     /// Internal (not private) so per-construct styling can live in its own
-    /// file — see `MarkdownASTStyler+Directives.swift`.
     struct Ctx {
         let ns: NSString
         let fontName: String
@@ -653,7 +652,7 @@ enum MarkdownASTStyler {
             styleThematicBreak(range: range, ctx: ctx, into: &attrs)
         case .ext(let node):
             styleExtensionBlock(node, font: font, ctx: ctx, into: &attrs)
-        case .blockLatex, .table, .blank:
+        case .table, .blank:
             break   // NSImage rendering ported next
         }
     }
@@ -810,18 +809,6 @@ enum MarkdownASTStyler {
                 styleInlines(children, font: composed, ctx: ctx, into: &attrs)
 
             case .ext(let node):
-                // Directives come through the same node shape under a reserved
-                // id namespace. They compose a font TRANSFORM over the
-                // inherited font and hand it down, so emphasis nested in the
-                // body keeps both (`@font(size: 18){**bold**}` is bold AND
-                // 18pt). Non-directive nodes fall through unchanged.
-                if let bodyFont = directiveBodyFont(for: node, font: font, ctx: ctx, into: &attrs) {
-                    if ctx.isActive(node.range) {
-                        for marker in node.markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
-                    }
-                    styleInlines(node.children, font: bodyFont, ctx: ctx, into: &attrs)
-                    break
-                }
                 // Extension-contributed span: the extension supplies content
                 // ATTRIBUTES only; every range comes from the parser, so a
                 // misbehaving extension can restyle its own span at worst.
@@ -849,7 +836,7 @@ enum MarkdownASTStyler {
             case .wikiLink(let range, let name, _, let markers):
                 styleWikiLink(range: range, name: name, markers: markers, ctx: ctx, into: &attrs)
 
-            case .image, .imageEmbed, .inlineLatex, .escape:
+            case .image, .imageEmbed, .escape:
                 break   // ported in later increments
             }
         }
@@ -906,7 +893,7 @@ enum MarkdownASTStyler {
 
     // MARK: - Marker shrinking (hide syntax of inactive nodes)
 
-    /// Collapse inactive nodes' markers to a tiny kerned font so syntax vanishes; code/LaTeX skip themselves.
+    /// Collapse inactive nodes' markers to a tiny kerned font so syntax vanishes; code skips itself.
     private static func shrinkInactiveMarkers(in blocks: [BlockNode], ctx: Ctx, into attrs: inout [StyledRange]) {
         for block in blocks where ctx.inScope(block.range) {
             switch block {
@@ -920,7 +907,7 @@ enum MarkdownASTStyler {
                 for item in items { shrinkInlineMarkers(item.inlines, ctx: ctx, into: &attrs) }
             case .ext(let node):
                 shrinkInlineMarkers(node.inlines, ctx: ctx, into: &attrs)
-            case .codeBlock, .blockLatex, .table, .thematicBreak, .blank:
+            case .codeBlock, .table, .thematicBreak, .blank:
                 break
             }
         }
@@ -955,7 +942,7 @@ enum MarkdownASTStyler {
                 if !(forceReveal || ctx.isActive(range)) { shrink(markers, ctx: ctx, into: &attrs) }
             case .escape(let range, _, let marker):
                 if !(forceReveal || ctx.isActive(range)) { shrink([marker], ctx: ctx, into: &attrs) }
-            case .text, .code, .imageEmbed, .inlineLatex:
+            case .text, .code, .imageEmbed:
                 break   // own marker handling / not shrunk
             }
         }

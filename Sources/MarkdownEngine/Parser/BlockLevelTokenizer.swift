@@ -3,12 +3,12 @@
 //  MarkdownEngine
 //
 //  Builds the block-level MarkdownTokens (heading, blockquote, fenced code,
-//  table, block LaTeX) directly from already-classified block substrings —
+//  table) directly from already-classified block substrings —
 //  replacing the legacy `parseTokens` regexes. Inline tokens come from the AST
 //  (`InlineParser` → `InlineASTAdapter`); this only covers block-level kinds.
 //
 //  Token shapes are reproduced 1:1 from the old regex tokenizer so every
-//  downstream consumer (ContextMenu, code/LaTeX detection, the NSImage render
+//  downstream consumer (ContextMenu, code detection, the NSImage render
 //  passes) sees identical tokens. A parity check pins that during the swap.
 //
 
@@ -17,7 +17,6 @@ import Foundation
 enum BlockLevelTokenizer {
 
     private static let backtick: unichar = 0x60
-    private static let dollar: unichar = 0x24
     private static let hash: unichar = 0x23
     private static let pipe: unichar = 0x7C
     private static let gt: unichar = 0x3E
@@ -48,11 +47,10 @@ enum BlockLevelTokenizer {
         case .heading:     return heading(in: sub)
         case .blockquote:  return blockquote(in: sub)
         case .table:       return table(in: sub)
-        case .blockLatex:  return blockLatex(in: sub)
         case .ext(let id): return extensionBlock(in: sub, id: id,
                                                  fence: registry.blockEntry(for: id)?.fence ?? "")
         case .paragraph, .list, .thematicBreak, .blank:
-            // Safety-net table scan; tables/block LaTeX are their own blocks now, inline `$$…$$` stays plain.
+            // Safety-net table scan; tables are their own blocks now.
             return table(in: sub)
         }
     }
@@ -234,36 +232,4 @@ enum BlockLevelTokenizer {
         return count >= 1
     }
 
-    // MARK: - Block LaTeX  (legacy `(?s)(?<!\$)\$\$(.+?)\$\$`)
-
-    private static func blockLatex(in s: NSString) -> [MarkdownToken] {
-        let len = s.length
-        var tokens: [MarkdownToken] = []
-        var i = 0
-        while i + 1 < len {
-            if s.character(at: i) == dollar, s.character(at: i + 1) == dollar {
-                if i > 0, s.character(at: i - 1) == dollar { i += 1; continue }   // (?<!\$)
-                var j = i + 2
-                var closeAt = -1
-                while j + 1 < len {
-                    if s.character(at: j) == dollar, s.character(at: j + 1) == dollar, j > i + 2 {
-                        closeAt = j; break
-                    }
-                    j += 1
-                }
-                if closeAt >= 0 {
-                    tokens.append(MarkdownToken(
-                        kind: .blockLatex,
-                        range: NSRange(location: i, length: (closeAt + 2) - i),
-                        contentRange: NSRange(location: i + 2, length: closeAt - (i + 2)),
-                        markerRanges: [NSRange(location: i, length: 2),
-                                       NSRange(location: closeAt, length: 2)]))
-                    i = closeAt + 2
-                    continue
-                }
-            }
-            i += 1
-        }
-        return tokens
-    }
 }

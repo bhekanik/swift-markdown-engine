@@ -6,8 +6,8 @@
 //
 //  Protocols and default implementations for engine-side dependencies.
 //
-//  The Markdown editor engine resolves wiki-links, syntax highlighting,
-//  LaTeX rendering, and embedded image lookup through these protocols.
+//  The Markdown editor engine resolves wiki-links, syntax highlighting and
+//  embedded image lookup through these protocols.
 //  Embedders supply the concrete implementations; the engine never
 //  reaches into the host app for any of these concerns.
 //
@@ -152,38 +152,6 @@ public struct PlainTextSyntaxHighlighter: SyntaxHighlighter {
     public var appearanceDidChangeNotification: Notification.Name? { nil }
 }
 
-// MARK: - LaTeX
-
-/// Renders LaTeX formulas to images for inline display.
-public protocol LatexRenderer: Sendable {
-    /// Render `latex` at the requested font size, optionally tinted by `theme`.
-    /// - Returns: A rendered result, or `nil` if the renderer cannot produce
-    ///   an image (unsupported syntax, missing dependency, …).
-    func render(latex: String, fontSize: CGFloat, theme: MarkdownEditorTheme) -> LatexRenderResult?
-}
-
-/// Output of a LaTeX render call.
-public struct LatexRenderResult: Sendable {
-    public let image: NSImage
-    public let size: CGSize
-    /// Distance from the image's bottom edge to its visual baseline.
-    /// Used to align inline math with the surrounding text.
-    public let baselineOffset: CGFloat
-
-    public init(image: NSImage, size: CGSize, baselineOffset: CGFloat) {
-        self.image = image
-        self.size = size
-        self.baselineOffset = baselineOffset
-    }
-}
-
-/// Default renderer that ignores LaTeX entirely. The engine falls back to
-/// rendering the source text when this is in use.
-public struct NoOpLatexRenderer: LatexRenderer {
-    public init() {}
-    public func render(latex: String, fontSize: CGFloat, theme: MarkdownEditorTheme) -> LatexRenderResult? { nil }
-}
-
 // MARK: - Event Bus
 
 /// Optional notification-name bridge that lets the editor communicate with
@@ -238,7 +206,7 @@ public struct MarkdownEditorBus: Sendable {
     /// text. Expected `userInfo["query"] as? String`, optional `userInfo["currentIndex"] as? Int`.
     /// The engine matches in DISPLAY coordinates, so highlights land correctly even where the
     /// displayed text differs from the source (e.g. node links rendered shorter than
-    /// `[[Name|UUID]]`, LaTeX, images). Preferred over `findScrollToRange`, which trusts
+    /// `[[Name|UUID]]` and images). Preferred over `findScrollToRange`, which trusts
     /// host-computed (source-coordinate) ranges.
     public var findQuery: Notification.Name?
     /// Posted by the engine in response to `findQuery` with `userInfo["count"] as? Int`
@@ -318,20 +286,17 @@ public struct MarkdownEditorServices: Sendable {
     public var wikiLinks: any WikiLinkResolver
     public var images: any EmbeddedImageProvider
     public var syntaxHighlighter: any SyntaxHighlighter
-    public var latex: any LatexRenderer
     public var bus: MarkdownEditorBus
 
     public init(
         wikiLinks: any WikiLinkResolver = NoOpWikiLinkResolver(),
         images: any EmbeddedImageProvider = NoOpEmbeddedImageProvider(),
         syntaxHighlighter: any SyntaxHighlighter = PlainTextSyntaxHighlighter(),
-        latex: any LatexRenderer = NoOpLatexRenderer(),
         bus: MarkdownEditorBus = .default
     ) {
         self.wikiLinks = wikiLinks
         self.images = images
         self.syntaxHighlighter = syntaxHighlighter
-        self.latex = latex
         self.bus = bus
     }
 

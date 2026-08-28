@@ -179,7 +179,6 @@ extension NativeTextViewCoordinator {
                 textView,
                 caretLocation: finalSelection.location,
                 codeTokens: parsed.codeTokens,
-                latexTokens: parsed.latexTokens,
                 allTokens: parsed.tokens
             )
             previousActiveTokenIndices = activeTokenIndices
@@ -256,21 +255,15 @@ extension NativeTextViewCoordinator {
         let tokens = parseState.tokens(for: text, edit: edit, registry: cachedExtensionRegistry)
         let tClassify = DispatchTime.now().uptimeNanoseconds
         var codeTokens: [MarkdownToken] = []
-        var latexTokens: [MarkdownToken] = []
-        var blockLatexTokens: [MarkdownToken] = []
         var wikiLinkTokens: [MarkdownToken] = []
         var imageEmbedTokens: [MarkdownToken] = []
         var tableTokens: [MarkdownToken] = []
         var codeBlockTokensWithIndices: [(index: Int, token: MarkdownToken)] = []
-        var inlineLatexIdx: [(index: Int, token: MarkdownToken)] = []
-        var blockLatexIdx: [(index: Int, token: MarkdownToken)] = []
         var imageEmbedIdx: [(index: Int, token: MarkdownToken)] = []
         var imageLinkIdx: [(index: Int, token: MarkdownToken)] = []
         var tableIdx: [(index: Int, token: MarkdownToken)] = []
 
         codeTokens.reserveCapacity(tokens.count / 2)
-        latexTokens.reserveCapacity(tokens.count / 4)
-        blockLatexTokens.reserveCapacity(tokens.count / 4)
         wikiLinkTokens.reserveCapacity(tokens.count / 4)
 
         for (index, token) in tokens.enumerated() {
@@ -280,12 +273,6 @@ extension NativeTextViewCoordinator {
                 if token.kind == .codeBlock {
                     codeBlockTokensWithIndices.append((index, token))
                 }
-            case .inlineLatex:
-                latexTokens.append(token)
-                inlineLatexIdx.append((index, token))
-            case .blockLatex:
-                blockLatexTokens.append(token)
-                blockLatexIdx.append((index, token))
             case .wikiLink:
                 wikiLinkTokens.append(token)
             case .imageEmbed:
@@ -306,14 +293,11 @@ extension NativeTextViewCoordinator {
             tokens: tokens,
             blocks: parseState.currentBlocks,
             codeTokens: codeTokens,
-            latexTokens: latexTokens,
-            blockLatexTokens: blockLatexTokens,
             wikiLinkTokens: wikiLinkTokens,
             imageEmbedTokens: imageEmbedTokens,
             tableTokens: tableTokens,
             codeBlockTokensWithIndices: codeBlockTokensWithIndices,
             classified: MarkdownStyler.ClassifiedStyleTokens(
-                inlineLatex: inlineLatexIdx, blockLatex: blockLatexIdx,
                 imageEmbed: imageEmbedIdx, imageLink: imageLinkIdx,
                 table: tableIdx, code: codeTokens),
             version: parsedDocumentVersion
@@ -385,7 +369,7 @@ extension NativeTextViewCoordinator {
             let token = tokens[idx]
             paragraphs.append(text.paragraphRange(for: token.range))
 
-            if token.kind == .codeBlock || token.kind == .blockLatex {
+            if token.kind == .codeBlock {
                 for markerRange in token.markerRanges {
                     paragraphs.append(text.paragraphRange(for: markerRange))
                 }

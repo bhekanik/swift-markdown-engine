@@ -83,7 +83,7 @@ public struct InlineSyntax: Sendable, Equatable {
 /// * An unclosed block runs to the end of the document.
 ///
 /// Built-in constructs always classify first — a fence that collides with a
-/// built-in line form (```, `$$`, `#`, `>`, list markers, `|…|`) never fires.
+/// built-in line form (```, `#`, `>`, list markers, `|…|`) never fires.
 public struct BlockSyntax: Sendable, Equatable {
     /// Fence prefix that opens and closes the block, e.g. `":::"`.
     public var fence: String
@@ -156,33 +156,23 @@ struct ExtensionRegistry {
     let entries: [Entry]
     /// Fenced block rules, in registration order.
     let blockEntries: [BlockEntry]
-    /// Directive rules (`@font(size: 18){…}`). Carried here so the directive
-    /// fingerprint folds into the one grammar fingerprint every parse cache
-    /// already keys on — registering a directive invalidates those caches with
-    /// no second key to thread through the pipeline.
-    let directives: DirectiveRegistry
     /// Stable fingerprint for cache keying ("" when empty). Two registries with
     /// the same fingerprint produce identical parses for identical text.
     let fingerprint: String
 
-    static let empty = ExtensionRegistry(entries: [], blockEntries: [], directives: .empty, fingerprint: "")
+    static let empty = ExtensionRegistry(entries: [], blockEntries: [], fingerprint: "")
 
-    private init(entries: [Entry], blockEntries: [BlockEntry], directives: DirectiveRegistry, fingerprint: String) {
+    private init(entries: [Entry], blockEntries: [BlockEntry], fingerprint: String) {
         self.entries = entries
         self.blockEntries = blockEntries
-        self.directives = directives
         self.fingerprint = fingerprint
     }
 
-    init(extensions: [any MarkdownExtension], directives: DirectiveRegistry = .empty) {
-        // Directives alone are a non-empty grammar: only bail out when BOTH
-        // halves are empty, or a directive-only configuration would parse as
-        // pure markdown.
-        guard !extensions.isEmpty || !directives.isEmpty else {
+    init(extensions: [any MarkdownExtension]) {
+        guard !extensions.isEmpty else {
             self = .empty
             return
         }
-        self.directives = directives
         self.entries = extensions.compactMap { ext in
             guard let syntax = ext.inline else { return nil }
             return Entry(
@@ -202,7 +192,7 @@ struct ExtensionRegistry {
         // an id containing the separator characters cannot alias another
         // registry.
         func framed(_ str: String) -> String { "\(str.utf16.count).\(str)" }
-        let extensionFingerprint = extensions
+        self.fingerprint = extensions
             .map { ext in
                 var parts = [framed(ext.id)]
                 if let s = ext.inline {
@@ -216,16 +206,9 @@ struct ExtensionRegistry {
                 return parts.joined(separator: ",")
             }
             .joined(separator: "|")
-        // One grammar fingerprint covering both seams. The `~` separator keeps
-        // the halves distinguishable; an empty half contributes nothing, so a
-        // directive-free registry keeps the fingerprint it had before
-        // directives existed.
-        self.fingerprint = directives.isEmpty
-            ? extensionFingerprint
-            : extensionFingerprint + "~" + directives.fingerprint
     }
 
-    var isEmpty: Bool { entries.isEmpty && blockEntries.isEmpty && directives.isEmpty }
+    var isEmpty: Bool { entries.isEmpty && blockEntries.isEmpty }
 
     /// The first registered block rule whose fence opens `line` (column 0),
     /// or nil. Registration order is precedence, matching the inline rules.
@@ -240,9 +223,9 @@ struct ExtensionRegistry {
 }
 
 extension MarkdownEditorConfiguration {
-    /// The parser-facing registry derived from `extensions` and `directives`.
+    /// The parser-facing registry derived from `extensions`.
     var extensionRegistry: ExtensionRegistry {
-        ExtensionRegistry(extensions: extensions, directives: directiveRegistry)
+        ExtensionRegistry(extensions: extensions)
     }
 
     /// Styler-facing lookup: extension behavior by id.

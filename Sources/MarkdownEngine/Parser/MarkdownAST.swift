@@ -42,7 +42,6 @@ indirect enum BlockNode: Equatable {
     case blockquote(range: NSRange, inlines: [InlineNode])
     case list(range: NSRange, items: [ListItem])
     case codeBlock(range: NSRange)
-    case blockLatex(range: NSRange)
     case table(range: NSRange)
     case thematicBreak(range: NSRange)
     case blank(range: NSRange)
@@ -51,7 +50,7 @@ indirect enum BlockNode: Equatable {
     var range: NSRange {
         switch self {
         case .paragraph(let r, _), .heading(_, let r, _, _), .blockquote(let r, _),
-             .list(let r, _), .codeBlock(let r), .blockLatex(let r), .table(let r),
+             .list(let r, _), .codeBlock(let r), .table(let r),
              .thematicBreak(let r), .blank(let r):
             return r
         case .ext(let node):
@@ -80,7 +79,7 @@ enum DocumentAST {
         // Scoped mode: skip building BlockNodes for blocks outside the edit.
         // Blocks tile the document in order, so one sweep over sorted candidate
         // ranges replaces scanning every candidate per block (which went
-        // quadratic in formula-rich documents with dozens of candidates).
+        // quadratic in large documents with dozens of candidates).
         let relevant: [(block: Block, scopes: [NSRange]?)]
         if let normalizedScopes {
             var out: [(Block, [NSRange]?)] = []
@@ -179,8 +178,6 @@ enum DocumentAST {
             )
         case .fencedCode:
             return .codeBlock(range: block.range)
-        case .blockLatex:
-            return .blockLatex(range: block.range)
         case .table:
             return .table(range: block.range)
         case .thematicBreak:

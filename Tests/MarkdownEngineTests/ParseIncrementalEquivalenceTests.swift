@@ -41,14 +41,13 @@ struct ParseIncrementalEquivalenceTests {
         "> a blockquote line",
         "| a | b |", "|---|---|", "| 1 | 2 |",
         "```swift", "let x = 1", "```",
-        "$$", "E = mc^2", "$$",
         "A [[Wiki Link]] and ==highlight== and ~~strike~~.",
-        "Inline $x^2$ latex and an ![[embed.png]] image.",
+        "An ![[embed.png]] image.",
         "",
     ]
 
     private static let editSnippets = [
-        "x", "ab", " ", "\n", "`", "``", "```", "$", "$$", "**", "- ", "# ",
+        "x", "ab", " ", "\n", "`", "``", "```", "**", "- ", "# ",
         "| c |", "[[N]]", "\n\n", "word and more",
     ]
 

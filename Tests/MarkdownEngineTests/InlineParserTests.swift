@@ -241,29 +241,6 @@ struct InlineParserTests {
         ])
     }
 
-    // MARK: - Inline LaTeX
-
-    @Test("inline math")
-    func inlineLatex() {
-        #expect(InlineParser.parse("$a+b$") == [
-            .inlineLatex(range: r(0, 5), content: r(1, 3), markers: [r(0, 1), r(4, 1)]),
-        ])
-    }
-
-    @Test("currency-looking $…$ is not math")
-    func currencyNotLatex() {
-        #expect(InlineParser.parse("$50$") == [.text(r(0, 4))])
-    }
-
-    @Test("a $…$ span that would cross a code span is not math (bug 3)")
-    func dollarAcrossCodeNotLatex() {
-        #expect(InlineParser.parse("$x `c` y$") == [
-            .text(r(0, 3)),
-            .code(range: r(3, 3), content: r(4, 1)),
-            .text(r(6, 3)),
-        ])
-    }
-
     // MARK: - Strikethrough (extension-supplied `~~…~~` span)
 
     private var strikeRegistry: ExtensionRegistry {
@@ -308,31 +285,6 @@ struct InlineParserTests {
                 .emphasis(.italic, range: r(2, 3), markers: [r(2, 1), r(4, 1)], children: [.text(r(3, 1))]),
             ]),
         ])
-    }
-
-    @Test("an extension sharing a built-in trigger char is reachable when the built-in fails")
-    func extensionReachableAfterBuiltInFails() {
-        // `$50$` is rejected by the built-in math heuristic (currency); a
-        // registered `$…$` extension must still get its chance (fall-through).
-        struct DollarSpan: MarkdownExtension {
-            var id: String { "dollar-span" }
-            var inline: InlineSyntax? { InlineSyntax(open: "$", close: "$", parsesContent: false) }
-            func contentAttributes(theme: MarkdownEditorTheme) -> [NSAttributedString.Key: Any] { [:] }
-            func html(childrenHTML: String) -> String { childrenHTML }
-        }
-        let registry = ExtensionRegistry(extensions: [DollarSpan()])
-        let nodes = InlineParser.parse("$50$", registry: registry)
-        guard case .ext(let node) = nodes.first else {
-            Issue.record("expected extension span, got \(nodes)")
-            return
-        }
-        #expect(node.extensionID == "dollar-span")
-        // And the built-in still wins when it matches: real math parses as latex.
-        let mathNodes = InlineParser.parse("$x^2 + y$", registry: registry)
-        guard case .inlineLatex = mathNodes.first else {
-            Issue.record("built-in latex must win over the extension, got \(mathNodes)")
-            return
-        }
     }
 
     @Test("both extensions registered: ~~ and == coexist and nest")

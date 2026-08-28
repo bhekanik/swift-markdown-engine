@@ -29,7 +29,6 @@ enum BlockKind: Equatable {
     case blockquote      // consecutive `>` lines, inline-bearing per line
     case list            // consecutive list-item lines (`-`/`*`/`+` or `1.`/`1)`)
     case fencedCode      // ```…``` — opaque (no inline parsing inside)
-    case blockLatex      // $$…$$ — opaque
     case table           // GFM table — opaque (rendered as a unit)
     case thematicBreak   // `---` / `***` / `___` — produces no token today
     case blank           // blank / whitespace-only line(s) — separator
@@ -125,12 +124,9 @@ enum BlockParser {
         return BufferDiff(changeStart: p, changeEndOld: oldLen - s, changeEndNew: newLen - s, delta: newLen - oldLen)
     }
 
-    /// Does any LINE touched by `[lo, hi)` contain a `$$` or ``` that can ripple?
-    /// Line-expanded, not just ±3 around the edit: block delimiters are
-    /// line-classified with a TRIMMED prefix (`isBlockLatexOpen`), so editing
-    /// the leading whitespace of an indented `$$` opener flips the pairing
-    /// from arbitrarily far away from the literal `$$`. The boundary walk is
-    /// capped; hitting the cap reports a delimiter (conservative full parse).
+    /// Does any LINE touched by `[lo, hi)` contain a ``` that can ripple? The
+    /// boundary walk is capped; hitting the cap reports a delimiter
+    /// (conservative full parse).
     static func hasBlockDelimiter(_ buf: [unichar], _ lo: Int, _ hi: Int, fences: [[unichar]] = []) -> Bool {
         let cap = 4096
         var start = max(0, lo - 3)
@@ -149,9 +145,7 @@ enum BlockParser {
         }
         var i = start
         while i < end {
-            if buf[i] == 0x24 {                                          // $
-                if i + 1 < end, buf[i + 1] == 0x24 { return true }       // $$
-            } else if buf[i] == 0x60, i + 2 < end, buf[i + 1] == 0x60, buf[i + 2] == 0x60 {
+            if buf[i] == 0x60, i + 2 < end, buf[i + 1] == 0x60, buf[i + 2] == 0x60 {
                 return true                                              // ```
             }
             // Extension fences pair with a distant partner exactly like ``` —
@@ -181,7 +175,7 @@ enum BlockParser {
         guard changeStart >= 0, changeEnd <= oldLen, diff.changeEndNew <= newLen,
               changeStart <= changeEnd, changeStart <= diff.changeEndNew else { return nil }
 
-        // A fence/block-LaTeX/extension delimiter in the edit can pair with a distant partner → full reparse.
+        // A fence or extension delimiter in the edit can pair with a distant partner → full reparse.
         let fences = registry.blockEntries.map(\.fenceChars)
         if hasBlockDelimiter(o, changeStart, changeEnd, fences: fences)
             || hasBlockDelimiter(n, changeStart, diff.changeEndNew, fences: fences) {
@@ -206,11 +200,11 @@ enum BlockParser {
         let winFirst = max(0, min(firstIdx, lastIdx) - 1)
         let winLast = min(oldBlocks.count - 1, max(firstIdx, lastIdx) + 1)
 
-        // 3. Opaque multi-line blocks (fences / block LaTeX) in the window are
-        // fine for INTERIOR edits: the window contains each block wholly, the
-        // ±3 delimiter guard above already bailed on any edit that creates,
-        // destroys, or touches a ``` / $$ pairing, and an edit that UN-closes
-        // a block (trailing chars on its closer line) makes the reparsed block
+        // 3. Opaque multi-line fenced blocks in the window are fine for
+        // INTERIOR edits: the window contains each block wholly, the ±3
+        // delimiter guard above already bailed on any edit that creates,
+        // destroys, or touches a ``` pairing, and an edit that UN-closes a
+        // block (trailing chars on its closer line) makes the reparsed block
         // reach the window end — caught by the trailing guard below. Typing
         // inside a code block used to fall back to a full O(doc) reparse on
         // every keystroke because of an unconditional bail here.
@@ -223,10 +217,10 @@ enum BlockParser {
         // 5. Reparse just the window substring, shift to absolute new coords.
         let windowText = newNS.substring(with: NSRange(location: winStart, length: winEndNew - winStart))
         let reparsed = computeBlocks(windowText, registry: registry).map { $0.shifted(by: winStart) }
-        // A trailing fence/latex/extension block reaching the window end might continue past it.
+        // A trailing fence or extension block reaching the window end might continue past it.
         if let last = reparsed.last, NSMaxRange(last.range) >= winEndNew {
             switch last.kind {
-            case .fencedCode, .blockLatex, .ext: return nil
+            case .fencedCode, .ext: return nil
             case .paragraph:
                 // The edit may have dissolved the separator that used to end
                 // this paragraph (backspace-joining two paragraphs): if the
@@ -284,15 +278,6 @@ enum BlockParser {
             return nil
         }
 
-        /// Line index of the `$$` closing a block-LaTeX run opened at `start`; nil if none.
-        func blockLatexCloseIndex(from start: Int) -> Int? {
-            let open = lineText(start).trimmingCharacters(in: .whitespacesAndNewlines)
-            if open.dropFirst(2).contains("$$") { return start }
-            var j = start + 1
-            while j < lines.count { if lineText(j).contains("$$") { return j }; j += 1 }
-            return nil
-        }
-
         // 2. Classify + group.
         var blocks: [Block] = []
         var i = 0
@@ -337,11 +322,6 @@ enum BlockParser {
                 blocks.append(Block(kind: .table, range: union(lines[i...end])))
                 i = end + 1
 
-            } else if isBlockLatexOpen(line), let end = blockLatexCloseIndex(from: i) {
-                // Block LaTeX `$$…$$` — a single line or a `$$`-delimited run.
-                blocks.append(Block(kind: .blockLatex, range: union(lines[i...end])))
-                i = end + 1
-
             } else if let entry = registry.blockEntry(opening: line) {
                 // Extension fenced block: consume through the closing fence
                 // line (or to EOF if none) — mirrors ``` semantics. Built-ins
@@ -363,12 +343,11 @@ enum BlockParser {
                     let next = lineText(end + 1)
                     if isBlank(next) || isThematicBreak(next)
                         || isHeading(next) || isBlockquote(next) || isListItem(next) { break }
-                    // A table (row + separator), a CLOSED code fence, a
-                    // block-LaTeX run, or an extension fence interrupts it —
+                    // A table (row + separator), a CLOSED code fence, or an
+                    // extension fence interrupts it —
                     // an unclosed opener stays part of the paragraph.
                     if isFence(next), fenceCloseIndex(from: end + 1) != nil { break }
                     if isTableRow(next), end + 2 < lines.count, isTableSeparator(lineText(end + 2)) { break }
-                    if isBlockLatexOpen(next), blockLatexCloseIndex(from: end + 1) != nil { break }
                     if registry.blockEntry(opening: next) != nil { break }
                     end += 1
                 }
@@ -450,11 +429,6 @@ enum BlockParser {
         return !middle.isEmpty && middle.allSatisfy {
             $0 == "-" || $0 == ":" || $0 == "|" || $0 == " " || $0 == "\t"
         }
-    }
-
-    /// A block-LaTeX opener: a line whose content starts with `$$`.
-    private static func isBlockLatexOpen(_ line: String) -> Bool {
-        line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("$$")
     }
 
     private static func union(_ ranges: ArraySlice<NSRange>) -> NSRange {

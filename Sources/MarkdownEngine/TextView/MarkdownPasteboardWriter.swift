@@ -23,9 +23,7 @@ enum MarkdownPasteboardWriter {
 
     @MainActor
     static func write(markdown: String, to pasteboard: NSPasteboard,
-                      extensions: [any MarkdownExtension] = [],
-                      directives: [any MarkdownDirective] = [],
-                      directiveSettings: DirectiveRegistrySettings = .default) {
+                      extensions: [any MarkdownExtension] = []) {
         pasteboard.clearContents()
 
         // Always keep the raw markdown available as plain text.
@@ -36,8 +34,7 @@ enum MarkdownPasteboardWriter {
         pasteboard.setString(markdown, forType: Self.markdownType)
 
         // Render the selection to clean HTML.
-        let htmlBody = MarkdownHTMLRenderer.html(from: markdown, extensions: extensions,
-                                                 directives: directives, directiveSettings: directiveSettings)
+        let htmlBody = MarkdownHTMLRenderer.html(from: markdown, extensions: extensions)
         // Rich targets (web archive + RTF) show task items as plain bullets
         // (user's call); the .html flavor keeps the GFM checkbox markup so
         // markdown apps (Obsidian etc.) restore `- [ ]` on paste.

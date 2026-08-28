@@ -53,9 +53,6 @@ enum InlineASTAdapter {
                                         contentRange: node.contentRange, markerRanges: node.markers))
             node.children.forEach { append($0, to: &result) }
 
-        case .inlineLatex(let range, let content, let markers):
-            result.append(MarkdownToken(kind: .inlineLatex, range: range, contentRange: content, markerRanges: markers))
-
         case .escape(let range, let character, let marker):
             result.append(MarkdownToken(kind: .backslashEscape, range: range, contentRange: character, markerRanges: [marker]))
         }

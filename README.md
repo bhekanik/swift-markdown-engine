@@ -19,7 +19,7 @@
 </video>
 
 
-A native AppKit Markdown editor for macOS, built on TextKit 2 and bridged to SwiftUI. It is the editor inside **[Nodes](https://apps.apple.com/app/apple-store/id6745401961?pt=127809373&ct=github&mt=8)**, a macOS notes app. Live styling, wiki-link support, fenced code blocks with syntax highlighting, LaTeX rendering, embedded images, and GitHub-style task
+A native AppKit Markdown editor for macOS, built on TextKit 2 and bridged to SwiftUI. It is the editor inside **[Nodes](https://apps.apple.com/app/apple-store/id6745401961?pt=127809373&ct=github&mt=8)**, a macOS notes app. Live styling, wiki-link support, fenced code blocks with syntax highlighting, embedded images, and GitHub-style task
 checkboxes.
 
 ## Features
@@ -29,8 +29,6 @@ checkboxes.
   (`[[Name|<id>]]` ↔ `[[Name]]`)
 - **Image embeds** — both `![[Name]]` (Obsidian-style, embedder supplies the                           
   bytes) and standard Markdown `![alt](url)`
-- **LaTeX** — both block (`$$ … $$`) and inline (`$…$`), embedder supplies
-  the renderer
 - **Code blocks** with embedder-supplied syntax highlighting and overlayable
   copy buttons
 - **Reading column** — opt-in fixed-width centered column, wide tables
@@ -42,9 +40,8 @@ checkboxes.
 - **Comfortable bottom overscroll** so the caret never pins to the viewport
   edge while typing
 - **Drag-select autoscroll boost** for long documents
-- **Spelling & grammar** with code/LaTeX/wiki-link suppression
+- **Spelling & grammar** with code/wiki-link suppression
 - **Extensions** — opt-in constructs defined by a *delimiter pair* (`==highlight==`, `~~strikethrough~~`, …); add your own via [`MarkdownExtension`](#extensions)
-- **Directives** — opt-in constructs defined by a *name and typed arguments*, for what a delimiter pair can't express (`@font(size: 18){text}`); add your own via [`MarkdownDirective`](#directives)
 
 ## Installation
 
@@ -64,13 +61,11 @@ targets: [
 
 Or in Xcode: **File → Add Package Dependencies…** and paste the repo URL.
 
-The package ships three library products — add only what you need:
+The package ships one library product:
 
 | Product | Use when |
 |---|---|
 | `MarkdownEngine` | You want the editor only. Zero external dependencies. |
-| `MarkdownEngineCodeBlocks` | You want the full visual code-block experience — background fill, monospace font, and syntax highlighting — without writing your own bridge. Pulls in [HighlighterSwift](https://github.com/smittytone/HighlighterSwift) transitively. See [Customization → Code Blocks](#code-blocks). |
-| `MarkdownEngineLatex` | You want LaTeX formula rendering without writing your own bridge. Pulls in [SwiftMath](https://github.com/mgriebling/SwiftMath) transitively. See [Customization → LaTeX Rendering](#latex-rendering). |
 
 ## Quick Start
 
@@ -105,8 +100,7 @@ a no-op default so you only implement what you actually need:
 |---|---|---|
 | `WikiLinkResolver` | Resolve a `[[Name]]` to a stable opaque id | (your data model) |
 | `EmbeddedImageProvider` | Look up an `NSImage` for `![[Name]]` | (your asset store) |
-| `SyntaxHighlighter` | Highlight code blocks for a given language | **`HighlighterSwiftBridge`** ([recommended](#code-blocks)) — built on [HighlighterSwift](https://github.com/smittytone/HighlighterSwift) |
-| `LatexRenderer` | Render a LaTeX string to an `NSImage` | **`SwiftMathBridge`** ([recommended](#latex-rendering)) — built on [SwiftMath](https://github.com/mgriebling/SwiftMath) |
+| `SyntaxHighlighter` | Highlight code blocks for a given language | (your highlighter) |
 
 Implement what you need and pass it through `MarkdownEditorServices`:
 
@@ -119,61 +113,11 @@ struct MyResolver: WikiLinkResolver {
 
 configuration.services = MarkdownEditorServices(
     wikiLinks: MyResolver()
-    // images, syntaxHighlighter, latex omitted → no-op defaults
+    // images, syntaxHighlighter omitted → no-op defaults
 )
 ```
 
 Each protocol and its no-op default are documented in DocC.
-
-### Code Blocks
-
-**Recommended path: depend on the `MarkdownEngineCodeBlocks` product
-and use the bundled `HighlighterSwiftBridge`.** Rolling your own
-`SyntaxHighlighter` has subtle footguns the bridge already handles —
-line-height metrics across light/dark themes, appearance-change
-observation, layout-pass timing, font name extraction from the theme,
-and CSS-theme-derived background colors. Use the bundle unless you
-specifically need a non-HighlighterSwift library.
-
-```swift
-import MarkdownEngineCodeBlocks
-
-var configuration = MarkdownEditorConfiguration.default
-configuration.services = MarkdownEditorServices(
-    syntaxHighlighter: HighlighterSwiftBridge()
-)
-```
-
-The bridge auto-switches between `atom-one-light` and `atom-one-dark`
-with system appearance. Different theme names or a pinned single theme
-are configurable via init params — see DocC.
-
-Need a different highlighter library entirely? Implement
-`SyntaxHighlighter` yourself (see [Service Protocols](#service-protocols)
-above for the declaration) and reference the bundled bridge in
-`Sources/MarkdownEngineCodeBlocks/` as a working example.
-
-### LaTeX Rendering
-
-**Recommended path: depend on the `MarkdownEngineLatex` product and use
-the bundled `SwiftMathBridge`.** Hand-rolling a `LatexRenderer` has
-real footguns the bridge already handles — appearance-aware text color,
-zero-sized output guards (`lockFocus` crashes on 0×0 images),
-window-vs-NSApp appearance distinction, single-letter padding, and an
-internal cache keyed by (latex, font size, appearance, theme color).
-
-```swift
-import MarkdownEngineLatex
-
-var configuration = MarkdownEditorConfiguration.default
-configuration.services = MarkdownEditorServices(
-    latex: SwiftMathBridge()
-)
-```
-
-The bridge uses the Latin Modern math font and tints formulas with
-`MarkdownEditorTheme.latexLightModeText` / `latexDarkModeText`. Pass
-`singleLetterPaddingBottom:` to override the engine's matching default.
 
 ### Theming
 
@@ -280,8 +224,7 @@ with `readingWidth`; an optional `placeholder:` shows ghost text while empty;
 ### Extensions
 
 An extension is **a pair of delimiters** plus how to style what sits between
-them — that is the whole shape, and what distinguishes it from a
-[directive](#directives). The core engine parses pure markdown; constructs like
+them. The core engine parses pure markdown; constructs like
 `==highlight==`, `~~strikethrough~~`, and `::: … :::` container blocks are
 opt-in extensions:
 
@@ -297,71 +240,11 @@ all geometry, marker/fence hiding, caret reveal, and incremental restyling, so
 extensions behave identically to built-ins and cannot affect neighboring
 constructs. Conform to `MarkdownExtension` to add your own.
 
-### Directives
-
-The second opt-in seam, for constructs that need a NAME and TYPED ARGUMENTS
-rather than delimiters:
-
-```swift
-var config = MarkdownEditorConfiguration()
-config.directives = [FontDirective(), ColorDirective()]
-```
-
-```markdown
-@font(size: 18){eighteen point}, @font(size: 1.5em){half again}, @color(red){tinted}
-```
-
-Two forms: **container** (`@font(size: 18){text}`) and **self-contained**
-(`@pagebreak`). A container's font transform composes over the font inherited
-at that point in the tree, so `@font(size: 18){**bold**}` is bold *and* 18pt,
-and the same call inside a heading keeps the heading's weight. There is no
-"applies to everything after me" form — a directive's effect is scoped to its
-own node, which is what keeps per-keystroke restyling block-local.
-
-Self-contained calls parse and claim their span, so nothing inside them is
-autolinked or emphasized — but they currently render as their literal source,
-and no self-contained directive ships yet. The glyph presentation that would
-draw one as a rule or a badge arrives with a later phase.
-
-The marker defaults to `@` and is configurable per registry
-(`config.directiveSettings`) and per directive, and several markers can be
-registered at once. An unregistered name stays literal text, and a directive
-only opens at a non-word character — so `name@example.com` is never a
-directive. If your app already uses `@` to trigger mentions, give directives
-their own marker instead of disambiguating at the keystroke; the
-registered-names-only rule keeps `@alice` literal, but the trigger itself is
-still shared.
-
-Two limits worth knowing before you author one. A body holding a span claimed
-by an *earlier* parse pass — an inline code span, or a backslash escape —
-leaves the whole construct literal rather than producing a directive around it:
-
-```markdown
-@font(size: 18){this has `code` in it}   ← not a directive, stays as typed
-@font(size: 18){this has *emphasis*}     ← fine, composes normally
-```
-
-Constructs claimed in the same pass or later (`$…$`, links, emphasis, nesting)
-work inside a body. And the engine ships the seam, not a picker: there is no
-completion UI for directive names or argument values.
-
-Conform to `MarkdownDirective` to add your own; a typical one is about 30
-lines, including its argument schema and HTML. `FontDirective` and
-`ColorDirective` are reference implementations meant to be read — they are not
-registered unless you register them.
-
 ## Demo
 
 A runnable SwiftUI demo lives in [`Demo/`](Demo/MarkdownEngineDemo.xcodeproj).
 Open it in Xcode and hit **Run** — the demo references the package via
 a local path, so any engine edit rebuilds into the demo on the next run.
-
-Its sample document is ordered by where each construct comes from rather than
-by feature: core markdown first, then the optional bridge products, then the
-two opt-in seams. The toolbar's **Opt-in seams** toggle unregisters the
-extensions and directives at runtime, so that last part collapses into literal
-text while the rest doesn't move a pixel — the fastest way to see what the core
-grammar actually knows.
 
 > If you're seeing a "missing package product" error, it's almost always
 > stale package cache. Use **File → Packages → Reset Package Caches**

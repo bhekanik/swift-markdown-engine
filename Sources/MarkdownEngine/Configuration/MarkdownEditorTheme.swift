@@ -61,13 +61,6 @@ public struct MarkdownEditorTheme: Sendable {
     /// ``findMatchHighlight``.
     public var findCurrentMatchHighlight: NSColor
 
-    // MARK: LaTeX rendering
-
-    /// Foreground color used when rendering LaTeX formulas in light mode.
-    public var latexLightModeText: NSColor
-    /// Foreground color used when rendering LaTeX formulas in dark mode.
-    public var latexDarkModeText: NSColor
-
     // MARK: Strikethrough / decoration
 
     /// Stroke color used for strikethrough decorations
@@ -90,8 +83,6 @@ public struct MarkdownEditorTheme: Sendable {
         incompleteLink: NSColor = .systemBlue,
         findMatchHighlight: NSColor = .systemYellow,
         findCurrentMatchHighlight: NSColor = .systemYellow,
-        latexLightModeText: NSColor = .black,
-        latexDarkModeText: NSColor = .white,
         strikethroughColor: NSColor = .labelColor,
         highlightColor: NSColor = .systemOrange.withAlphaComponent(0.4)
     ) {
@@ -103,8 +94,6 @@ public struct MarkdownEditorTheme: Sendable {
         self.incompleteLink = incompleteLink
         self.findMatchHighlight = findMatchHighlight
         self.findCurrentMatchHighlight = findCurrentMatchHighlight
-        self.latexLightModeText = latexLightModeText
-        self.latexDarkModeText = latexDarkModeText
         self.strikethroughColor = strikethroughColor
         self.highlightColor = highlightColor
     }

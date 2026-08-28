@@ -6,12 +6,11 @@ A TextKit 2-backed Markdown editor view for macOS, bridged to SwiftUI.
 
 MarkdownEngine provides a native AppKit Markdown editor with live styling,
 wiki-style ``[[Name]]`` linking, fenced code blocks with syntax highlighting,
-LaTeX rendering, embedded images, and GitHub-style task checkboxes.
+embedded images, and GitHub-style task checkboxes.
 
 The engine itself has **zero external dependencies**. Everything app-specific
 is injected through small service protocols, so embedders stay in control of
-where wiki-links resolve, where embedded images live, how code is highlighted,
-and how LaTeX is rendered.
+where wiki-links resolve, where embedded images live, and how code is highlighted.
 
 ### Quick Start
 
@@ -58,8 +57,7 @@ configuration.theme = theme
 let services = MarkdownEditorServices(
     wikiLinks: MyWikiLinkResolver(),
     images:    MyImageProvider(),
-    syntaxHighlighter: MySyntaxHighlighter(),
-    latex:     MyLatexRenderer()
+    syntaxHighlighter: MySyntaxHighlighter()
 )
 
 var configuration = MarkdownEditorConfiguration.default
@@ -82,7 +80,6 @@ configuration.services = services
 - ``WikiLinkResolver``
 - ``EmbeddedImageProvider``
 - ``SyntaxHighlighter``
-- ``LatexRenderer``
 
 ### Services Container
 
@@ -94,7 +91,6 @@ configuration.services = services
 - ``NoOpWikiLinkResolver``
 - ``NoOpEmbeddedImageProvider``
 - ``PlainTextSyntaxHighlighter``
-- ``NoOpLatexRenderer``
 
 ### Selection & Replacement
 

@@ -5,8 +5,7 @@
 //  Created by Luca Chen on 18.02.26.
 //
 
-// Handles Markdown typing shortcuts, like continuing lists and keeping block
-// LaTeX on its own line while you type.
+// Handles Markdown typing shortcuts, like continuing lists.
 import AppKit
 
 enum MarkdownInputHandler {
@@ -22,8 +21,6 @@ enum MarkdownInputHandler {
                                              replacementString: replacementString, isInsideCodeBlock: isInsideCodeBlock)
     }
 
-    // MARK: - Block LaTeX Auto-Wrap
-
     private static func insertTextProgrammatically(_ textView: NSTextView, text: String, at range: NSRange, cursorAfter: Int) {
         if let coord = textView.delegate as? NativeTextViewWrapper.Coordinator {
             coord.isProgrammaticEdit = true
@@ -37,26 +34,6 @@ enum MarkdownInputHandler {
             coord.isProgrammaticEdit = false
         }
         textView.setSelectedRange(NSRange(location: cursorAfter, length: 0))
-    }
-
-    /// Keeps block LaTeX ($$...$$) on its own line by inserting newlines; returns true if handled.
-    static func handleBlockLatexAutoWrap(
-        textView: NSTextView,
-        affectedCharRange: NSRange,
-        replacementString: String?,
-        blockLatexTokens: [MarkdownToken]? = nil
-    ) -> Bool {
-        let resolvedTokens: [MarkdownToken]
-        if let blockLatexTokens {
-            resolvedTokens = blockLatexTokens
-        } else {
-            resolvedTokens = MarkdownTokenizer.parseTokensViaAST(
-                in: textView.string,
-                registry: (textView as? NativeTextView)?.configuration.extensionRegistry ?? .empty
-            ).filter { $0.kind == .blockLatex }
-        }
-        return handleBlockAutoWrap(textView: textView, affectedCharRange: affectedCharRange,
-                                   replacementString: replacementString, tokens: resolvedTokens)
     }
 
     /// Return inside a table row inserts `<br>` instead of splitting the row.

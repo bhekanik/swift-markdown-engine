@@ -151,7 +151,7 @@ struct MarkdownASTStylerTests {
 
     /// Code is not prose: fenced blocks and inline `code` spans must carry
     /// `.spellingState: 0` so the system spell-checker leaves them alone,
-    /// matching the existing convention that links / wiki-links / LaTeX / tables
+    /// matching the existing convention that links / wiki-links / tables
     /// already follow.
     @Test("code blocks and inline code receive .spellingState: 0; prose does not")
     func codeRegionsSuppressSpellCheck() {

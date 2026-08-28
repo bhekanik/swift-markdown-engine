@@ -28,7 +28,7 @@ struct TableWidthChangeRestyleTests {
             layoutBridge: nil,
             baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor,
-            latexMarkerFont: font,
+            hiddenMarkerFont: font,
             configuration: .default,
             wikiLinkIDProvider: { _ in nil }
         )

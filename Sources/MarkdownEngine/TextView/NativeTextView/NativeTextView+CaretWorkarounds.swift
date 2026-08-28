@@ -30,9 +30,9 @@ extension NativeTextView {
                 let paraRange = (ts.string as NSString).paragraphRange(
                     for: NSRange(location: sel.location, length: 0)
                 )
-                ts.enumerateAttribute(.latexIsBlock, in: paraRange, options: []) { value, range, stop in
+                ts.enumerateAttribute(.renderedImageIsBlock, in: paraRange, options: []) { value, range, stop in
                     guard value as? Bool == true else { return }
-                    if ts.attribute(.latexBlockOffsetY, at: range.location, effectiveRange: nil) != nil {
+                    if ts.attribute(.renderedBlockOffsetY, at: range.location, effectiveRange: nil) != nil {
                         resize = true
                     } else {
                         hide = true

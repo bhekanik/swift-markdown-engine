@@ -6,7 +6,7 @@
 //
 //  Toggles AppKit's auto-correct, spell-check, grammar-check and quote
 //  substitution off when the caret enters tokens where those features are
-//  unwanted (code blocks, LaTeX, links). The decision is cached so it only
+//  unwanted (code blocks and links). The decision is cached so it only
 //  fires when the state actually changes.
 //
 
@@ -17,7 +17,6 @@ extension NativeTextViewCoordinator {
         _ textView: NSTextView,
         caretLocation: Int,
         codeTokens: [MarkdownToken]? = nil,
-        latexTokens: [MarkdownToken]? = nil,
         allTokens: [MarkdownToken]? = nil
     ) {
         // Prefer precomputed tokens to avoid the expensive textView.string bridge on long docs.
@@ -26,12 +25,6 @@ extension NativeTextViewCoordinator {
             inCode = MarkdownDetection.isInsideCodeBlock(location: caretLocation, codeTokens: codeTokens)
         } else {
             inCode = MarkdownDetection.isInsideCodeBlock(location: caretLocation, in: textView.string, registry: configuration.extensionRegistry)
-        }
-        let inLatex: Bool
-        if let latexTokens = latexTokens {
-            inLatex = MarkdownDetection.isInsideLatex(location: caretLocation, latexTokens: latexTokens)
-        } else {
-            inLatex = MarkdownDetection.isInsideLatex(location: caretLocation, in: textView.string, registry: configuration.extensionRegistry)
         }
         let inSpellcheckSuppressedToken: Bool
         if let allTokens = allTokens {
@@ -42,14 +35,14 @@ extension NativeTextViewCoordinator {
         } else {
             inSpellcheckSuppressedToken = isInsideSpellcheckSuppressedToken(location: caretLocation, in: textView.string)
         }
-        let shouldDisableSpelling = inCode || inLatex || inSpellcheckSuppressedToken
+        let shouldDisableSpelling = inCode || inSpellcheckSuppressedToken
 
         if cachedSpellingDisabled == shouldDisableSpelling {
             return
         }
         cachedSpellingDisabled = shouldDisableSpelling
 
-        // Inside a suppress zone (code/LaTeX/link), force everything off.
+        // Inside a suppress zone (code/link), force everything off.
         // Outside, restore to the user's preference — captured via the toggle
         // overrides in `NativeTextView+SpellingToggles.swift` — so a manual
         // "off" survives caret movement through suppress zones.
@@ -69,14 +62,6 @@ extension NativeTextViewCoordinator {
     func isInsideCode(range: NSRange, in text: String) -> Bool {
         let parsed = parsedDocument(for: text)
         return MarkdownDetection.isInsideCodeBlock(range: range, codeTokens: parsed.codeTokens)
-    }
-
-    func isInsideLatex(location: Int, in text: String) -> Bool {
-        let parsed = parsedDocument(for: text)
-        if MarkdownDetection.isInsideLatex(location: location, latexTokens: parsed.latexTokens) {
-            return true
-        }
-        return MarkdownDetection.isInsideLatex(location: location, latexTokens: parsed.blockLatexTokens)
     }
 
     func isInsideSpellcheckSuppressedToken(location: Int, in text: String) -> Bool {

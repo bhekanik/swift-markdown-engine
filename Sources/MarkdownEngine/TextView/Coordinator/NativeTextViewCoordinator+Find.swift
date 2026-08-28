@@ -33,7 +33,7 @@ extension NativeTextViewCoordinator {
 
     /// Find against the engine's OWN displayed text (`tv.string`). Matches are computed in
     /// DISPLAY coordinates, so highlights land correctly even where the displayed text differs
-    /// from the source (node links rendered shorter than `[[Name|UUID]]`, LaTeX, images). Posts
+    /// from the source (node links rendered shorter than `[[Name|UUID]]`, images). Posts
     /// the match count back via `bus.findResults` so the host can show "x of y".
     @objc func handleFindQuery(_ notification: Notification) {
         guard let tv = textView,

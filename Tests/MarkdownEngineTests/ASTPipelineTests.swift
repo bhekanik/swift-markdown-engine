@@ -100,13 +100,6 @@ struct ASTPipelineTests {
         #expect(link?.range == NSRange(location: 4, length: 9))
     }
 
-    @Test("bug 3: no spurious latex token across code spans")
-    func bug3CrossCodeLatex() {
-        let tokens = MarkdownTokenizer.parseTokensViaAST(in: "the `$a` and `$b` vars")
-        #expect(!tokens.contains { $0.kind == .inlineLatex })
-        #expect(tokens.filter { $0.kind == .inlineCode }.count == 2)
-    }
-
     @Test("block-level tokens are preserved (heading + emphasis in the title)")
     func headingPlusInline() {
         let tokens = MarkdownTokenizer.parseTokensViaAST(in: "# Title *x*")

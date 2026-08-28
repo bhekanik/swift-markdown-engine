@@ -70,14 +70,13 @@ struct BlockParserTests {
 
     @Test("an unclosed fence stays literal text — blocks below are not swallowed")
     func unclosedFenceDoesNotSwallow() {
-        // ```\n then a table, a thematic break, block LaTeX, and a link
+        // ```\n then a table, a thematic break, and a link
         // paragraph — none of them may end up inside a code block.
-        let text = "```\n\n|a|b|\n|-|-|\n|1|2|\n\n---\n\n$$x$$\n\n[l](u)"
+        let text = "```\n\n|a|b|\n|-|-|\n|1|2|\n\n---\n\n[l](u)"
         let blocks = BlockParser.parse(text)
         #expect(!blocks.contains { $0.kind == .fencedCode })
         #expect(blocks.contains { $0.kind == .table })
         #expect(blocks.contains { $0.kind == .thematicBreak })
-        #expect(blocks.contains { $0.kind == .blockLatex })
         assertTiles(text)
     }
 

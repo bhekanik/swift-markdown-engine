@@ -66,12 +66,11 @@ struct RebuildSelectionReplayTests {
         let caret = tv.selectedRange().location
         let parsed = coord.parsedDocument(for: tv.string)
         let inCode = MarkdownDetection.isInsideCodeBlock(location: caret, codeTokens: parsed.codeTokens)
-        let inLatex = MarkdownDetection.isInsideLatex(location: caret, latexTokens: parsed.latexTokens)
         let inLink = parsed.tokens.contains {
             ($0.kind == .wikiLink || $0.kind == .link || $0.kind == .imageEmbed)
                 && NSLocationInRange(caret, $0.range)
         }
-        let expectedDisabled = inCode || inLatex || inLink
+        let expectedDisabled = inCode || inLink
 
         #expect(coord.cachedSpellingDisabled == expectedDisabled)   // the replay ran
         #expect(tv.isContinuousSpellCheckingEnabled

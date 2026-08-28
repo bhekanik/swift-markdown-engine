@@ -57,8 +57,8 @@ struct InlineSpanDensityTests {
     /// half-formed and nested spans rather than in valid markdown.
     private static let atoms = [
         "a", "bb", " ", "  ", "*", "**", "_", "__", "`", "``", "\\", "\\*", "\\`",
-        "[", "]", "(", ")", "![", "[[", "]]", "|", "$", "==", "~~", "url", "http://e.com/x",
-        "\n", "word", ".", "!", "*a*", "**b**", "`c`", "[d](e)", "[[f|g]]", "$h$",
+        "[", "]", "(", ")", "![", "[[", "]]", "|", ":", "==", "~~", "url", "http://e.com/x",
+        "\n", "word", ".", "!", "*a*", "**b**", "`c`", "[d](e)", "[[f|g]]", "h",
     ]
 
     private func corpus(_ count: Int) -> [String] {
@@ -89,7 +89,7 @@ struct InlineSpanDensityTests {
             extensions: [HighlightExtension(), StrikethroughExtension()]
         ).extensionRegistry
 
-        #expect(fingerprint(corpus(4000), registry: registry) == "b74649ffbbbe237a")
+        #expect(fingerprint(corpus(4000), registry: registry) == "fee4c2d155c6e0bb")
     }
 
     // MARK: - Cost curve

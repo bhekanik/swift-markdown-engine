@@ -42,8 +42,7 @@ struct TableCellSourceTests {
             baseFont: .systemFont(ofSize: 15),
             header: false,
             theme: MarkdownEditorConfiguration.default.theme,
-            codeBackgroundColor: .windowBackgroundColor,
-            latex: NoOpLatexRenderer()
+            codeBackgroundColor: .windowBackgroundColor
         )
         #expect(cell.string == "first\nsecond")
     }
@@ -56,7 +55,7 @@ struct TableCellSourceTests {
                 nsText: source as NSString,
                 tokens: [], codeTokens: [], activeTokenIndices: [],
                 baseFont: font, layoutBridge: nil, baseDefaultLineHeight: 18,
-                codeBackgroundColor: .windowBackgroundColor, latexMarkerFont: font,
+                codeBackgroundColor: .windowBackgroundColor, hiddenMarkerFont: font,
                 configuration: .default, wikiLinkIDProvider: { _ in nil }
             )
             ctx.scopeBounds = nil

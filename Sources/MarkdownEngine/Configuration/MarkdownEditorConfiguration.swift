@@ -35,8 +35,6 @@ public struct MarkdownEditorConfiguration: Sendable {
     public var taskCheckbox: TaskCheckboxStyle
     public var headings: HeadingStyle
     public var imageEmbed: ImageEmbedStyle
-    public var blockLatex: BlockLatexStyle
-    public var inlineLatex: InlineLatexStyle
     public var blockquote: BlockquoteStyle
     public var thematicBreak: ThematicBreakStyle
     public var link: LinkStyle
@@ -87,13 +85,6 @@ public struct MarkdownEditorConfiguration: Sendable {
     /// so this stays the embedder's explicit decision rather than something the
     /// engine infers from a color it happens to see.
     public var cursorFollowsSpanInk: Bool
-    /// Opt-in inline commands (e.g. `@font(size: 18){text}`). Empty by
-    /// default: an unregistered name stays literal text. Order defines match
-    /// precedence among directives; built-in constructs always win first.
-    public var directives: [any MarkdownDirective]
-    /// Marker configuration for ``directives`` (default `@`).
-    public var directiveSettings: DirectiveRegistrySettings
-
     public init(
         theme: MarkdownEditorTheme = .default,
         services: MarkdownEditorServices = .default,
@@ -104,8 +95,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         taskCheckbox: TaskCheckboxStyle = .default,
         headings: HeadingStyle = .default,
         imageEmbed: ImageEmbedStyle = .default,
-        blockLatex: BlockLatexStyle = .default,
-        inlineLatex: InlineLatexStyle = .default,
         blockquote: BlockquoteStyle = .default,
         thematicBreak: ThematicBreakStyle = .default,
         link: LinkStyle = .default,
@@ -121,9 +110,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         heightBehavior: HeightBehavior = .scrolls,
         rawSourceMode: Bool = false,
         extensions: [any MarkdownExtension] = [],
-        cursorFollowsSpanInk: Bool = false,
-        directives: [any MarkdownDirective] = [],
-        directiveSettings: DirectiveRegistrySettings = .default
+        cursorFollowsSpanInk: Bool = false
     ) {
         self.theme = theme
         self.services = services
@@ -134,8 +121,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.taskCheckbox = taskCheckbox
         self.headings = headings
         self.imageEmbed = imageEmbed
-        self.blockLatex = blockLatex
-        self.inlineLatex = inlineLatex
         self.blockquote = blockquote
         self.thematicBreak = thematicBreak
         self.link = link
@@ -152,8 +137,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.rawSourceMode = rawSourceMode
         self.extensions = extensions
         self.cursorFollowsSpanInk = cursorFollowsSpanInk
-        self.directives = directives
-        self.directiveSettings = directiveSettings
     }
 
     public static let `default` = MarkdownEditorConfiguration()
@@ -535,42 +518,6 @@ public struct ImageEmbedStyle: Sendable {
     public static let `default` = ImageEmbedStyle()
 }
 
-// MARK: - LaTeX
-
-/// Vertical spacing for block-LaTeX `$$...$$` paragraphs.
-public struct BlockLatexStyle: Sendable {
-    /// Top spacing for $$...$$ block paragraphs.
-    public var paragraphSpacingBefore: CGFloat
-    /// Bottom spacing for $$...$$ block paragraphs.
-    public var paragraphSpacing: CGFloat
-    /// Extra bottom padding added to single-letter formulas to avoid clipping.
-    public var singleLetterPaddingBottom: CGFloat
-
-    public init(
-        paragraphSpacingBefore: CGFloat = 16,
-        paragraphSpacing: CGFloat = 20,
-        singleLetterPaddingBottom: CGFloat = 1.0
-    ) {
-        self.paragraphSpacingBefore = paragraphSpacingBefore
-        self.paragraphSpacing = paragraphSpacing
-        self.singleLetterPaddingBottom = singleLetterPaddingBottom
-    }
-
-    public static let `default` = BlockLatexStyle()
-}
-
-/// Reserved for future inline-LaTeX (`$...$`) tuning. Currently has no
-/// effect; inline LaTeX inherits font size from the surrounding context.
-public struct InlineLatexStyle: Sendable {
-    /// Reserved for future inline-LaTeX tuning — currently the engine inherits
-    /// font size from the surrounding heading context.
-    public var placeholder: Void
-
-    public init() { self.placeholder = () }
-
-    public static let `default` = InlineLatexStyle()
-}
-
 // MARK: - Blockquote
 
 /// Extra line height added to blockquote lines.
@@ -739,7 +686,7 @@ extension MarkdownEditorConfiguration {
     /// - Caret visibility propagates to the enclosing (page-level) scroll
     ///   view so editing at the bottom of a tall block keeps the caret
     ///   on-screen.
-    /// - Async content changes (image/LaTeX finishing layout, font-size
+    /// - Async content changes (image finishing layout, font-size
     ///   change) re-report size via `invalidateIntrinsicContentSize`.
     /// - Switching between `.scrolls` and `.fitsContent` at runtime is
     ///   supported; the editor reconfigures immediately.

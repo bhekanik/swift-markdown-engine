@@ -229,28 +229,6 @@ a ===kein Highlight=== b
 """#
         ),
         GoldenEntry(
-            name: "inline-latex",
-            markdown: #"""
-Formel $x^2 + y$ im Text.
-"""#,
-            baselineHTML: #"""
-<p>Formel $x^2 + y$ im Text.</p>
-"""#
-        ),
-        GoldenEntry(
-            name: "block-latex",
-            markdown: #"""
-$$
-E = mc^2
-$$
-"""#,
-            baselineHTML: #"""
-<pre>$$
-E = mc^2
-$$</pre>
-"""#
-        ),
-        GoldenEntry(
             name: "table",
             markdown: #"""
 | A | B |

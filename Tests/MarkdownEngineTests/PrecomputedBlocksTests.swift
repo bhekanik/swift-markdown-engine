@@ -66,10 +66,6 @@ struct PrecomputedBlocksTests {
         |---|---|
         | 1 | 2 |
 
-        $$
-        x^2
-        $$
-
         ---
 
         trailing ~~strike~~ paragraph

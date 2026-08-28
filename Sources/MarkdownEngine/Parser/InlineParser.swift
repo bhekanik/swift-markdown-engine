@@ -15,7 +15,7 @@
 //    1. scanCodeSpans   — highest precedence, opaque interior.
 //    2. scanEscapes      — `\x` becomes a claimed span, so the escaped char is
 //                          automatically inert for every pass below.
-//    3. scanLinkFamily   — ![[…]], [[…]], ![…](…), […](…), $…$ (+ registered
+//    3. scanLinkFamily   — ![[…]], [[…]], ![…](…), […](…) (+ registered
 //                          extension spans) in precedence order. URLs allow
 //                          balanced parens. A candidate overlapping a claimed
 //                          span is rejected (kept literal), except for opaque
@@ -26,7 +26,7 @@
 //                          claimed span; may wrap claimed spans.
 //    5. buildTree        — containment tree. Emphasis nests already-collected
 //                          spans; link/extension-span content is re-parsed
-//                          recursively; code/image/wiki/embed/latex/escape are
+//                          recursively; code/image/wiki/embed/escape are
 //                          opaque leaves.
 //
 //  Claimed spans are therefore either disjoint or properly NESTED — a link
@@ -56,8 +56,6 @@ indirect enum InlineNode: Equatable {
     case wikiLink(range: NSRange, name: NSRange, id: NSRange?, markers: [NSRange])
     /// `![[target]]`. `markers` is `[ "![[", "]]" ]`.
     case imageEmbed(range: NSRange, target: NSRange, markers: [NSRange])
-    /// `$math$` — opaque. `markers` is `[ "$", "$" ]`.
-    case inlineLatex(range: NSRange, content: NSRange, markers: [NSRange])
     /// Backslash escape `\x`; `marker` is the `\`, `character` the now-literal punctuation.
     case escape(range: NSRange, character: NSRange, marker: NSRange)
     /// A span contributed by a registered `MarkdownExtension`
@@ -89,7 +87,6 @@ enum InlineParser {
     private static let rparen: unichar = 0x29
     private static let pipe: unichar = 0x7C
     private static let backslash: unichar = 0x5C
-    private static let dollar: unichar = 0x24
 
     // MARK: - Entry point
 
@@ -119,7 +116,6 @@ enum InlineParser {
         case image(range: NSRange, alt: NSRange, url: NSRange, markers: [NSRange])
         case wikiLink(range: NSRange, name: NSRange, id: NSRange?, markers: [NSRange])
         case imageEmbed(range: NSRange, target: NSRange, markers: [NSRange])
-        case inlineLatex(range: NSRange, content: NSRange, markers: [NSRange])
         case escape(range: NSRange, character: NSRange, marker: NSRange)
         case ext(id: String, range: NSRange, contentRange: NSRange, markers: [NSRange], parsesContent: Bool)
 
@@ -127,7 +123,7 @@ enum InlineParser {
             switch self {
             case .code(let r, _), .emphasis(_, let r, _, _), .link(let r, _, _, _),
                  .image(let r, _, _, _), .wikiLink(let r, _, _, _), .imageEmbed(let r, _, _),
-                 .inlineLatex(let r, _, _), .escape(let r, _, _),
+                 .escape(let r, _, _),
                  .ext(_, let r, _, _, _):
                 return r
             }
@@ -255,7 +251,7 @@ enum InlineParser {
         return spans
     }
 
-    // MARK: - 3. Link family / inline LaTeX / extension spans
+    // MARK: - 3. Link family / extension spans
 
     private static func scanLinkFamily(_ ns: NSString, len: Int, claimed: ClaimedIndex, registry: ExtensionRegistry) -> [Span] {
         var claimed = claimed
@@ -286,38 +282,7 @@ enum InlineParser {
 
     private static func matchClaimedSpan(_ ns: NSString, _ len: Int, at i: Int, registry: ExtensionRegistry) -> Span? {
         if let span = matchBuiltIn(ns, len, at: i) { return span }
-        // Directives (`@font(size: 18){…}`) match after every built-in and
-        // BEFORE the extension loop below, on the same terms as extension
-        // spans: registered names only, and a rejection leaves the candidate
-        // literal. The ordering is deliberate — a directive is a named
-        // construct with a boundary rule, so it can't be ambiguous with an
-        // extension's delimiters unless an extension opens with the directive
-        // marker, in which case the directive wins. They project into the AST
-        // as extension-shaped nodes under a reserved id namespace, so marker
-        // shrink, caret reveal, token projection, and rich copy all apply
-        // unchanged.
-        //
-        // A directive candidate overlapping an ALREADY-CLAIMED span is
-        // rejected outright, so a code span or a backslash escape in the body
-        // keeps the whole directive literal — see the known limitation in
-        // `DirectiveScanner`.
-        //
-        // The emptiness test is HOISTED here rather than left to the identical
-        // guard inside `match`. This runs per unclaimed character, and `match`
-        // is too large to inline: the call, the indirect return buffer for a
-        // ~200-byte `DirectiveMatch?` and an outlined ARC helper all execute
-        // before the callee's own guard is reached. Measured on a release
-        // build, that cost a document registering NO directives 12-19% of its
-        // parse stage for a feature it never turned on.
-        if !registry.directives.isEmpty,
-           let match = DirectiveScanner.match(ns, len: len, at: i, registry: registry.directives) {
-            return .ext(id: match.nodeID, range: match.range, contentRange: match.contentRange,
-                        markers: match.markers, parsesContent: match.parsesContent)
-        }
-        // Extensions match after every built-in, in registration order. A
-        // built-in trigger that matched-and-FAILED (e.g. `$50$` rejected by
-        // the math heuristic) falls through here, so an extension sharing a
-        // built-in's first character is still reachable.
+        // Extensions match after every built-in, in registration order.
         let c = ns.character(at: i)
         for entry in registry.entries where entry.open.first == c {
             if let span = matchExtensionSpan(ns, len, start: i, entry: entry) { return span }
@@ -336,7 +301,6 @@ enum InlineParser {
         if c == lbracket, c1 == lbracket { return matchWikiLink(ns, len, start: i) }
         if c == bang, c1 == lbracket { return matchImage(ns, len, start: i) }
         if c == lbracket { return matchLink(ns, len, start: i) }
-        if c == dollar, c1 != dollar { return matchInlineLatex(ns, len, start: i) }
         return nil
     }
 
@@ -468,29 +432,6 @@ enum InlineParser {
         )
     }
 
-    /// `$ math $` — single dollars, content has no `$`, passes the math heuristic.
-    private static func matchInlineLatex(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        if i > 0, ns.character(at: i - 1) == dollar { return nil }
-        let contentStart = i + 1
-        var k = contentStart
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == dollar {
-                guard k > contentStart, peek(ns, k + 1, len) != dollar else { return nil }
-                let content = NSRange(location: contentStart, length: k - contentStart)
-                guard isInlineMathContent(ns.substring(with: content)) else { return nil }
-                return .inlineLatex(
-                    range: NSRange(location: i, length: (k + 1) - i),
-                    content: content,
-                    markers: [NSRange(location: i, length: 1), NSRange(location: k, length: 1)]
-                )
-            }
-            k += 1
-        }
-        return nil
-    }
-
     private static func closeDoubleBracket(_ ns: NSString, _ len: Int, from: Int) -> Int? {
         var k = from
         while k < len {
@@ -524,61 +465,6 @@ enum InlineParser {
             k += 1
         }
         return nil
-    }
-
-    /// Rejects currency-looking and trivially short non-mathy `$…$` so prose isn't misread as math.
-    private static func isInlineMathContent(_ content: String) -> Bool {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        if isCurrencyLike(trimmed) { return false }
-        let mathyMatches = mathyCharCount(trimmed)
-        if mathyMatches == 0 {
-            return trimmed.count <= 3 && isAllAsciiLetters(trimmed)
-        }
-        let tokenCount = trimmed.split(whereSeparator: { $0.isWhitespace }).count
-        if mathyMatches >= 3 { return tokenCount <= 120 }
-        if mathyMatches == 2 { return tokenCount <= 40 }
-        return tokenCount <= 6
-    }
-
-    /// A plain signed/thousands-grouped/decimal number (`50`, `1,000.50`, `-5`), regex-free, so currency isn't math.
-    private static func isCurrencyLike(_ s: String) -> Bool {
-        let u = Array(s.utf16)
-        let n = u.count
-        func digit(_ x: Int) -> Bool { x >= 0 && x < n && u[x] >= 0x30 && u[x] <= 0x39 }
-        var i = 0
-        if i < n, u[i] == 0x2B || u[i] == 0x2D { i += 1 }   // + / -
-        guard digit(i) else { return false }
-        var sawDigit = false
-        while i < n {
-            if digit(i) { sawDigit = true; i += 1 }
-            else if u[i] == 0x2C, digit(i + 1), digit(i + 2), digit(i + 3), !digit(i + 4) {
-                i += 4   // a strict `,DDD` thousands group
-            } else { break }
-        }
-        guard sawDigit else { return false }
-        if i < n, u[i] == 0x2E {            // optional `.DDD+`
-            i += 1
-            guard digit(i) else { return false }
-            while digit(i) { i += 1 }
-        }
-        return i == n
-    }
-
-    /// Count of "mathy" characters `\ ^ _ { } = + - * / < >`.
-    private static func mathyCharCount(_ s: String) -> Int {
-        let mathy: Set<unichar> = [0x5C, 0x5E, 0x5F, 0x7B, 0x7D, 0x3D, 0x2B, 0x2D, 0x2A, 0x2F, 0x3C, 0x3E]
-        var count = 0
-        for u in s.utf16 where mathy.contains(u) { count += 1 }
-        return count
-    }
-
-    /// True when `s` is one or more ASCII letters only.
-    private static func isAllAsciiLetters(_ s: String) -> Bool {
-        let u = Array(s.utf16)
-        guard !u.isEmpty else { return false }
-        for x in u where !((x >= 0x41 && x <= 0x5A) || (x >= 0x61 && x <= 0x7A)) { return false }
-        return true
     }
 
     // MARK: - 4. Emphasis (delimiter runs)
@@ -739,8 +625,6 @@ enum InlineParser {
                 result.append(.wikiLink(range: range, name: name, id: id, markers: markers))
             case .imageEmbed(let range, let target, let markers):
                 result.append(.imageEmbed(range: range, target: target, markers: markers))
-            case .inlineLatex(let range, let content, let markers):
-                result.append(.inlineLatex(range: range, content: content, markers: markers))
             case .escape(let range, let character, let marker):
                 result.append(.escape(range: range, character: character, marker: marker))
             case .ext(let id, let range, let contentRange, let markers, let parsesContent):
@@ -782,7 +666,6 @@ enum InlineParser {
         case .image(let r, let a, let u, let m): return .image(range: s(r), alt: s(a), url: s(u), markers: m.map(s))
         case .wikiLink(let r, let n, let id, let m): return .wikiLink(range: s(r), name: s(n), id: id.map(s), markers: m.map(s))
         case .imageEmbed(let r, let t, let m): return .imageEmbed(range: s(r), target: s(t), markers: m.map(s))
-        case .inlineLatex(let r, let c, let m): return .inlineLatex(range: s(r), content: s(c), markers: m.map(s))
         case .escape(let r, let c, let m): return .escape(range: s(r), character: s(c), marker: s(m))
         case .ext(let n): return .ext(ExtensionInlineNode(
             extensionID: n.extensionID, range: s(n.range), contentRange: s(n.contentRange),

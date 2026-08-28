@@ -55,13 +55,10 @@ Screen recordings welcome.
 Non-negotiable for the core `MarkdownEngine` target:
 
 - **Don't add external dependencies to the core `MarkdownEngine`
-  target.** App-specific behaviors plug in through the four service
+  target.** App-specific behaviors plug in through the three service
   protocols (`WikiLinkResolver`, `EmbeddedImageProvider`,
-  `SyntaxHighlighter`, `LatexRenderer`) instead. The two existing
-  bridge products (`MarkdownEngineCodeBlocks` → HighlighterSwift,
-  `MarkdownEngineLatex` → SwiftMath) are the deliberate exception so
-  consumers can opt in. A new bridge or a new core dependency is a bigger
-  call — make the case in the PR description.
+  `SyntaxHighlighter`) instead. A new bridge or a new core dependency is a
+  bigger call — make the case in the PR description.
 - **New constructs are extensions, not core grammar.** A construct like
   `==highlight==` (inline) or a `::: … :::` fenced block belongs in
   `Sources/MarkdownEngine/Extensions/` as a `MarkdownExtension` — see

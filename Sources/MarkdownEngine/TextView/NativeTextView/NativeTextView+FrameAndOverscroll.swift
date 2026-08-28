@@ -224,7 +224,7 @@ extension NativeTextView {
         (superview as? NativeTextViewContainer)?.textViewDidResize()
 
         // Nudge SwiftUI to re-query sizeThatFits when content height changes outside
-        // the text binding (e.g. image/LaTeX load, font-size change, header band).
+        // the text binding (e.g. image load, font-size change, header band).
         if configuration.heightBehavior == .fitsContent {
             enclosingScrollView?.invalidateIntrinsicContentSize()
         }
@@ -339,7 +339,7 @@ extension NativeTextView {
         tlm.enumerateTextLayoutFragments(from: start, options: [.ensuresLayout]) { fragment in
             let cv = scrollView.contentView
             let insetsTop = scrollView.contentInsets.top
-            // Reveal the CARET's line, not the whole layout fragment. An active image/latex embed
+            // Reveal the CARET's line, not the whole layout fragment. An active image embed
             // renders its block below the source line via paragraphSpacing, so layoutFragmentFrame is
             // as tall as the image; revealing its maxY would scroll the viewport down by the block
             // height even though the caret sits on the source line at the top. Frames are text-view-

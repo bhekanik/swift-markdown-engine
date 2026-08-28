@@ -3,7 +3,7 @@
 //  MarkdownEngine
 //
 //  The live tokenization pipeline. For each block from `BlockParser`:
-//  block-level tokens (heading, blockquote, table, block LaTeX, code) come from
+//  block-level tokens (heading, blockquote, table, code) come from
 //  `BlockLevelTokenizer` (hand scanners, no regex), while ALL inline tokens come
 //  from the AST (`InlineParser` → `InlineASTAdapter`). Results are offset back
 //  into document coordinates. Fenced-code blocks emit only their code-block
@@ -94,7 +94,7 @@ extension MarkdownTokenizer {
         guard changeStart >= 0, diff.changeEndOld <= oldLen, changeEndNew <= newLen,
               changeStart <= diff.changeEndOld, changeStart <= changeEndNew else { return nil }
 
-        // A fence/block-LaTeX/extension delimiter can pair with a distant partner and ripple far → full tokenization.
+        // A fence or extension delimiter can pair with a distant partner and ripple far → full tokenization.
         let fences = registry.blockEntries.map(\.fenceChars)
         if BlockParser.hasBlockDelimiter(o, changeStart, diff.changeEndOld, fences: fences)
             || BlockParser.hasBlockDelimiter(n, changeStart, changeEndNew, fences: fences) { return nil }
@@ -165,8 +165,7 @@ extension MarkdownTokenizer {
 
         let blockLevel = BlockLevelTokenizer.tokens(for: kind, in: sub as NSString, registry: registry)
         // Fenced code is opaque — no inline markup inside it. Extension blocks
-        // parse inlines over their CONTENT only (the fence lines are syntax —
-        // a `$x$` in the info string must not become a latex token).
+        // parse inlines over their CONTENT only; the fence lines are syntax.
         let inline: [MarkdownToken]
         if kind == .fencedCode {
             inline = []

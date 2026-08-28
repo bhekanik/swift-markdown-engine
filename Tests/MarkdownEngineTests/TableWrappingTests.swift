@@ -38,7 +38,7 @@ struct TableWrappingTests {
             layoutBridge: nil,
             baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor,
-            latexMarkerFont: font,
+            hiddenMarkerFont: font,
             configuration: .default,
             wikiLinkIDProvider: { _ in nil }
         )
@@ -104,7 +104,7 @@ struct TableWrappingTests {
             nsText: source as NSString,
             tokens: [], codeTokens: [], activeTokenIndices: [],
             baseFont: font, layoutBridge: nil, baseDefaultLineHeight: 18,
-            codeBackgroundColor: .windowBackgroundColor, latexMarkerFont: font,
+            codeBackgroundColor: .windowBackgroundColor, hiddenMarkerFont: font,
             configuration: .default, wikiLinkIDProvider: { _ in nil }
         )
         let aqua = try #require(NSAppearance(named: .aqua))

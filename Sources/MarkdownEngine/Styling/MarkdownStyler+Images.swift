@@ -98,8 +98,8 @@ extension MarkdownStyler {
                     let urlText = ctx.nsText.substring(with: urlRange)
                     attrs.append((urlRange, [
                         .foregroundColor: NSColor.clear,
-                        .font: ctx.latexMarkerFont,
-                        .kern: -HeadingHelpers.textWidth(urlText, font: ctx.latexMarkerFont)
+                        .font: ctx.hiddenMarkerFont,
+                        .kern: -HeadingHelpers.textWidth(urlText, font: ctx.hiddenMarkerFont)
                     ]))
                 }
             }

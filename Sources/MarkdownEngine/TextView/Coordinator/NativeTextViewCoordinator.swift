@@ -236,8 +236,6 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         /// (full buffer re-extraction + memcmp per keystroke).
         let blocks: [Block]
         let codeTokens: [MarkdownToken]
-        let latexTokens: [MarkdownToken]
-        let blockLatexTokens: [MarkdownToken]
         let wikiLinkTokens: [MarkdownToken]
         let imageEmbedTokens: [MarkdownToken]
         let tableTokens: [MarkdownToken]

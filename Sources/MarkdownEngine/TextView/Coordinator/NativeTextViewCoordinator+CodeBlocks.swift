@@ -38,8 +38,8 @@ extension NativeTextViewCoordinator {
         // scroll hooks) always recompute.
         //
         // The key must include the FULL active-token set, not just its code
-        // intersection: a caret move INTO a standalone block (block-LaTeX /
-        // table) toggles that block between its rendered image and raw source
+        // intersection: a caret move INTO a standalone table toggles that
+        // block between its rendered image and raw source
         // — a real height change that shifts a code block below it to a new Y
         // — while leaving version, scroll, width, and the code∩active set
         // unchanged. Keying on the whole active set makes any such toggle

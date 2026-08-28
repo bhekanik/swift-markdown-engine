@@ -5,7 +5,7 @@
 //  Created by Luca Chen on 12.04.26.
 //
 //  TextKit 2 replacement for CodeBlockLayoutManager.
-//  Draws code-block backgrounds, LaTeX images, and task checkboxes
+//  Draws code-block backgrounds, rendered images, and task checkboxes
 //  via NSTextLayoutFragment instead of NSLayoutManager glyph overrides.
 
 import AppKit
@@ -14,10 +14,10 @@ import CoreText
 // MARK: - Custom attribute keys for rendering overlays
 
 extension NSAttributedString.Key {
-    static let latexImage = NSAttributedString.Key("LatexRenderedImage")
-    static let latexBounds = NSAttributedString.Key("LatexImageBounds")
-    static let latexIsBlock = NSAttributedString.Key("LatexIsBlock")
-    static let latexBlockOffsetY = NSAttributedString.Key("LatexBlockOffsetY")
+    static let renderedImage = NSAttributedString.Key("MarkdownRenderedImage")
+    static let renderedImageBounds = NSAttributedString.Key("MarkdownRenderedImageBounds")
+    static let renderedImageIsBlock = NSAttributedString.Key("MarkdownRenderedImageIsBlock")
+    static let renderedBlockOffsetY = NSAttributedString.Key("MarkdownRenderedBlockOffsetY")
     static let thematicBreak = NSAttributedString.Key("ThematicBreak")
     /// String — the mark to draw CENTERED in place of the full-width rule on a
     /// line that already carries `.thematicBreak`. Absent means the rule. The
@@ -108,8 +108,8 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         // 1b. Line-box fills (`==highlight==` and friends), behind text
         drawBlockBackgrounds(at: point, in: context)
 
-        // 2. LaTeX images (behind text — hidden markers are invisible anyway)
-        drawLatexImages(at: point, in: context)
+        // 2. Rendered images (behind text — hidden markers are invisible anyway)
+        drawRenderedImages(at: point, in: context)
 
         // 3. Normal text
         super.draw(at: point, in: context)
@@ -387,10 +387,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         }
     }
 
-    // MARK: - LaTeX / Block Image Helpers
+    // MARK: - Block Image Helpers
 
     /// Compute the draw rect for a block image at `attrRange` using `point` as
-    /// the draw origin.  Shared by `drawLatexImages` and `blockImageRects` so
+    /// the draw origin. Shared by `drawRenderedImages` and `blockImageRects` so
     /// bounds and rendering stay in sync.
     private func blockImageDrawRect(
         attrRange: NSRange,
@@ -433,17 +433,17 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     private func blockImageRects(at point: CGPoint) -> [CGRect] {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return [] }
         var rects: [CGRect] = []
-        ts.enumerateAttribute(.latexImage, in: range, options: []) { value, attrRange, _ in
+        ts.enumerateAttribute(.renderedImage, in: range, options: []) { value, attrRange, _ in
             guard value is NSImage else { return }
-            let isBlock = ts.attribute(.latexIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
+            let isBlock = ts.attribute(.renderedImageIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
             guard isBlock else { return }
             // Skip overlay blocks; surface bounds must stay within container.
             if ts.attribute(.scrollableBlockNaturalWidth, at: attrRange.location, effectiveRange: nil) != nil {
                 return
             }
-            let boundsVal = ts.attribute(.latexBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
+            let boundsVal = ts.attribute(.renderedImageBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
             let imageBounds = boundsVal?.rectValue ?? .zero
-            let blockOffsetY = ts.attribute(.latexBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
+            let blockOffsetY = ts.attribute(.renderedBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
             if let rect = blockImageDrawRect(attrRange: attrRange, imageBounds: imageBounds, blockOffsetY: blockOffsetY, point: point) {
                 rects.append(rect)
             }
@@ -451,9 +451,9 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         return rects
     }
 
-    // MARK: - LaTeX Images
+    // MARK: - Rendered Images
 
-    private func drawLatexImages(at point: CGPoint, in context: CGContext) {
+    private func drawRenderedImages(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
 
         NSGraphicsContext.saveGraphicsState()
@@ -461,7 +461,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        ts.enumerateAttribute(.latexImage, in: range, options: []) { [weak self] value, attrRange, _ in
+        ts.enumerateAttribute(.renderedImage, in: range, options: []) { [weak self] value, attrRange, _ in
             guard let self, let image = value as? NSImage else { return }
 
             // Skip overlay-rendered blocks; WideTableOverlay owns the visual.
@@ -469,10 +469,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
                 return
             }
 
-            let boundsVal = ts.attribute(.latexBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
+            let boundsVal = ts.attribute(.renderedImageBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
             let imageBounds = boundsVal?.rectValue ?? CGRect(origin: .zero, size: image.size)
-            let isBlock = ts.attribute(.latexIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
-            let blockOffsetY = ts.attribute(.latexBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
+            let isBlock = ts.attribute(.renderedImageIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
+            let blockOffsetY = ts.attribute(.renderedBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
 
             guard let pos = drawPosition(forDocumentCharAt: attrRange.location, point: point) else { return }
 
