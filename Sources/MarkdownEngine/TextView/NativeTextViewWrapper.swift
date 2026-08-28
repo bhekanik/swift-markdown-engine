@@ -180,14 +180,27 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // an edit through either is immediately the other's. Without one,
         // NSTextView auto-initialises its own TextKit 2 stack via init(frame:),
         // which is what an embedder with a single view has always had.
+        //
+        // Admission is decided BEFORE the storage is touched. Adding a layout
+        // manager and then assigning `textView.string` below would rewrite the
+        // peers' document, and the old order did both before asking — so a
+        // refused view left the document with an extra layout manager and its
+        // text overwritten, in release, where the assertion does not fire.
+        let admitted = controller.map {
+            $0.canPresent(rawSourceMode: configuration.rawSourceMode,
+                          isEditable: isEditable, from: nil)
+        } ?? false
         let textView: NativeTextView
-        if let controller {
+        if let controller, admitted {
             let layoutManager = NSTextLayoutManager()
             let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
             layoutManager.textContainer = container
             controller.textContentStorage.addTextLayoutManager(layoutManager)
             textView = NativeTextView(frame: .zero, textContainer: container)
         } else {
+            // Its own TextKit 2 stack: with no controller this is what an
+            // embedder has always had, and when refused it is isolation — the
+            // view shows the text it was given and reaches nobody.
             textView = NativeTextView(frame: .zero)
         }
 
@@ -276,8 +289,26 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
 
         context.coordinator.textView = textView
         context.coordinator.editorController = controller
-        controller?.attach(textView: textView, coordinator: context.coordinator,
-                           rawSourceMode: configuration.rawSourceMode, isEditable: isEditable)
+        if let controller {
+            if admitted {
+                controller.attach(textView: textView, coordinator: context.coordinator,
+                                  rawSourceMode: configuration.rawSourceMode,
+                                  isEditable: isEditable)
+            } else {
+                // Logged, not asserted: this refusal is fully handled — the
+                // view is isolated, the request is remembered, and it is
+                // retried when the lock lifts. Trapping would turn a
+                // recoverable composition mistake into a crash in every debug
+                // build, and would make the behaviour untestable in the one
+                // configuration where it matters most.
+                NSLog("MarkdownEngine: a view asked to show a document already presented "
+                      + "differently; it is isolated until that changes. Give each "
+                      + "presentation its own MarkdownEditorController.")
+                context.coordinator.isolatedFromDocument = true
+                context.coordinator.pendingPresentation = (configuration.rawSourceMode, isEditable)
+                controller.awaitAdmission(context.coordinator)
+            }
+        }
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
@@ -357,10 +388,20 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
            !controller.canPresent(rawSourceMode: configuration.rawSourceMode,
                                   isEditable: isEditable,
                                   from: textView) {
-            assertionFailure(
-                "This document is already shown in another presentation. Give each "
-                + "presentation its own MarkdownEditorController.")
+            NSLog("MarkdownEngine: a view asked to change to a presentation the document "
+                  + "cannot accept while other views are attached; the request is held "
+                  + "until they detach.")
+            // Remembered, not dropped: the peer that blocks this can be removed
+            // in the same transaction as the switch, and then no further update
+            // pass arrives to ask again.
+            context.coordinator.pendingPresentation = (configuration.rawSourceMode, isEditable)
+            controller.awaitAdmission(context.coordinator)
             return
+        }
+        // Admitted now, having been refused before — a peer went away between
+        // passes.
+        if context.coordinator.pendingPresentation != nil {
+            context.coordinator.applyPendingPresentation()
         }
         let isNodeSwitch = context.coordinator.documentId != documentId
 

@@ -38,8 +38,13 @@ public extension NativeTextViewCoordinator {
         rebuildTextStorageAndStyle(textView, from: text)
         previousDisplayLength = (textView.string as NSString).length
         didInitialFormatting = true
-        editorController?.attach(textView: textView, coordinator: self,
-                                 rawSourceMode: configuration.rawSourceMode,
-                                 isEditable: textView.isEditable)
+        // A view the document refused stays off it until the lock lifts;
+        // attaching here would assert, and in release would put a second
+        // presentation on the shared storage.
+        if !isolatedFromDocument {
+            editorController?.attach(textView: textView, coordinator: self,
+                                     rawSourceMode: configuration.rawSourceMode,
+                                     isEditable: textView.isEditable)
+        }
     }
 }

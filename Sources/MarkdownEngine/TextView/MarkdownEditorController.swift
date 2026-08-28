@@ -308,13 +308,17 @@ public final class MarkdownEditorController {
         attachments.removeAll { $0.textView == nil }
         let incoming = (rawSourceMode: rawSourceMode, isEditable: isEditable)
         guard canPresent(rawSourceMode: rawSourceMode, isEditable: isEditable, from: textView) else {
+            // Reached only by a caller that skipped `canPresent` — the
+            // wrapper asks first and handles a refusal by isolating the view.
+            // Getting here means the admission contract was bypassed, which is
+            // a programming error rather than a composition mistake.
             assertionFailure(
-                "A document's views share one text storage, and presentation-dependent "
-                + "styling is written into it, so two presentations overwrite each other. "
-                + "This controller is showing raw=\(presentation?.rawSourceMode as Any) "
-                + "editable=\(presentation?.isEditable as Any); a view asked to join as "
-                + "raw=\(incoming.rawSourceMode) editable=\(incoming.isEditable). Give each "
-                + "presentation its own MarkdownEditorController.")
+                "attach was called without asking canPresent first. A document's views "
+                + "share one text storage, and presentation-dependent styling is written "
+                + "into it, so two presentations overwrite each other. Showing "
+                + "raw=\(presentation?.rawSourceMode as Any) "
+                + "editable=\(presentation?.isEditable as Any); asked for "
+                + "raw=\(incoming.rawSourceMode) editable=\(incoming.isEditable).")
             return false
         }
         self.presentation = incoming
@@ -325,6 +329,35 @@ public final class MarkdownEditorController {
         attachments.append(Attachment(textView: textView, coordinator: coordinator))
         onAttach?(textView)
         return true
+    }
+
+    /// Views waiting for the presentation lock to allow them in.
+    ///
+    /// A view refused at mount is NOT an attachment — it is showing the
+    /// document from a storage of its own — so it cannot be found through
+    /// `attachments`, and something has to remember it for the moment the lock
+    /// lifts.
+    private var waiting: [WeakCoordinator] = []
+
+    private struct WeakCoordinator {
+        weak var coordinator: NativeTextViewCoordinator?
+    }
+
+    /// Remember a coordinator whose presentation was refused.
+    func awaitAdmission(_ coordinator: NativeTextViewCoordinator) {
+        waiting.removeAll { $0.coordinator == nil || $0.coordinator === coordinator }
+        waiting.append(WeakCoordinator(coordinator: coordinator))
+    }
+
+    /// Give everyone waiting on the lock — refused newcomers and attached views
+    /// whose presentation change was refused — a chance to apply it.
+    private func lockDidChange() {
+        let candidates = waiting.compactMap(\.coordinator)
+            + attachments.compactMap(\.coordinator)
+        waiting.removeAll { $0.coordinator == nil }
+        for coordinator in candidates {
+            coordinator.applyPendingPresentation()
+        }
     }
 
     /// Detach one view. The others keep working — closing one window must not
@@ -339,9 +372,14 @@ public final class MarkdownEditorController {
             textContentStorage.removeTextLayoutManager(layoutManager)
         }
         attachments.removeAll { $0.textView === textView || $0.textView == nil }
+        waiting.removeAll { $0.coordinator == nil || $0.coordinator?.textView === textView }
         if attachments.isEmpty { presentation = nil }
         guard hadView else { return }
         onAttach?(self.textView)
+        // Removing a peer can make a refused presentation legal, and the
+        // removal and the switch can arrive in one SwiftUI transaction — so
+        // nobody is coming to ask again.
+        lockDidChange()
     }
 
     /// Move a layout manager onto this document's storage, off whatever it was

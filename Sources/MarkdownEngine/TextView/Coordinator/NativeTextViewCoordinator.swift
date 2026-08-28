@@ -73,6 +73,16 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// Set while a controller swap is in flight; consumed once the new
     /// document has been rebuilt and its length is known.
     var pendingSelectionRestore: ObjectIdentifier?
+    /// True while this view is showing the document from a text storage of its
+    /// own because the document refused its presentation. It is isolated: its
+    /// edits reach nobody and nobody's reach it, which is the honest state for
+    /// a view that was not admitted.
+    var isolatedFromDocument = false
+    /// A presentation the document refused. Retried when the lock changes, so
+    /// removing the blocking peer applies the switch that was asked for — the
+    /// two can arrive in one SwiftUI transaction, and then no further update
+    /// pass comes to notice.
+    var pendingPresentation: (rawSourceMode: Bool, isEditable: Bool)?
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
     /// default menu + current selection range, returns the menu to show.
