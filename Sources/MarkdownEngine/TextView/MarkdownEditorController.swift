@@ -118,6 +118,19 @@ public final class MarkdownEditorController {
     /// The editor's current text, in display coordinates.
     public var text: String { textView?.string ?? "" }
 
+    /// The text exposed by the attached presentation, with UTF-16 mappings
+    /// back to the source storage. Detached controllers return an empty
+    /// identity projection.
+    public var textProjection: MarkdownTextProjection {
+        guard let textView else {
+            return .identity("")
+        }
+        return .make(
+            markdown: textView.string,
+            configuration: coordinator?.configuration ?? .default
+        )
+    }
+
     /// Scroll a UTF-16 display range through TextKit 2 fragment geometry.
     ///
     /// This deliberately does not call `NSTextView.scrollRangeToVisible`'s
