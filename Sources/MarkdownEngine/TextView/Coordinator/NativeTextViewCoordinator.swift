@@ -86,6 +86,8 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var isWritingToolsActive: Bool = false
     var wtStartDocumentId: String?
     var wtSourceSnapshot: String?
+    var wtStartDocumentRevision: UInt64?
+    var wtStartDocumentLength: Int = 0
     weak var wtChildWindow: NSWindow?
     var wtInitialChildOrigin: CGPoint?
     var wtInitialSelectionRange: NSRange?

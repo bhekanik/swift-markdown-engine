@@ -452,6 +452,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         if rawSourceModeChanged {
             if configuration.rawSourceMode {
                 context.coordinator.enterRawSourceMode(textView)
+            } else {
+                context.coordinator.restoreRawSourceInputSettings(textView)
             }
             context.coordinator.configuration.rawSourceMode = configuration.rawSourceMode
             textView.configuration.rawSourceMode = configuration.rawSourceMode
@@ -586,7 +588,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             invalidateLayout: isNodeSwitch || rawSourceModeChanged
         )
         if rawSourceModeChanged && !configuration.rawSourceMode {
-            context.coordinator.leaveRawSourceMode(textView)
+            context.coordinator.finishLeavingRawSourceMode(textView)
         }
         textView.recalcOverscroll(for: nsView)
         (nsView as? ClampedScrollView)?.clampToInsets()

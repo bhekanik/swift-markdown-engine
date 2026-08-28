@@ -215,7 +215,7 @@ enum BlockParser {
         }
         let lastIdx = lo
         let winFirst = max(0, min(firstIdx, lastIdx) - 1)
-        let winLast = min(oldBlocks.count - 1, max(firstIdx, lastIdx) + 1)
+        var winLast = min(oldBlocks.count - 1, max(firstIdx, lastIdx) + 1)
 
         // 3. Opaque multi-line fenced blocks in the window are fine for
         // INTERIOR edits: the window contains each block wholly, the ±3
@@ -228,13 +228,36 @@ enum BlockParser {
 
         // 4. Window → new-text range (window start is before the edit → unchanged).
         let winStart = oldBlocks[winFirst].range.location
-        let winEndNew = NSMaxRange(oldBlocks[winLast].range) + delta
-        guard winStart >= 0, winEndNew >= winStart, winEndNew <= newLen else { return nil }
+        guard winStart >= 0 else { return nil }
 
-        // 5. Reparse just the window substring, shift to absolute new coords.
-        let windowText = newNS.substring(with: NSRange(location: winStart, length: winEndNew - winStart))
-        let reparsed = computeBlocks(windowText, registry: registry, documentOffset: winStart)
-            .map { $0.shifted(by: winStart) }
+        // 5. Reparse the window, extending it until the trailing block cannot
+        // absorb or reinterpret untouched suffix lines. A fixed block margin
+        // is insufficient because setext underlines, table separators and
+        // continuation lines act on the block before them.
+        var winEndNew = 0
+        var reparsed: [Block] = []
+        while true {
+            winEndNew = NSMaxRange(oldBlocks[winLast].range) + delta
+            guard winEndNew >= winStart, winEndNew <= newLen else { return nil }
+            let windowText = newNS.substring(
+                with: NSRange(location: winStart, length: winEndNew - winStart)
+            )
+            reparsed = computeBlocks(
+                windowText,
+                registry: registry,
+                documentOffset: winStart
+            ).map { $0.shifted(by: winStart) }
+
+            guard winLast + 1 < oldBlocks.count,
+                  trailingBlockNeedsFollowingText(
+                    reparsed,
+                    windowEnd: winEndNew,
+                    in: newNS,
+                    registry: registry
+                  )
+            else { break }
+            winLast += 1
+        }
         // A trailing fence or extension block reaching the window end might continue past it.
         if let last = reparsed.last, NSMaxRange(last.range) >= winEndNew {
             switch last.kind {
@@ -273,6 +296,30 @@ enum BlockParser {
         }
         guard cursor == newLen else { return nil }
         return (result, reparsed.count)
+    }
+
+    private static func trailingBlockNeedsFollowingText(
+        _ blocks: [Block],
+        windowEnd: Int,
+        in text: NSString,
+        registry: ExtensionRegistry
+    ) -> Bool {
+        guard let last = blocks.last, NSMaxRange(last.range) >= windowEnd else {
+            return false
+        }
+        switch last.kind {
+        case .paragraph, .table, .linkDefinition, .footnoteDefinition, .list, .blockquote:
+            return true
+        case .frontmatter, .fencedCode, .ext:
+            return !opaqueBlockClosesWithinRange(last, in: text, registry: registry)
+        case .blank:
+            guard blocks.count > 1 else { return false }
+            let previous = blocks[blocks.count - 2]
+            guard previous.kind == .fencedCode else { return false }
+            return !opaqueBlockClosesWithinRange(previous, in: text, registry: registry)
+        case .heading, .thematicBreak:
+            return false
+        }
     }
 
     private static func opaqueBlockClosesWithinRange(

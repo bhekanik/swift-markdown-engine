@@ -25,14 +25,34 @@ extension NativeTextViewCoordinator {
     }
 
     func leaveRawSourceMode(_ textView: NSTextView) {
+        restoreRawSourceInputSettings(textView)
+        recomputeAutocorrectSettings(for: textView)
+        rawSourceInputSettingsSnapshot = nil
+    }
+
+    func restoreRawSourceInputSettings(_ textView: NSTextView) {
         guard let settings = rawSourceInputSettingsSnapshot else { return }
         textView.isAutomaticQuoteSubstitutionEnabled = settings.automaticQuoteSubstitution
         textView.isAutomaticDashSubstitutionEnabled = settings.automaticDashSubstitution
         textView.isAutomaticTextReplacementEnabled = settings.automaticTextReplacement
         textView.isAutomaticSpellingCorrectionEnabled = settings.automaticSpellingCorrection
         textView.smartInsertDeleteEnabled = settings.smartInsertDelete
-        rawSourceInputSettingsSnapshot = nil
         cachedSpellingDisabled = nil
+    }
+
+    func finishLeavingRawSourceMode(_ textView: NSTextView) {
+        recomputeAutocorrectSettings(for: textView)
+        rawSourceInputSettingsSnapshot = nil
+    }
+
+    private func recomputeAutocorrectSettings(for textView: NSTextView) {
+        let parsed = parsedDocument(for: textView.string)
+        updateAutocorrectSettings(
+            textView,
+            caretLocation: textView.selectedRange().location,
+            codeTokens: parsed.codeTokens,
+            allTokens: parsed.tokens
+        )
     }
 
     func updateAutocorrectSettings(
@@ -68,17 +88,23 @@ extension NativeTextViewCoordinator {
         // Outside, restore to the user's preference — captured via the toggle
         // overrides in `NativeTextView+SpellingToggles.swift` — so a manual
         // "off" survives caret movement through suppress zones.
+        let restoredSettings = rawSourceInputSettingsSnapshot
         textView.isAutomaticSpellingCorrectionEnabled = shouldDisableSpelling
             ? false
-            : userPrefersAutomaticSpellingCorrection
+            : restoredSettings?.automaticSpellingCorrection
+                ?? userPrefersAutomaticSpellingCorrection
         textView.isContinuousSpellCheckingEnabled = shouldDisableSpelling
             ? false
             : userPrefersContinuousSpellChecking
         textView.isGrammarCheckingEnabled = shouldDisableSpelling
             ? false
             : userPrefersGrammarChecking
-        textView.isAutomaticQuoteSubstitutionEnabled = !shouldDisableSpelling
-        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = shouldDisableSpelling
+            ? false
+            : restoredSettings?.automaticQuoteSubstitution ?? true
+        textView.isAutomaticDashSubstitutionEnabled = shouldDisableSpelling
+            ? false
+            : restoredSettings?.automaticDashSubstitution ?? false
     }
 
     func isInsideCode(range: NSRange, in text: String) -> Bool {

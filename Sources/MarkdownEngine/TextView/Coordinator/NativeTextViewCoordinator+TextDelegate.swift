@@ -115,13 +115,20 @@ extension NativeTextViewCoordinator {
                 bottomTextView.recalcOverscroll(for: scrollView, debugTag: "textDidChange")
                 (scrollView as? ClampedScrollView)?.clampToInsets()
             }
-            editorController?.documentDidChange(from: self)
+            editorController?.recordDocumentMutation(
+                completedTextMutation,
+                documentLength: (tv.string as NSString).length,
+                from: self
+            )
             if let completedTextMutation {
                 onTextMutation?(completedTextMutation)
             }
             return
         }
-        let wtActive = isWritingToolsActive
+        // External controller patches still complete and publish while a
+        // Writing Tools session owns this view. Only Apple's session edits are
+        // deferred for the one end-of-session mutation.
+        let wtActive = isWritingToolsActive && !isProgrammaticEdit
         if wtActive, wtDetectedMode == .unknown {
             let firstEditLen = tv.textStorage?.editedRange.length ?? 0
             if let sel = wtInitialSelectionRange, sel.length > 0 {
@@ -338,7 +345,11 @@ extension NativeTextViewCoordinator {
         }
         previousActiveTokenIndices = activeTokenIndices
         // Every other view of this document is now holding a stale parse.
-        editorController?.documentDidChange(from: self)
+        editorController?.recordDocumentMutation(
+            completedTextMutation,
+            documentLength: fullLength,
+            from: self
+        )
         if let completedTextMutation {
             onTextMutation?(completedTextMutation)
         }

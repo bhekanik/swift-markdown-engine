@@ -142,6 +142,88 @@ struct ParseIncrementalEquivalenceTests {
         }
     }
 
+    @Test("trailing context-sensitive blocks match a full parse")
+    func trailingContextSensitiveBlocksMatchFullParse() throws {
+        let cases: [(name: String, before: String, after: String, registry: ExtensionRegistry)] = [
+            (
+                "paragraph followed by setext underline",
+                "other\n===\n    indented\nother\nplain\n===\n- item",
+                "other\n|===\n    indented\nother\nplain\n===\n- item",
+                .empty
+            ),
+            (
+                "link definition, indented continuation, then setext underline",
+                "[id]: /url\n    continued\n---\ntail",
+                "[id]x /url\n    continued\n---\ntail",
+                .empty
+            ),
+            (
+                "table header followed by separator",
+                "[id]: /url\n|---|---|\ntail",
+                "| a | b |\n|---|---|\ntail",
+                .empty
+            ),
+            (
+                "footnote definition followed by an indented continuation",
+                "[^id]: note\n    continued\n---\ntail",
+                "[^id]x note\n    continued\n---\ntail",
+                .empty
+            ),
+            (
+                "list item followed by another list item",
+                "- one\n[id]: /url\n- two\n===\ntail",
+                "- one[id]: /url\n- two\n===\ntail",
+                .empty
+            ),
+            (
+                "blockquote line followed by another blockquote line",
+                "> one\n[id]: /url\n> two\n===\ntail",
+                "> one[id]: /url\n> two\n===\ntail",
+                .empty
+            ),
+            (
+                "paragraph followed by an indented code line",
+                "plain\n\n    indented\n> quote",
+                "plainx\n    indented\n> quote",
+                .empty
+            ),
+            (
+                "registered extension block fence",
+                "plain\n\n:: note\nbody\n:::\ntail",
+                "plain\n\n::: note\nbody\n:::\ntail",
+                ExtensionRegistry(extensions: [ContainerExtension()])
+            ),
+        ]
+
+        for testCase in cases {
+            let state = DocumentParseState()
+            _ = state.tokens(for: testCase.before, edit: nil, registry: testCase.registry)
+            let diff = try #require(BlockParser.scanDiff(
+                old: Array(testCase.before.utf16),
+                new: Array(testCase.after.utf16)
+            ))
+            _ = state.tokens(
+                for: testCase.after,
+                edit: ParseEditDescriptor(
+                    editedRange: NSRange(
+                        location: diff.changeStart,
+                        length: diff.changeEndNew - diff.changeStart
+                    ),
+                    delta: diff.delta
+                ),
+                registry: testCase.registry
+            )
+
+            #expect(
+                state.currentBlocks == BlockParser.computeBlocks(
+                    testCase.after,
+                    registry: testCase.registry
+                ),
+                "\(testCase.name): incremental blocks diverged"
+            )
+        }
+    }
+
     // MARK: - Backtick census
 
     @Test func windowCensusComposesExactly() {
