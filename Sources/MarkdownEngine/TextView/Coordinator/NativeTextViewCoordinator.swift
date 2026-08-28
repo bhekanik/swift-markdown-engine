@@ -76,6 +76,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var headerController: ScrollingHeaderController?
     var layoutBridge: LayoutBridge?
     var layoutDelegate: MarkdownLayoutManagerDelegate?
+    /// Embedder handle for external patches and the text-view seam. Weak: the
+    /// embedder owns it and outlives the editor.
+    weak var editorController: MarkdownEditorController?
     var onLinkClick: ((String) -> Void)?
     var onCaretRectChange: ((CGRect) -> Void)?
     var onTextMutation: ((MarkdownTextMutation) -> Void)?

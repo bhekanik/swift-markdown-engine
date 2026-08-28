@@ -59,6 +59,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// embedders construct this themselves and pass it in; the wrapper does
     /// not read UserDefaults or know about app-specific colors/services.
     public var configuration: MarkdownEditorConfiguration
+    /// Handle on the live editor: external text patches
+    /// (``MarkdownEditorController/applyPatch(range:replacement:actionName:registersUndo:)``)
+    /// and the underlying `NSTextView` (find, a key layer, typewriter scroll).
+    /// The embedder owns the object; the engine attaches on `makeNSView` and
+    /// detaches on teardown.
+    public var controller: MarkdownEditorController?
     /// PostScript name of the base font used for body text.
     public var fontName: String
     /// Base font size in points. Headings, code blocks, and LaTeX are scaled
@@ -146,6 +152,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         isWikiLinkActive: Binding<Bool> = .constant(false),
         pendingInlineReplacement: Binding<InlineReplacementRequest?> = .constant(nil),
         configuration: MarkdownEditorConfiguration = .default,
+        controller: MarkdownEditorController? = nil,
         fontName: String = "SF Pro",
         fontSize: CGFloat = 16,
         documentId: String = "default",
@@ -172,6 +179,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self._isWikiLinkActive = isWikiLinkActive
         self._pendingInlineReplacement = pendingInlineReplacement
         self.configuration = configuration
+        self.controller = controller
         self.fontName = fontName
         self.fontSize = fontSize
         self.documentId = documentId
@@ -281,7 +289,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         let font = NSFont(name: fontName, size: fontSize) ?? NSFont.systemFont(ofSize: fontSize)
         textView.font = font
         textView.baseFont = font
-        textView.allowsUndo = true
+        textView.allowsUndo = configuration.undo == .engine
         textView.isCursorExcluded = isCursorExcluded
         textView.isAutomaticSpellingCorrectionEnabled = configuration.spellChecking.automaticSpellingCorrection
         textView.isContinuousSpellCheckingEnabled = configuration.spellChecking.continuousSpellChecking
@@ -327,6 +335,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         scrollView.reflectScrolledClipView(scrollView.contentView)
 
         context.coordinator.textView = textView
+        context.coordinator.editorController = controller
+        controller?.attach(textView: textView, coordinator: context.coordinator)
         context.coordinator.wikiLinkMetadata = initialState.metadata
         context.coordinator.onCaretRectChange = onCaretRectChange
         context.coordinator.onTextMutation = onTextMutation
@@ -455,6 +465,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         textView.onPasteImage = onPasteImage
         textView.isCursorExcluded = isCursorExcluded
         textView.setPlaceholder(placeholder)
+        // The controller is a plain reference the embedder may swap between
+        // passes; re-attach cheaply (attach() no-ops when nothing changed).
+        context.coordinator.editorController = controller
+        controller?.attach(textView: textView, coordinator: context.coordinator)
+        context.coordinator.configuration.undo = configuration.undo
+        textView.configuration.undo = configuration.undo
+        textView.allowsUndo = configuration.undo == .engine
         // Sync heightBehavior across all three layers (scroll view, text view,
         // coordinator) so a runtime switch fully reconfigures.
         let heightBehaviorChanged = textView.configuration.heightBehavior != configuration.heightBehavior
@@ -625,6 +642,26 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             (nsView as? ClampedScrollView)?.clampToInsets()
         }
 
+        // An external `text` change on the SAME document — a remote edit, a
+        // history navigation, a canonicalisation — is an EDIT, not a new
+        // document. Splice it in through the engine's own edit path so the
+        // caret and the scroll offset survive; `textView.string =` below would
+        // reset the selection to {0, 0}. Falls through to the rebuild when the
+        // change is too large to be an edit.
+        if !isNodeSwitch, !rawSourceModeChanged, !fontChanged,
+           context.coordinator.didInitialFormatting,
+           context.coordinator.spliceExternalText(text, in: textView) {
+            textView.recalcOverscroll(for: nsView)
+            (nsView as? ClampedScrollView)?.clampToInsets()
+            context.coordinator.onCaretRectChange = onCaretRectChange
+            context.coordinator.onTextMutation = onTextMutation
+            context.coordinator.onBuildContextMenu = onBuildContextMenu
+            context.coordinator.onInlineSelectionChange = onInlineSelectionChange
+            context.coordinator.onInlinePreviewKey = onInlinePreviewKey
+            context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+            return
+        }
+
         let font = NSFont(name: fontName, size: fontSize) ?? NSFont.systemFont(ofSize: fontSize)
         textView.font = font
         textView.baseFont = font
@@ -722,6 +759,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // arm the restore here or a remount would always open at the top.
         coordinator.armScrollRestore(for: documentId)
         coordinator.configuration = configuration
+        coordinator.editorController = controller
         coordinator.lastImageFingerprint = configuration.services.images.fingerprint()
         coordinator.lastWikiFingerprint = configuration.services.wikiLinks.fingerprint()
         coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
@@ -737,6 +775,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// different screen — and that is the only moment left to record where the
     /// reader was; the coordinator's own offsets die with it.
     public static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        coordinator.editorController?.detach()
         // A restore still pending means the reader was never put back where they
         // were — recording the current offset would overwrite the good one with
         // the mid-load position.

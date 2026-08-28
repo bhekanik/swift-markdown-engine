@@ -31,6 +31,10 @@ extension NativeTextViewCoordinator {
     /// Returning the *same* instance for a given document on every call is
     /// required — a fresh manager per call breaks undo.
     public func undoManager(for view: NSTextView) -> UndoManager? {
+        // The embedder owns undo: hand back whatever manager it injected (nil
+        // is fine — `allowsUndo = false` is what actually stops the text view
+        // from recording, and the wrapper sets it under this policy).
+        if configuration.undo == .external { return editorController?.undoManager }
         let key = documentId ?? "__default__"
         if let existing = undoManagers[key] {
             return existing
@@ -38,6 +42,15 @@ extension NativeTextViewCoordinator {
         let manager = UndoManager()
         undoManagers[key] = manager
         return manager
+    }
+
+    /// The undo manager whose undo/redo state the restyle scoping consults.
+    /// Under ``UndoPolicy/external`` the engine keeps no managers of its own,
+    /// so ask the text view for the one actually driving the edit.
+    func activeUndoManager(for textView: NSTextView) -> UndoManager? {
+        configuration.undo == .external
+            ? textView.undoManager
+            : undoManagers[documentId ?? "__default__"]
     }
 
     /// Drops `documentId`'s undo stack when its switch-away snapshot no longer
@@ -128,9 +141,9 @@ extension NativeTextViewCoordinator {
         // shouldChangeTextIn. Treat an in-flight undo/redo as structural when
         // it intersects an ordered run below; this preserves numbering while
         // ordinary content keystrokes retain their narrow paragraph scope.
-        let activeUndoManager = undoManagers[documentId ?? "__default__"]
-        let isUndoRedo = activeUndoManager?.isUndoing == true
-            || activeUndoManager?.isRedoing == true
+        let activeUndo = activeUndoManager(for: tv)
+        let isUndoRedo = activeUndo?.isUndoing == true
+            || activeUndo?.isRedoing == true
         guard !tv.hasMarkedText() else { return }
         let safeLocation = min(rawSelRange.location, fullLength)
         let safeSelRange = NSRange(location: safeLocation, length: 0)

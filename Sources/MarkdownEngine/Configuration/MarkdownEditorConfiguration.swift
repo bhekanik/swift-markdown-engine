@@ -49,6 +49,8 @@ public struct MarkdownEditorConfiguration: Sendable {
     /// Centered reading-column width; wide tables break out to full width. nil = full width (default).
     public var readingWidth: CGFloat?
     public var spellChecking: SpellCheckingPolicy
+    /// Who owns undo. ``UndoPolicy/engine`` by default.
+    public var undo: UndoPolicy
     /// How the editor resolves its own height.
     ///
     /// - `.scrolls` (default): the editor scrolls internally within whatever
@@ -115,6 +117,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         textInsets: TextInsets = .default,
         readingWidth: CGFloat? = nil,
         spellChecking: SpellCheckingPolicy = .default,
+        undo: UndoPolicy = .engine,
         heightBehavior: HeightBehavior = .scrolls,
         rawSourceMode: Bool = false,
         extensions: [any MarkdownExtension] = [],
@@ -144,6 +147,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.textInsets = textInsets
         self.readingWidth = readingWidth
         self.spellChecking = spellChecking
+        self.undo = undo
         self.heightBehavior = heightBehavior
         self.rawSourceMode = rawSourceMode
         self.extensions = extensions
@@ -153,6 +157,25 @@ public struct MarkdownEditorConfiguration: Sendable {
     }
 
     public static let `default` = MarkdownEditorConfiguration()
+}
+
+// MARK: - Undo
+
+/// Who owns the editor's undo stack.
+public enum UndoPolicy: String, Sendable, Equatable {
+    /// AppKit undo, one `UndoManager` per `documentId`, vended by the engine.
+    /// ⌘Z undoes typing inside the text view.
+    case engine
+    /// The embedder owns undo. `allowsUndo` is `false`, so the text view
+    /// registers nothing, and `undoManager(for:)` vends
+    /// ``MarkdownEditorController/undoManager`` (nil unless the embedder set
+    /// one). ⌘Z reaches whatever the embedder puts in the responder chain —
+    /// an undo tree, a CRDT history, a server-authoritative log.
+    ///
+    /// External edits should still be applied through
+    /// ``MarkdownEditorController/applyPatch(range:replacement:actionName:registersUndo:)``,
+    /// which brackets them in `disableUndoRegistration()`.
+    case external
 }
 
 // MARK: - Spell checking
