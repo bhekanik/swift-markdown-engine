@@ -53,4 +53,21 @@ struct FenceInteriorIncrementalTests {
         #expect(spliceEqualsFullParse(old, at: editLoc, remove: 1, insert: "value") == true)
     }
 
+    @Test("a paragraph abutting a closed fence still takes the splice path")
+    func paragraphBeforeClosedFenceSplicesIncrementally() throws {
+        let old = "first paragraph\n```swift\nlet x = 1\n```\nafter\n"
+        let editLoc = (old as NSString).range(of: "paragraph").location + 4
+        let (new, diff) = splice(old, at: editLoc, remove: 0, insert: "X")
+
+        let spliced = try #require(BlockParser.incrementalParse(
+            oldChars: chars(old),
+            oldBlocks: BlockParser.computeBlocks(old),
+            newChars: chars(new),
+            newNS: new as NSString,
+            diff: diff
+        ))
+
+        #expect(spliced.blocks == BlockParser.computeBlocks(new))
+    }
+
 }

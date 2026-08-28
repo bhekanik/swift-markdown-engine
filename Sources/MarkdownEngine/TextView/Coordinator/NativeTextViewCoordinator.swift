@@ -85,6 +85,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var isProgrammaticEdit: Bool = false
     var isWritingToolsActive: Bool = false
     var wtStartDocumentId: String?
+    var wtSourceSnapshot: String?
     weak var wtChildWindow: NSWindow?
     var wtInitialChildOrigin: CGPoint?
     var wtInitialSelectionRange: NSRange?
@@ -176,6 +177,23 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var userPrefersContinuousSpellChecking: Bool = true
     var userPrefersGrammarChecking: Bool = true
     var userPrefersAutomaticSpellingCorrection: Bool = true
+    var rawSourceInputSettingsSnapshot: RawSourceInputSettings?
+
+    struct RawSourceInputSettings {
+        let automaticQuoteSubstitution: Bool
+        let automaticDashSubstitution: Bool
+        let automaticTextReplacement: Bool
+        let automaticSpellingCorrection: Bool
+        let smartInsertDelete: Bool
+
+        init(textView: NSTextView) {
+            automaticQuoteSubstitution = textView.isAutomaticQuoteSubstitutionEnabled
+            automaticDashSubstitution = textView.isAutomaticDashSubstitutionEnabled
+            automaticTextReplacement = textView.isAutomaticTextReplacementEnabled
+            automaticSpellingCorrection = textView.isAutomaticSpellingCorrectionEnabled
+            smartInsertDelete = textView.smartInsertDeleteEnabled
+        }
+    }
 
     /// Fires after the user toggles a spell/grammar/auto-correction menu item.
     /// Embedders persist the returned policy (e.g. to `UserDefaults`) and feed

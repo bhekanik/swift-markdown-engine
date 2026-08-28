@@ -13,6 +13,28 @@
 import AppKit
 
 extension NativeTextViewCoordinator {
+    func enterRawSourceMode(_ textView: NSTextView) {
+        if rawSourceInputSettingsSnapshot == nil {
+            rawSourceInputSettingsSnapshot = RawSourceInputSettings(textView: textView)
+        }
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.smartInsertDeleteEnabled = false
+    }
+
+    func leaveRawSourceMode(_ textView: NSTextView) {
+        guard let settings = rawSourceInputSettingsSnapshot else { return }
+        textView.isAutomaticQuoteSubstitutionEnabled = settings.automaticQuoteSubstitution
+        textView.isAutomaticDashSubstitutionEnabled = settings.automaticDashSubstitution
+        textView.isAutomaticTextReplacementEnabled = settings.automaticTextReplacement
+        textView.isAutomaticSpellingCorrectionEnabled = settings.automaticSpellingCorrection
+        textView.smartInsertDeleteEnabled = settings.smartInsertDelete
+        rawSourceInputSettingsSnapshot = nil
+        cachedSpellingDisabled = nil
+    }
+
     func updateAutocorrectSettings(
         _ textView: NSTextView,
         caretLocation: Int,

@@ -238,7 +238,12 @@ enum BlockParser {
         // A trailing fence or extension block reaching the window end might continue past it.
         if let last = reparsed.last, NSMaxRange(last.range) >= winEndNew {
             switch last.kind {
-            case .frontmatter, .linkDefinition, .footnoteDefinition, .fencedCode, .ext: return nil
+            case .frontmatter, .fencedCode, .ext:
+                if !opaqueBlockClosesWithinRange(last, in: newNS, registry: registry) {
+                    return nil
+                }
+            case .linkDefinition, .footnoteDefinition:
+                return nil
             case .paragraph:
                 // The edit may have dissolved the separator that used to end
                 // this paragraph (backspace-joining two paragraphs): if the
@@ -268,6 +273,43 @@ enum BlockParser {
         }
         guard cursor == newLen else { return nil }
         return (result, reparsed.count)
+    }
+
+    private static func opaqueBlockClosesWithinRange(
+        _ block: Block,
+        in text: NSString,
+        registry: ExtensionRegistry
+    ) -> Bool {
+        let blockEnd = NSMaxRange(block.range)
+        guard block.range.location >= 0, block.range.length > 0, blockEnd <= text.length else {
+            return false
+        }
+
+        let openingLine = NSIntersectionRange(
+            text.lineRange(for: NSRange(location: block.range.location, length: 0)),
+            block.range
+        )
+        let closingLine = NSIntersectionRange(
+            text.lineRange(for: NSRange(location: blockEnd - 1, length: 0)),
+            block.range
+        )
+        guard closingLine.location > openingLine.location else { return false }
+
+        let openingText = text.substring(with: openingLine)
+        let closingText = text.substring(with: closingLine)
+        switch block.kind {
+        case .frontmatter:
+            let close = lineBody(closingText)
+            return lineBody(openingText) == "---" && (close == "---" || close == "...")
+        case .fencedCode:
+            guard let opening = fence(openingText) else { return false }
+            return isFenceClose(closingText, opening: opening)
+        case .ext(let id):
+            guard let fence = registry.blockEntry(for: id)?.fence else { return false }
+            return closingText.hasPrefix(fence)
+        default:
+            return false
+        }
     }
 
     static func computeBlocks(

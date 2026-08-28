@@ -130,7 +130,11 @@ extension NativeTextViewCoordinator {
                 wtDetectedMode = .rewrite
             }
         }
-        if wtActive && wtDetectedMode == .proofread { return }
+        if wtActive && wtDetectedMode == .proofread {
+            pendingEditCount = 0
+            pendingEditedRange = nil
+            return
+        }
 
 
         let rawSelRange = tv.selectedRange()

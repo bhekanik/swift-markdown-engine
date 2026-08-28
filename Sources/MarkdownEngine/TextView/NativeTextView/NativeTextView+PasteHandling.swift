@@ -25,11 +25,23 @@ extension NativeTextView {
         // copy→paste round-trips byte-exact, so this must win over the HTML
         // branch below.
         if let ownMarkdown = pasteboard.string(forType: MarkdownPasteboardWriter.markdownType) {
-            let sanitized = sanitizePastedText(ownMarkdown)
-            if !sanitized.isEmpty {
-                insertPreservingBlockquote(sanitized)
+            if !ownMarkdown.isEmpty {
+                insertPasted(ownMarkdown, replacementRange: selectedRange())
                 return
             }
+        }
+
+        if configuration.rawSourceMode {
+            if let pasted = pasteboard.string(forType: .string), !pasted.isEmpty {
+                insertPasted(pasted, replacementRange: selectedRange())
+                return
+            }
+            if let fileText = textFromPastedFileURL(pasteboard: pasteboard), !fileText.isEmpty {
+                insertPasted(fileText, replacementRange: selectedRange())
+                return
+            }
+            pasteAsPlainText(sender)
+            return
         }
 
         // Rich paste: convert an HTML flavor (Claude, browsers, Word, Notion)

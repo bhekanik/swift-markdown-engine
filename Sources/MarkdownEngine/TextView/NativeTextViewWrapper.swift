@@ -227,6 +227,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = true
         textView.isAutomaticDataDetectionEnabled = true
         textView.isAutomaticDashSubstitutionEnabled = false
+        if configuration.rawSourceMode {
+            context.coordinator.enterRawSourceMode(textView)
+        }
         if #available(macOS 15.1, *) {
             // `.limited` = the Writing Tools popover panel; `.complete` = the inline
             // experience that morphs the text with an animation. We use `.limited` so
@@ -415,6 +418,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // Sync rawSourceMode; a flip rebuilds in the new presentation.
         let rawSourceModeChanged = context.coordinator.configuration.rawSourceMode != configuration.rawSourceMode
         if rawSourceModeChanged {
+            if configuration.rawSourceMode {
+                context.coordinator.enterRawSourceMode(textView)
+            }
             context.coordinator.configuration.rawSourceMode = configuration.rawSourceMode
             textView.configuration.rawSourceMode = configuration.rawSourceMode
             textView.breakUndoCoalescing()
@@ -546,6 +552,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             from: text,
             invalidateLayout: isNodeSwitch || rawSourceModeChanged
         )
+        if rawSourceModeChanged && !configuration.rawSourceMode {
+            context.coordinator.leaveRawSourceMode(textView)
+        }
         textView.recalcOverscroll(for: nsView)
         (nsView as? ClampedScrollView)?.clampToInsets()
         // Height is measured now, so restore the saved offset; clampToInsets keeps

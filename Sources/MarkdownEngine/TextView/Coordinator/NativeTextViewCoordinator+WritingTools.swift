@@ -15,6 +15,7 @@ extension NativeTextViewCoordinator {
         let sel = textView.selectedRange()
         isWritingToolsActive = true
         wtStartDocumentId = documentId
+        wtSourceSnapshot = textView.string
         wtChildWindow = nil
         wtInitialChildOrigin = nil
         wtInitialSelectionRange = sel.length > 0 ? sel : nil
@@ -29,6 +30,8 @@ extension NativeTextViewCoordinator {
     public func textViewWritingToolsDidEnd(_ textView: NSTextView) {
         guard isWritingToolsActive else { return }
         isWritingToolsActive = false
+        let sourceBeforeWritingTools = wtSourceSnapshot
+        wtSourceSnapshot = nil
         wtChildWindow = nil
         wtInitialChildOrigin = nil
         stopObservingUndoNotifications()
@@ -56,6 +59,12 @@ extension NativeTextViewCoordinator {
         // Binding is already equal to `sourceText` after undo so SwiftUI won't re-render — rebuild the textView directly.
         if undoDuringSession {
             rebuildTextStorageAndStyle(textView, from: sourceText)
+        }
+        if let sourceBeforeWritingTools, sourceBeforeWritingTools != sourceText {
+            let patch = MarkdownTextPatch.diff(from: sourceBeforeWritingTools, to: sourceText)
+            onTextMutation?(
+                MarkdownTextMutation(range: patch.range, replacement: patch.replacement)
+            )
         }
         // Don't pre-set `lastSyncedText` — leaving it stale lets updateNSView do its
         // normal rebuild (restyle + re-measure) so the accepted WT result stays visible.
