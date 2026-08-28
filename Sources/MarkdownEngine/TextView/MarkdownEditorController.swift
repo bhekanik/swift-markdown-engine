@@ -24,6 +24,14 @@ public struct MarkdownTextPatch: Sendable, Equatable {
     }
 }
 
+/// Where an editor-initiated range scroll places its target.
+public enum MarkdownScrollPosition: Sendable, Equatable {
+    /// Move only enough to reveal a range that is outside the viewport.
+    case nearest
+    /// Put the range's line at the vertical center of the viewport.
+    case center
+}
+
 /// Handle on one live ``NativeTextViewWrapper``.
 ///
 /// Construct one, hold it (`@State` / a store), and pass it to the wrapper.
@@ -109,6 +117,21 @@ public final class MarkdownEditorController {
 
     /// The editor's current text, in display coordinates.
     public var text: String { textView?.string ?? "" }
+
+    /// Scroll a UTF-16 display range through TextKit 2 fragment geometry.
+    ///
+    /// This deliberately does not call `NSTextView.scrollRangeToVisible`'s
+    /// implementation. That path is unreliable for off-screen TextKit 2
+    /// content and can terminate the process on large documents. The engine's
+    /// text view override and this API share the same bounded settle loop.
+    @discardableResult
+    public func scroll(
+        range: NSRange,
+        position: MarkdownScrollPosition = .nearest
+    ) -> Bool {
+        guard let textView = textView as? NativeTextView else { return false }
+        return textView.scroll(range: range, position: position)
+    }
 
     // MARK: - Patching
 
