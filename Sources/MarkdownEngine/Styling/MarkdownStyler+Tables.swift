@@ -227,7 +227,7 @@ extension MarkdownStyler {
 
             // See renderTable: resolve table colors under the text view's real appearance.
             let renderAppearance = ctx.layoutBridge?.firstTextContainer?.textView?.effectiveAppearance
-                ?? NSApp.effectiveAppearance
+                ?? .engineFallback
             // Cells wrap to the container width (Obsidian-style); the render
             // only exceeds it when the per-column floors genuinely don't fit,
             // in which case the scrollable overlay below takes over.

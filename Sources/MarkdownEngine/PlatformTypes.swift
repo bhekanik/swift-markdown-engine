@@ -75,3 +75,21 @@ public extension PlatformFont {
         .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 }
+
+#if canImport(AppKit) && !targetEnvironment(macCatalyst)
+extension NSAppearance {
+    /// The appearance to resolve colours under when there is no view to ask.
+    ///
+    /// `NSApp` is an implicitly unwrapped optional and is nil in any process
+    /// that has not touched `NSApplication.shared` — a command-line tool, a
+    /// `swift test` bundle, a headless render through ``MarkdownRendering``.
+    /// Reading `NSApp.effectiveAppearance` there does not return nil, it traps,
+    /// so a document containing a table used to kill the process rather than
+    /// draw in the wrong palette. Optional-chaining `NSApp` is safe and does
+    /// NOT instantiate an application the way `NSApplication.shared` would;
+    /// `currentDrawing()` then answers from the drawing context, or `.aqua`.
+    static var engineFallback: NSAppearance {
+        NSApp?.effectiveAppearance ?? .currentDrawing()
+    }
+}
+#endif

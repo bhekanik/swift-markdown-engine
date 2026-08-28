@@ -73,6 +73,29 @@ struct MarkdownRenderingTests {
         #expect(untracked.attribute(.kern, at: 2, effectiveRange: nil) == nil)
     }
 
+    /// A table is the one construct whose styling resolves colours against an
+    /// appearance, and it used to reach for `NSApp.effectiveAppearance`. `NSApp`
+    /// is an implicitly unwrapped optional that is nil until something touches
+    /// `NSApplication.shared`, so this did not render in the wrong palette — it
+    /// killed the process with no test failure to read.
+    ///
+    /// Another test in this file does touch `NSApplication.shared`, and the
+    /// order is not guaranteed, so run it alone to see the regression:
+    /// `swift test --filter tableRendersHeadless` traps on the old code.
+    @Test("a table renders with no NSApplication in the process")
+    func tableRendersHeadless() {
+        let source = """
+        | year | depth |
+        | ---: | :---- |
+        | 1900 | 12 cm |
+
+        After the table.
+        """
+        let styled = render(source)
+        #expect(styled.string == source)
+        #expect(styled.length > 0)
+    }
+
     @Test("it agrees with what a real editor puts in its storage")
     func agreesWithTheEditor() throws {
         _ = NSApplication.shared
