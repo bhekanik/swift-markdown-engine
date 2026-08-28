@@ -115,6 +115,7 @@ extension NativeTextViewCoordinator {
                 bottomTextView.recalcOverscroll(for: scrollView, debugTag: "textDidChange")
                 (scrollView as? ClampedScrollView)?.clampToInsets()
             }
+            editorController?.documentDidChange(from: self)
             if let completedTextMutation {
                 onTextMutation?(completedTextMutation)
             }
@@ -336,6 +337,8 @@ extension NativeTextViewCoordinator {
             }
         }
         previousActiveTokenIndices = activeTokenIndices
+        // Every other view of this document is now holding a stale parse.
+        editorController?.documentDidChange(from: self)
         if let completedTextMutation {
             onTextMutation?(completedTextMutation)
         }

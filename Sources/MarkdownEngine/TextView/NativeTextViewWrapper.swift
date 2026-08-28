@@ -396,9 +396,28 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
 
         textView.isCursorExcluded = isCursorExcluded
         textView.setPlaceholder(placeholder)
-        // The controller is a plain reference the embedder may swap between
-        // passes; re-attach cheaply (attach() no-ops when nothing changed).
-        context.coordinator.editorController = controller
+        // The embedder can hand this view a different controller between
+        // passes — showing a different document in the same window. Re-pointing
+        // the attachment is not enough: the view lays out through its layout
+        // manager, and that is still bound to the old document's content
+        // storage, so the window keeps showing the old document and every edit
+        // lands in it. Detach from the old controller (which drops the layout
+        // manager off its storage), move the manager to the new one, then
+        // attach and force a full rebuild — the storage under the view is a
+        // different document now, so nothing about the old one is still true.
+        let controllerChanged = context.coordinator.editorController !== controller
+        if controllerChanged {
+            if let previous = context.coordinator.editorController {
+                previous.detach(textView: textView)
+            }
+            context.coordinator.editorController = controller
+            if let controller, let layoutManager = textView.textLayoutManager {
+                controller.adopt(layoutManager: layoutManager)
+            }
+            context.coordinator.didInitialFormatting = false
+            context.coordinator.didEnsureLayoutForCurrentDocument = false
+            context.coordinator.invalidateParseCache()
+        }
         controller?.attach(textView: textView, coordinator: context.coordinator)
         context.coordinator.configuration.undo = configuration.undo
         textView.configuration.undo = configuration.undo
@@ -480,7 +499,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         let fontChanged = (context.coordinator.fontName != fontName) || (context.coordinator.fontSize != fontSize)
         if context.coordinator.didInitialFormatting
             && context.coordinator.lastSyncedText == text
-            && !fontChanged {
+            && !fontChanged
+            && !controllerChanged {
             return
         }
         if fontChanged {
@@ -532,7 +552,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // caret and the scroll offset survive; `textView.string =` below would
         // reset the selection to {0, 0}. Falls through to the rebuild when the
         // change is too large to be an edit.
-        if !isNodeSwitch, !rawSourceModeChanged, !fontChanged,
+        if !isNodeSwitch, !rawSourceModeChanged, !fontChanged, !controllerChanged,
            context.coordinator.didInitialFormatting,
            context.coordinator.spliceExternalText(text, in: textView) {
             textView.recalcOverscroll(for: nsView)

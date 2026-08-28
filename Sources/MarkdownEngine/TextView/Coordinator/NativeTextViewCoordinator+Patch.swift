@@ -81,3 +81,23 @@ extension NativeTextViewCoordinator {
         return true
     }
 }
+
+extension NativeTextViewCoordinator {
+    /// Drop everything memoised about the document's structure.
+    ///
+    /// Called on the OTHER coordinators when one of them edits the shared
+    /// storage. The caches key on a per-coordinator counter and on the
+    /// document's length, and a same-length edit moves neither — so without
+    /// this a second window keeps styling syntax that is no longer there.
+    func invalidateParseCache() {
+        cachedParsedDocument = nil
+        cachedParsedText = nil
+        cachedParsedLength = -1
+        cachedParseGeneration = .max
+        parseGeneration &+= 1
+        activeTokenMemo = nil
+        parseState.invalidate()
+        backtickCensusNeedsRescan = true
+        pendingBacktickWindow = nil
+    }
+}

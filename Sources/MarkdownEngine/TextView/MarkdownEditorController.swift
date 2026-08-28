@@ -102,6 +102,17 @@ public final class MarkdownEditorController {
 
     private var coordinator: NativeTextViewCoordinator? { attachments.last?.coordinator }
 
+    /// The presentation every attached view must agree on.
+    ///
+    /// Marker hiding is a FONT SIZE and a kern — it changes layout, not just
+    /// colour — so it cannot live in a per-layout-manager rendering-attributes
+    /// overlay the way a highlight could. Presentation-dependent styling
+    /// therefore has to be written into the shared storage, and two views that
+    /// disagree about it overwrite each other: a raw rebuild unstyles the rich
+    /// view, a rich rebuild shrinks raw's markers to nothing. Until that is
+    /// split properly, one controller means one presentation.
+    private var presentation: (rawSourceMode: Bool, isEditable: Bool)?
+
     public init() {}
 
     /// `true` while at least one live editor is attached.
@@ -259,23 +270,83 @@ public final class MarkdownEditorController {
 
     // MARK: - Attachment (engine-internal)
 
-    func attach(textView: NSTextView, coordinator: NativeTextViewCoordinator) {
+    /// Whether a view in this presentation may join the document.
+    ///
+    /// `true` when nothing is attached yet, or when the presentation matches
+    /// what is already attached. See ``presentation``.
+    public func accepts(rawSourceMode: Bool, isEditable: Bool) -> Bool {
         attachments.removeAll { $0.textView == nil }
+        guard !attachments.isEmpty, let presentation else { return true }
+        return presentation == (rawSourceMode, isEditable)
+    }
+
+    @discardableResult
+    func attach(textView: NSTextView, coordinator: NativeTextViewCoordinator) -> Bool {
+        attachments.removeAll { $0.textView == nil }
+        let incoming = (coordinator.configuration.rawSourceMode, textView.isEditable)
+        if let presentation, !attachments.isEmpty, presentation != incoming {
+            assertionFailure(
+                "A document's views share one text storage, and presentation-dependent "
+                + "styling is written into it, so two presentations overwrite each other. "
+                + "This controller is showing raw=\(presentation.rawSourceMode) "
+                + "editable=\(presentation.isEditable); a view asked to join as "
+                + "raw=\(incoming.0) editable=\(incoming.1). Give each presentation its "
+                + "own MarkdownEditorController.")
+            return false
+        }
+        self.presentation = incoming
         if attachments.contains(where: { $0.textView === textView && $0.coordinator === coordinator }) {
-            return
+            return true
         }
         attachments.removeAll { $0.textView === textView }
         attachments.append(Attachment(textView: textView, coordinator: coordinator))
         onAttach?(textView)
+        return true
     }
 
     /// Detach one view. The others keep working — closing one window must not
     /// silence the document in the window still open.
     func detach(textView: NSTextView) {
         let hadView = attachments.contains { $0.textView === textView }
+        // Break the storage association too, or the content storage keeps the
+        // layout manager (and through it the view) alive and keeps laying out
+        // for a window nobody can see.
+        if let layoutManager = textView.textLayoutManager,
+           layoutManager.textContentManager === textContentStorage {
+            textContentStorage.removeTextLayoutManager(layoutManager)
+        }
         attachments.removeAll { $0.textView === textView || $0.textView == nil }
+        if attachments.isEmpty { presentation = nil }
         guard hadView else { return }
         onAttach?(self.textView)
+    }
+
+    /// Move a layout manager onto this document's storage, off whatever it was
+    /// on before.
+    ///
+    /// The embedder can hand a view a different controller between updates —
+    /// switching which document a window shows. Re-pointing the attachment is
+    /// not enough: the view lays out through its layout manager, and that is
+    /// still bound to the previous document's storage, so the window keeps
+    /// showing the old document and any edit lands in it.
+    func adopt(layoutManager: NSTextLayoutManager) {
+        guard layoutManager.textContentManager !== textContentStorage else { return }
+        (layoutManager.textContentManager as? NSTextContentStorage)?
+            .removeTextLayoutManager(layoutManager)
+        textContentStorage.addTextLayoutManager(layoutManager)
+    }
+
+    /// Tell every other attached view that the document changed underneath it.
+    ///
+    /// Each coordinator memoises its own parse keyed on a counter it bumps
+    /// itself, so an edit made through one view left the others' caches looking
+    /// valid. A same-length edit does not even change the length they check
+    /// against, so the stale parse was used verbatim and the other window
+    /// styled syntax that is no longer there.
+    func documentDidChange(from coordinator: NativeTextViewCoordinator?) {
+        for attachment in attachments where attachment.coordinator !== coordinator {
+            attachment.coordinator?.invalidateParseCache()
+        }
     }
 }
 
