@@ -14,10 +14,11 @@ import AppKit
 
 extension NativeTextViewCoordinator {
     func updateCodeBlockSelection(textView: NSTextView, parsed: ParsedDocument? = nil) {
-        guard let textContainer = textView.textContainer else {
-            onCodeBlockSelectionChange?([])
-            return
-        }
+        // A queued viewport/update callback can outlive detach. TextKit logs
+        // every documentRange access while the layout manager has no content
+        // manager, and the callback no longer represents any document.
+        guard textView.textLayoutManager?.textContentManager != nil else { return }
+        guard let textContainer = textView.textContainer else { return }
 
         if let parsed {
             // Indexed pairs come from the parse's single classification pass —

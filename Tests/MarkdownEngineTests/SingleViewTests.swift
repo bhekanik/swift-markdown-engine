@@ -20,7 +20,7 @@ import Testing
 @testable import MarkdownEngine
 
 @MainActor
-@Suite("One view per controller")
+@Suite("One view per controller", .serialized)
 struct SingleViewTests {
 
     /// A view on `controller`'s storage, driven by a coordinator, without
@@ -180,6 +180,89 @@ struct SingleViewTests {
                                   fontName: "Helvetica", fontSize: 16)
                 .id(identity)
         }
+    }
+
+    private struct ControllerSwapHost: View {
+        let controller: MarkdownEditorController
+        let label: String
+        var text = "alpha\n"
+        let record: (String) -> Void
+        var recordCodeSelection: ((String) -> Void)?
+
+        var body: some View {
+            NativeTextViewWrapper(
+                text: .constant(text),
+                controller: controller,
+                fontName: "Helvetica",
+                fontSize: 16,
+                onAttachmentChange: { textView in
+                    record("\(label):\(textView == nil ? "off" : "on")")
+                },
+                onCodeBlockSelectionChange: { _ in recordCodeSelection?(label) }
+            )
+        }
+    }
+
+    @Test("a controller swap detaches through the outgoing callback")
+    func controllerSwapKeepsAttachmentCallbacksBoundToTheirDocument() throws {
+        _ = NSApplication.shared
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        var events: [String] = []
+        let host = NSHostingView(rootView: ControllerSwapHost(
+            controller: documentA,
+            label: "A",
+            record: { events.append($0) }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        _ = try #require(documentA.textView)
+        #expect(events == ["A:on"])
+
+        host.rootView = ControllerSwapHost(
+            controller: documentB,
+            label: "B",
+            record: { events.append($0) }
+        )
+        host.layoutSubtreeIfNeeded()
+
+        _ = try #require(documentB.textView)
+        #expect(events == ["A:on", "A:off", "B:on"])
+    }
+
+    @Test("selection-derived callbacks switch before the incoming document rebuilds")
+    func controllerSwapUsesIncomingSelectionCallbacks() throws {
+        _ = NSApplication.shared
+        let source = "```swift\nlet value = 1\n```\n"
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        var codeSelectionLabels: [String] = []
+        let host = NSHostingView(rootView: ControllerSwapHost(
+            controller: documentA,
+            label: "A",
+            text: source,
+            record: { _ in },
+            recordCodeSelection: { codeSelectionLabels.append($0) }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        codeSelectionLabels.removeAll()
+
+        host.rootView = ControllerSwapHost(
+            controller: documentB,
+            label: "B",
+            text: source,
+            record: { _ in },
+            recordCodeSelection: { codeSelectionLabels.append($0) }
+        )
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        _ = try #require(documentB.textView)
+        #expect(!codeSelectionLabels.isEmpty)
+        #expect(codeSelectionLabels.allSatisfy { $0 == "B" },
+                "the incoming document published through the outgoing callback: \(codeSelectionLabels)")
     }
 
     /// SwiftUI builds a remount's replacement BEFORE dismantling the original

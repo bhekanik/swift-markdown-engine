@@ -378,12 +378,22 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             return
         }
         let isNodeSwitch = context.coordinator.documentId != documentId
+        let controllerChanged = context.coordinator.editorController !== controller
 
-        // Refreshed here, not with the other callbacks at the bottom — teardown has
-        // to reach the CURRENT closures even when the pass below returns early.
+        // Scroll persistence belongs to the SwiftUI wrapper, not the attached
+        // document, so its current closures are always safe to refresh here.
         context.coordinator.onPersistScrollOffset = onPersistScrollOffset
         context.coordinator.restoreScrollOffset = restoreScrollOffset
-        context.coordinator.onAttachmentChange = onAttachmentChange
+        // Attachment and edit callbacks belong to the CURRENT document. During
+        // a controller swap the outgoing attachment must report through its old
+        // closures; the incoming closures are installed after detach, before
+        // the new document can publish selection-derived state.
+        if !controllerChanged {
+            context.coordinator.onAttachmentChange = onAttachmentChange
+            context.coordinator.onTextMutation = onTextMutation
+            context.coordinator.onBuildContextMenu = onBuildContextMenu
+            context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+        }
 
         // Drop remembered offsets for documents no longer retained (always keep
         // the current one). Only rebuilds the dict when something must go.
@@ -441,7 +451,6 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // manager off its storage), move the manager to the new one, then
         // attach and force a full rebuild — the storage under the view is a
         // different document now, so nothing about the old one is still true.
-        let controllerChanged = context.coordinator.editorController !== controller
         // Settled before anything moves, for the reason `makeNSView` settles it
         // before building: a controller that already drives another view
         // refuses this one, and the swap below would otherwise leave this view
@@ -461,9 +470,24 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 // coming back to it lands the reader where they left.
                 context.coordinator.selectionByDocument[ObjectIdentifier(previous)] =
                     textView.selectedRange()
+                // The reset below is transfer bookkeeping, not a user
+                // selection. Do not publish code-block selection state for the
+                // outgoing document while the host is replacing its callback.
+                context.coordinator.onCodeBlockSelectionChange = nil
+                // The first reset must happen while the outgoing storage is
+                // still attached. Resetting after detach asks TextKit 2 for a
+                // document range through a layout manager with no content
+                // manager, which logs and leaves the selection undefined.
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
                 context.coordinator.reportAttachment(nil)
                 previous.detach(textView: textView)
+            } else {
+                textView.setSelectedRange(NSRange(location: 0, length: 0))
             }
+            context.coordinator.onAttachmentChange = onAttachmentChange
+            context.coordinator.onTextMutation = onTextMutation
+            context.coordinator.onBuildContextMenu = onBuildContextMenu
+            context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
             // A selection from the old document can be out of range for the new
             // one, and the next attribute write (`textView.font = font`, below)
             // makes AppKit fix attributes over the selected range — which traps
@@ -474,7 +498,6 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             // the layout manager leaves the view with no content manager and
             // the selection it reads back afterwards is neither zero nor in
             // range (measured: 1235 against a length of 0).
-            textView.setSelectedRange(NSRange(location: 0, length: 0))
             context.coordinator.editorController = controller
             if let controller, let layoutManager = textView.textLayoutManager {
                 controller.adopt(layoutManager: layoutManager)
@@ -722,6 +745,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // Document rebuilds bypass textDidChange — re-derive emptiness here.
         textView.refreshPlaceholderVisibility()
         DispatchQueue.main.async {
+            guard textView.textLayoutManager?.textContentManager != nil else { return }
             context.coordinator.updateCodeBlockSelection(textView: textView)
         }
 
