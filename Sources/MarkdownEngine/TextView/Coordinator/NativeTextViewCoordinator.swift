@@ -73,6 +73,13 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// Set while a controller swap is in flight; consumed once the new
     /// document has been rebuilt and its length is known.
     var pendingSelectionRestore: ObjectIdentifier?
+    /// True while this view was built for a document another view already had.
+    ///
+    /// It is showing its text on a TextKit stack of its own and speaks for
+    /// nobody: its edits are not the document's edits, so they must not reach
+    /// the embedder's binding or its edit feed. Cleared by
+    /// ``takeOverFreedController(_:)`` when the document frees up.
+    var isDetachedFromDocument = false
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
     /// default menu + current selection range, returns the menu to show.

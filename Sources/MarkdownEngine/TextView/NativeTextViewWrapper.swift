@@ -295,6 +295,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             // SwiftUI builds a remount's replacement before dismantling the
             // original and then sends this view no further update pass, so
             // re-checking on the next pass would never happen.
+            context.coordinator.isDetachedFromDocument = true
             controller?.awaitSlot(context.coordinator)
         }
         context.coordinator.onTextMutation = onTextMutation
@@ -440,6 +441,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             NSLog("MarkdownEngine: a view asked to show a document that already has one. "
                   + "A controller drives exactly one view — give a second window its own "
                   + "MarkdownEditorController and forward onTextMutation into its applyPatch.")
+            context.coordinator.isDetachedFromDocument = true
             controller.awaitSlot(context.coordinator)
             return
         }

@@ -120,7 +120,7 @@ extension NativeTextViewCoordinator {
                 let rawText = tv.string
                 DispatchQueue.main.async {
                     self.lastSyncedText = rawText
-                    self.text = rawText
+                    self.writeBindingBack(rawText)
                 }
             }
             if let bottomTextView = tv as? NativeTextView,
@@ -135,7 +135,7 @@ extension NativeTextViewCoordinator {
             )
             previousDisplayLength = currentDocumentLength
             if let completedTextMutation {
-                onTextMutation?(completedTextMutation)
+                publish(completedTextMutation)
             }
             return
         }
@@ -207,7 +207,7 @@ extension NativeTextViewCoordinator {
             let changedText = tv.string
             DispatchQueue.main.async {
                 self.lastSyncedText = changedText
-                self.text = changedText
+                self.writeBindingBack(changedText)
             }
         }
 
@@ -365,7 +365,7 @@ extension NativeTextViewCoordinator {
             documentLength: fullLength
         )
         if let completedTextMutation {
-            onTextMutation?(completedTextMutation)
+            publish(completedTextMutation)
         }
         PerfTrace.end()
     }

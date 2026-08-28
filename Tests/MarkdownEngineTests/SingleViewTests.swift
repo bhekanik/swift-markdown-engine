@@ -121,12 +121,15 @@ struct SingleViewTests {
     private struct TwoViewHost: View {
         let controller: MarkdownEditorController
         let text: String
+        let onTextMutation: (MarkdownTextMutation) -> Void
         var body: some View {
             VStack(spacing: 0) {
                 NativeTextViewWrapper(text: .constant(text), controller: controller,
-                                      fontName: "Helvetica", fontSize: 16)
+                                      fontName: "Helvetica", fontSize: 16,
+                                      onTextMutation: onTextMutation)
                 NativeTextViewWrapper(text: .constant(text), controller: controller,
-                                      fontName: "Helvetica", fontSize: 16)
+                                      fontName: "Helvetica", fontSize: 16,
+                                      onTextMutation: onTextMutation)
             }
         }
     }
@@ -138,7 +141,9 @@ struct SingleViewTests {
     func refusedViewIsIsolated() throws {
         _ = NSApplication.shared
         let controller = MarkdownEditorController()
-        let host = NSHostingView(rootView: TwoViewHost(controller: controller, text: "alpha\n"))
+        var mutations: [MarkdownTextMutation] = []
+        let host = NSHostingView(rootView: TwoViewHost(controller: controller, text: "alpha\n",
+                                                       onTextMutation: { mutations.append($0) }))
         host.frame = NSRect(x: 0, y: 0, width: 600, height: 800)
         host.layoutSubtreeIfNeeded()
 
@@ -156,6 +161,8 @@ struct SingleViewTests {
         // own text, and a patch through the controller never reaches it.
         refused.insertText("!", replacementRange: NSRange(location: 5, length: 0))
         #expect(attached.string == "alpha\n", "the refused view edited the document")
+        #expect(mutations.isEmpty,
+                "the refused view published its keystroke as an edit to the document")
 
         #expect(controller.applyPatch(range: NSRange(location: 0, length: 5),
                                       replacement: "ALPHA"))

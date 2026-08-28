@@ -66,6 +66,24 @@ extension NativeTextViewCoordinator {
 }
 
 extension NativeTextViewCoordinator {
+    /// Report an edit to the embedder — unless this view speaks for nobody.
+    ///
+    /// A detached view's keystrokes are not edits to the document it was
+    /// refused. Publishing them would put text the document does not contain
+    /// into the undo tree and the sync outbox.
+    func publish(_ mutation: MarkdownTextMutation) {
+        guard !isDetachedFromDocument else { return }
+        onTextMutation?(mutation)
+    }
+
+    /// Write the editor's text back to the embedder's binding — same rule, and
+    /// the more damaging half: the binding IS the embedder's document, so a
+    /// detached view writing to it replaces the real text with its own.
+    func writeBindingBack(_ newText: String) {
+        guard !isDetachedFromDocument else { return }
+        text = newText
+    }
+
     /// Take a controller that has just released its view.
     ///
     /// This view was built while another still held the controller, so it has a
@@ -82,6 +100,7 @@ extension NativeTextViewCoordinator {
         guard let textView, editorController == nil else { return }
         guard controller.attach(textView: textView, coordinator: self) else { return }
         editorController = controller
+        isDetachedFromDocument = false
 
         // Zeroed on both sides of the move, as in a controller swap: detaching
         // the layout manager leaves the view with no content manager, and the

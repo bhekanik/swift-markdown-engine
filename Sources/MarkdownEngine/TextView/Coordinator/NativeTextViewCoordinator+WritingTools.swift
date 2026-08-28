@@ -105,10 +105,10 @@ extension NativeTextViewCoordinator {
                     replacement: patch.replacement
                 )
             }
-            onTextMutation?(mutation)
+            publish(mutation)
         }
         DispatchQueue.main.async { [self] in
-            text = sourceText
+            writeBindingBack(sourceText)
         }
     }
 
