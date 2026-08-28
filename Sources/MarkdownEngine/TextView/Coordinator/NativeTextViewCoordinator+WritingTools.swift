@@ -17,6 +17,7 @@ extension NativeTextViewCoordinator {
         wtStartDocumentId = documentId
         wtSourceSnapshot = textView.string
         wtStartDocumentRevision = editorController?.documentRevision
+        wtStartDocumentMutationDelta = editorController?.documentMutationDelta ?? 0
         wtStartDocumentLength = (textView.string as NSString).length
         wtChildWindow = nil
         wtInitialChildOrigin = nil
@@ -35,9 +36,11 @@ extension NativeTextViewCoordinator {
         let sourceBeforeWritingTools = wtSourceSnapshot
         let initialSelection = wtInitialSelectionRange
         let startRevision = wtStartDocumentRevision
+        let startDocumentMutationDelta = wtStartDocumentMutationDelta
         let startDocumentLength = wtStartDocumentLength
         wtSourceSnapshot = nil
         wtStartDocumentRevision = nil
+        wtStartDocumentMutationDelta = 0
         wtStartDocumentLength = 0
         wtChildWindow = nil
         wtInitialChildOrigin = nil
@@ -69,7 +72,7 @@ extension NativeTextViewCoordinator {
             rebuildTextStorageAndStyle(textView, from: sourceText)
         }
         if let sourceBeforeWritingTools, sourceBeforeWritingTools != sourceText {
-            let mutation: MarkdownTextMutation?
+            let mutation: MarkdownTextMutation
             if let startRevision,
                let editorController,
                editorController.documentRevision != startRevision {
@@ -78,6 +81,7 @@ extension NativeTextViewCoordinator {
                     sourceAfterWritingTools: sourceText,
                     initialSelection: initialSelection,
                     startRevision: startRevision,
+                    startDocumentMutationDelta: startDocumentMutationDelta,
                     startDocumentLength: startDocumentLength,
                     controller: editorController
                 )
@@ -91,9 +95,7 @@ extension NativeTextViewCoordinator {
                     replacement: patch.replacement
                 )
             }
-            if let mutation {
-                onTextMutation?(mutation)
-            }
+            onTextMutation?(mutation)
         }
         // Don't pre-set `lastSyncedText` — leaving it stale lets updateNSView do its
         // normal rebuild (restyle + re-measure) so the accepted WT result stays visible.
@@ -107,39 +109,69 @@ extension NativeTextViewCoordinator {
         sourceAfterWritingTools: String,
         initialSelection: NSRange?,
         startRevision: UInt64,
+        startDocumentMutationDelta: Int,
         startDocumentLength: Int,
         controller: MarkdownEditorController
-    ) -> MarkdownTextMutation? {
+    ) -> MarkdownTextMutation {
+        let listenerModelLength = startDocumentLength
+            + controller.documentMutationDelta
+            - startDocumentMutationDelta
+        func fullReplacement(because reason: String) -> MarkdownTextMutation {
+            NSLog("MarkdownEngine: Writing Tools published a full replacement because \(reason)")
+            return MarkdownTextMutation(
+                range: NSRange(location: 0, length: listenerModelLength),
+                replacement: sourceAfterWritingTools
+            )
+        }
+
         guard let initialSelection,
               initialSelection.location >= 0,
               initialSelection.length > 0,
-              NSMaxRange(initialSelection) <= (sourceBeforeWritingTools as NSString).length,
-              let records = controller.documentMutationRecords(after: startRevision)
+              NSMaxRange(initialSelection) <= (sourceBeforeWritingTools as NSString).length
         else {
-            NSLog("MarkdownEngine: Writing Tools mutation omitted because the changed span could not be isolated")
-            return nil
+            return fullReplacement(because: "the initial selection could not isolate the changed span")
+        }
+        guard let records = controller.documentMutationRecords(after: startRevision),
+              !records.isEmpty
+        else {
+            return fullReplacement(because: "the concurrent mutation history was unavailable")
         }
 
+        let foreignOnlyBaseline = NSMutableString(string: sourceBeforeWritingTools)
         var selection = initialSelection
         var externalDelta = 0
         for record in records {
             guard let mutation = record.mutation else {
-                NSLog("MarkdownEngine: Writing Tools mutation omitted because a concurrent edit had no exact patch")
-                return nil
+                return fullReplacement(because: "a concurrent edit had no exact patch")
             }
             let replacementLength = (mutation.replacement as NSString).length
-            let mutationDelta = replacementLength - mutation.range.length
+            let mutationDelta = record.mutationDelta
             let lengthBeforeMutation = record.documentLength - mutationDelta
             let writingToolsDelta = lengthBeforeMutation - startDocumentLength - externalDelta
             guard initialSelection.length + writingToolsDelta >= 0 else {
-                NSLog("MarkdownEngine: Writing Tools mutation omitted because its selected span became invalid")
-                return nil
+                return fullReplacement(because: "the selected span became invalid")
             }
             selection.length = initialSelection.length + writingToolsDelta
             if mutationOverlapsSelection(mutation.range, selection: selection) {
-                NSLog("MarkdownEngine: Writing Tools mutation omitted because a concurrent edit overlapped its selected span")
-                return nil
+                return fullReplacement(because: "a concurrent edit overlapped the selected span")
             }
+
+            let baselineLocation = NSMaxRange(mutation.range) <= selection.location
+                ? mutation.range.location
+                : mutation.range.location - writingToolsDelta
+            let baselineRange = NSRange(
+                location: baselineLocation,
+                length: mutation.range.length
+            )
+            guard baselineLocation >= 0,
+                  NSMaxRange(baselineRange) <= foreignOnlyBaseline.length
+            else {
+                return fullReplacement(because: "a concurrent edit could not be mapped to the listener's text")
+            }
+            foreignOnlyBaseline.replaceCharacters(
+                in: baselineRange,
+                with: mutation.replacement
+            )
             selection = selection.adjusting(
                 forReplacementOf: mutation.range,
                 withLength: replacementLength
@@ -147,27 +179,12 @@ extension NativeTextViewCoordinator {
             externalDelta += mutationDelta
         }
 
-        let finalLength = (sourceAfterWritingTools as NSString).length
-        let writingToolsDelta = finalLength - startDocumentLength - externalDelta
-        guard initialSelection.length + writingToolsDelta >= 0 else {
-            NSLog("MarkdownEngine: Writing Tools mutation omitted because its final selected span became invalid")
-            return nil
-        }
-        selection.length = initialSelection.length + writingToolsDelta
-        guard selection.location >= 0, NSMaxRange(selection) <= finalLength else {
-            NSLog("MarkdownEngine: Writing Tools mutation omitted because its final selected span was out of bounds")
-            return nil
-        }
-
-        let before = (sourceBeforeWritingTools as NSString).substring(with: initialSelection)
-        let after = (sourceAfterWritingTools as NSString).substring(with: selection)
-        guard before != after else { return nil }
-        let patch = MarkdownTextPatch.diff(from: before, to: after)
+        let patch = MarkdownTextPatch.diff(
+            from: foreignOnlyBaseline as String,
+            to: sourceAfterWritingTools
+        )
         return MarkdownTextMutation(
-            range: NSRange(
-                location: selection.location + patch.range.location,
-                length: patch.range.length
-            ),
+            range: patch.range,
             replacement: patch.replacement
         )
     }

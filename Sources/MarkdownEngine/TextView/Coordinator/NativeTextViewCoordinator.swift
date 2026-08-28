@@ -87,6 +87,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var wtStartDocumentId: String?
     var wtSourceSnapshot: String?
     var wtStartDocumentRevision: UInt64?
+    var wtStartDocumentMutationDelta: Int = 0
     var wtStartDocumentLength: Int = 0
     weak var wtChildWindow: NSWindow?
     var wtInitialChildOrigin: CGPoint?
@@ -133,6 +134,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// Exact pre-edit descriptor paired with `pendingEditedRange`. It is
     /// published only when one accepted proposal produces the change event.
     var pendingTextMutation: MarkdownTextMutation?
+    /// Retains the real delta when several proposals collapse into one change
+    /// event and no single range can reproduce it.
+    var pendingTextMutationStartLength: Int?
     /// Proposed-edit cycles since the last completed textDidChange. Exactly 1
     /// means the hoisted editedRange/lengthDelta describe a single tracked
     /// edit and incremental fast paths may trust them.

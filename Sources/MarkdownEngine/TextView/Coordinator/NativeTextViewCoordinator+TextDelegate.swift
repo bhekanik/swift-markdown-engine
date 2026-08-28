@@ -94,6 +94,19 @@ extension NativeTextViewCoordinator {
             ? pendingTextMutation
             : nil
         pendingTextMutation = nil
+        let currentDocumentLength = (tv.string as NSString).length
+        let completedMutationDelta: Int
+        if let completedTextMutation {
+            completedMutationDelta = (completedTextMutation.replacement as NSString).length
+                - completedTextMutation.range.length
+        } else if let pendingTextMutationStartLength {
+            completedMutationDelta = currentDocumentLength - pendingTextMutationStartLength
+        } else {
+            completedMutationDelta = previousDisplayLength >= 0
+                ? currentDocumentLength - previousDisplayLength
+                : 0
+        }
+        pendingTextMutationStartLength = nil
         // Typing means the reader is here, so an unlanded restore must not fire.
         pendingScrollRestoreDocumentId = nil
         // Before the early returns: the first keystroke must hide the placeholder.
@@ -117,9 +130,11 @@ extension NativeTextViewCoordinator {
             }
             editorController?.recordDocumentMutation(
                 completedTextMutation,
-                documentLength: (tv.string as NSString).length,
+                mutationDelta: completedMutationDelta,
+                documentLength: currentDocumentLength,
                 from: self
             )
+            previousDisplayLength = currentDocumentLength
             if let completedTextMutation {
                 onTextMutation?(completedTextMutation)
             }
@@ -141,6 +156,7 @@ extension NativeTextViewCoordinator {
         if wtActive && wtDetectedMode == .proofread {
             pendingEditCount = 0
             pendingEditedRange = nil
+            previousDisplayLength = currentDocumentLength
             return
         }
 
@@ -174,7 +190,7 @@ extension NativeTextViewCoordinator {
 #if DEBUG
         debugLastEditWasTrusted = singleTrackedEdit
 #endif
-        let lengthDelta = previousDisplayLength >= 0 ? fullLength - previousDisplayLength : Int.min
+        let lengthDelta = previousDisplayLength >= 0 ? completedMutationDelta : Int.min
         previousDisplayLength = fullLength
 
         // Parse-cache generation. shouldChangeTextIn already bumped for this
@@ -347,6 +363,7 @@ extension NativeTextViewCoordinator {
         // Every other view of this document is now holding a stale parse.
         editorController?.recordDocumentMutation(
             completedTextMutation,
+            mutationDelta: completedMutationDelta,
             documentLength: fullLength,
             from: self
         )
@@ -669,6 +686,9 @@ extension NativeTextViewCoordinator {
 
         parseGeneration &+= 1
         // Refresh the descriptor for EVERY proposed edit, including programmatic ones.
+        if pendingEditCount == 0 {
+            pendingTextMutationStartLength = preNS.length
+        }
         pendingEditedRange = NSRange(location: affectedCharRange.location, length: replacementString?.utf16.count ?? 0)
         // A nil replacement means AppKit is changing ATTRIBUTES over that range,
         // not text (data detection linkifying a phone number, Format > Font).

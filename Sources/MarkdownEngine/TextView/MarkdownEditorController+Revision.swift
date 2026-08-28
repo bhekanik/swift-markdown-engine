@@ -8,19 +8,27 @@ import AppKit
 struct MarkdownDocumentMutationRecord {
     let revision: UInt64
     let mutation: MarkdownTextMutation?
+    let mutationDelta: Int
     let documentLength: Int
 }
 
 @MainActor
 private final class MarkdownDocumentRevisionState {
     private(set) var revision: UInt64 = 0
+    private(set) var mutationDelta = 0
     private var records: [MarkdownDocumentMutationRecord] = []
 
-    func record(_ mutation: MarkdownTextMutation?, documentLength: Int) {
+    func record(
+        _ mutation: MarkdownTextMutation?,
+        mutationDelta: Int,
+        documentLength: Int
+    ) {
         revision &+= 1
+        self.mutationDelta += mutationDelta
         records.append(MarkdownDocumentMutationRecord(
             revision: revision,
             mutation: mutation,
+            mutationDelta: mutationDelta,
             documentLength: documentLength
         ))
         if records.count > 4_096 {
@@ -59,13 +67,22 @@ extension MarkdownEditorController {
         MarkdownDocumentRevisionStore.state(for: textContentStorage).revision
     }
 
+    var documentMutationDelta: Int {
+        MarkdownDocumentRevisionStore.state(for: textContentStorage).mutationDelta
+    }
+
     func recordDocumentMutation(
         _ mutation: MarkdownTextMutation?,
+        mutationDelta: Int,
         documentLength: Int,
         from coordinator: NativeTextViewCoordinator
     ) {
         MarkdownDocumentRevisionStore.state(for: textContentStorage)
-            .record(mutation, documentLength: documentLength)
+            .record(
+                mutation,
+                mutationDelta: mutationDelta,
+                documentLength: documentLength
+            )
         documentDidChange(from: coordinator)
     }
 

@@ -142,11 +142,13 @@ struct WritingToolsMutationTests {
             MarkdownTextMutation(range: NSRange(location: 7, length: 0), replacement: "c"),
         ])
         #expect(applying(mutations, to: before) == "The quick fox sleeps.\n")
+        #expect(textView.string == "The quick fox sleeps.\n")
+        #expect(try #require(mutations.last).range.length < (before as NSString).length)
     }
 
     @available(macOS 15.0, *)
     @Test("a second view edit and Writing Tools publish each character change once")
-    func secondViewEditDuringSessionIsNotRepublished() {
+    func secondViewEditDuringSessionIsNotRepublished() throws {
         _ = NSApplication.shared
         let before = "The quik fox rests.\n"
         let controller = MarkdownEditorController()
@@ -181,5 +183,129 @@ struct WritingToolsMutationTests {
             MarkdownTextMutation(range: NSRange(location: 7, length: 0), replacement: "c"),
         ])
         #expect(applying(mutations, to: before) == "The quick fox sleeps.\n")
+        #expect(writingToolsView.string == "The quick fox sleeps.\n")
+        #expect(try #require(mutations.last).range.length < (before as NSString).length)
+    }
+
+    @available(macOS 15.0, *)
+    @Test("an overlapping controller patch falls back to a reproducible full replacement")
+    func overlappingControllerPatchPublishesFullReplacement() throws {
+        _ = NSApplication.shared
+        let before = "The quik fox rests.\n"
+        let after = "The quick fox rests.\n"
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, coordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: { mutations.append($0) }
+        )
+        textView.setSelectedRange(NSRange(location: 4, length: 4))
+
+        coordinator.textViewWritingToolsWillBegin(textView)
+        #expect(controller.applyPatch(
+            range: NSRange(location: 5, length: 2),
+            replacement: "UE"
+        ))
+        replaceThroughWritingTools(
+            in: textView,
+            range: NSRange(location: 4, length: 4),
+            with: "quick"
+        )
+        coordinator.textViewWritingToolsDidEnd(textView)
+
+        let finalMutation = try #require(mutations.last)
+        #expect(mutations.count == 2)
+        #expect(finalMutation.range == NSRange(location: 0, length: (before as NSString).length))
+        #expect(applying(mutations, to: before) == after)
+        #expect(textView.string == after)
+    }
+
+    @available(macOS 15.0, *)
+    @Test("a caret-only session with a concurrent edit publishes a reproducible full replacement")
+    func caretOnlySessionPublishesFullReplacement() throws {
+        _ = NSApplication.shared
+        let before = "The quik fox rests.\n"
+        let after = "The very quik fox sleeps.\n"
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, coordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: { mutations.append($0) }
+        )
+        textView.setSelectedRange(NSRange(location: 4, length: 0))
+
+        coordinator.textViewWritingToolsWillBegin(textView)
+        #expect(controller.applyPatch(
+            range: NSRange(location: 13, length: 5),
+            replacement: "sleeps"
+        ))
+        replaceThroughWritingTools(
+            in: textView,
+            range: NSRange(location: 4, length: 0),
+            with: "very "
+        )
+        coordinator.textViewWritingToolsDidEnd(textView)
+
+        let finalMutation = try #require(mutations.last)
+        let listenerLength = (before as NSString).length + 1
+        #expect(mutations.count == 2)
+        #expect(finalMutation.range == NSRange(location: 0, length: listenerLength))
+        #expect(applying(mutations, to: before) == after)
+        #expect(textView.string == after)
+    }
+
+    @available(macOS 15.0, *)
+    @Test("a concurrent edit without an exact record publishes a reproducible full replacement")
+    func inexactConcurrentEditPublishesFullReplacement() throws {
+        _ = NSApplication.shared
+        let before = "The quik fox rests.\n"
+        let after = "Aha quick fox sleep.\n"
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        let record: (MarkdownTextMutation) -> Void = { mutations.append($0) }
+        let (writingToolsView, writingToolsCoordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: record
+        )
+        let (secondView, _) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: record
+        )
+        writingToolsView.setSelectedRange(NSRange(location: 4, length: 4))
+
+        writingToolsCoordinator.textViewWritingToolsWillBegin(writingToolsView)
+        #expect(secondView.shouldChangeText(
+            in: NSRange(location: 13, length: 5),
+            replacementString: "sleep"
+        ))
+        secondView.textStorage?.replaceCharacters(
+            in: NSRange(location: 13, length: 5),
+            with: "sleep"
+        )
+        #expect(secondView.shouldChangeText(
+            in: NSRange(location: 0, length: 3),
+            replacementString: "Aha"
+        ))
+        secondView.textStorage?.replaceCharacters(
+            in: NSRange(location: 0, length: 3),
+            with: "Aha"
+        )
+        secondView.didChangeText()
+        replaceThroughWritingTools(
+            in: writingToolsView,
+            range: NSRange(location: 4, length: 4),
+            with: "quick"
+        )
+        writingToolsCoordinator.textViewWritingToolsDidEnd(writingToolsView)
+
+        let finalMutation = try #require(mutations.last)
+        #expect(mutations.count == 1)
+        #expect(finalMutation.range == NSRange(location: 0, length: (before as NSString).length))
+        #expect(applying(mutations, to: before) == after)
+        #expect(writingToolsView.string == after)
     }
 }
