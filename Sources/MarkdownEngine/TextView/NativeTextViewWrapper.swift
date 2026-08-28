@@ -174,10 +174,23 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             right: configuration.safeAreaInsets.trailing
         )
 
-        // Let NSTextView auto-initialize its own TextKit 2 stack via init(frame:).
-        let textView = NativeTextView(frame: .zero)
+        // With a controller, the DOCUMENT owns the content storage and this
+        // view gets its own layout manager and container on it — so two
+        // windows on one document share the characters and the attributes, and
+        // an edit through either is immediately the other's. Without one,
+        // NSTextView auto-initialises its own TextKit 2 stack via init(frame:),
+        // which is what an embedder with a single view has always had.
+        let textView: NativeTextView
+        if let controller {
+            let layoutManager = NSTextLayoutManager()
+            let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+            layoutManager.textContainer = container
+            controller.textContentStorage.addTextLayoutManager(layoutManager)
+            textView = NativeTextView(frame: .zero, textContainer: container)
+        } else {
+            textView = NativeTextView(frame: .zero)
+        }
 
-        // Configure the auto-created text container.
         guard let textContainer = textView.textContainer,
               let textLayoutManager = textView.textLayoutManager else {
             fatalError("NSTextView did not create a TextKit 2 stack on this OS version")
@@ -637,7 +650,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// different screen — and that is the only moment left to record where the
     /// reader was; the coordinator's own offsets die with it.
     public static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
-        coordinator.editorController?.detach()
+        // Detach THIS view only: another window may still be showing the same
+        // document through the same controller.
+        if let textView = coordinator.textView {
+            coordinator.editorController?.detach(textView: textView)
+        }
         // A restore still pending means the reader was never put back where they
         // were — recording the current offset would overwrite the good one with
         // the mid-load position.

@@ -122,7 +122,7 @@ struct EditorControllerPatchTests {
     @Test("a detached controller applies nothing")
     func detachedControllerIsInert() {
         let (textView, controller, _) = makeEditor("alpha")
-        controller.detach()
+        controller.detach(textView: textView)
         #expect(controller.isAttached == false)
         #expect(controller.applyPatch(range: NSRange(location: 0, length: 1), replacement: "b") == false)
         #expect(textView.string == "alpha")
@@ -233,7 +233,7 @@ struct EditorControllerPatchTests {
         let textView = NativeTextView(frame: .zero)
         controller.attach(textView: textView, coordinator: coordinator)
         #expect(controller.textView === textView)
-        controller.detach()
+        controller.detach(textView: textView)
         #expect(controller.textView == nil)
         #expect(announced == [true, false])
     }

@@ -50,6 +50,19 @@ public struct MarkdownTextPatch: Sendable, Equatable {
 /// ``undoManager`` if the embedder wants the text view to see a specific one.
 @MainActor
 public final class MarkdownEditorController {
+    /// The document's backing store, shared by every view showing it.
+    ///
+    /// TextKit 2 keeps the text in an `NSTextContentStorage` and lets any
+    /// number of `NSTextLayoutManager`s lay it out. Owning it here — at
+    /// document scope, on the object the embedder holds for the lifetime of the
+    /// document — is what makes showing one document in two windows cheap and
+    /// coherent: both views read the same characters and the same attributes,
+    /// so an edit through either is immediately the other's edit too.
+    ///
+    /// A wrapper given a controller builds its text view on this storage. One
+    /// given no controller keeps `NSTextView`'s own auto-created stack.
+    public let textContentStorage = NSTextContentStorage()
+
     /// The text view backing the attached editor, or `nil` before attach /
     /// after teardown.
     ///
@@ -60,7 +73,22 @@ public final class MarkdownEditorController {
     /// read-mostly: mutate the *text* through ``applyPatch(range:replacement:actionName:registersUndo:)``,
     /// never by assigning `string` (that is the full-rebuild path this API exists
     /// to avoid).
-    public private(set) weak var textView: NSTextView?
+    public var textView: NSTextView? { attachments.last?.textView }
+
+    /// Every view currently showing this document, oldest first.
+    ///
+    /// One document can be open in several windows, and each has its own text
+    /// view, layout manager, selection and scroll position. Keeping only the
+    /// most recent one meant closing either window cleared the controller for
+    /// the other, which then answered `nil` to everything.
+    public var textViews: [NSTextView] { attachments.compactMap(\.textView) }
+
+    private struct Attachment {
+        weak var textView: NSTextView?
+        weak var coordinator: NativeTextViewCoordinator?
+    }
+
+    private var attachments: [Attachment] = []
 
     /// Undo manager handed to the text view when
     /// ``MarkdownEditorConfiguration/undo`` is ``UndoPolicy/external``.
@@ -72,11 +100,11 @@ public final class MarkdownEditorController {
     /// moment instead of polling ``isAttached``.
     public var onAttach: ((NSTextView?) -> Void)?
 
-    private weak var coordinator: NativeTextViewCoordinator?
+    private var coordinator: NativeTextViewCoordinator? { attachments.last?.coordinator }
 
     public init() {}
 
-    /// `true` while a live editor is attached.
+    /// `true` while at least one live editor is attached.
     public var isAttached: Bool { textView != nil }
 
     /// The editor's current selection, in UTF-16 display coordinates.
@@ -232,17 +260,22 @@ public final class MarkdownEditorController {
     // MARK: - Attachment (engine-internal)
 
     func attach(textView: NSTextView, coordinator: NativeTextViewCoordinator) {
-        guard self.textView !== textView || self.coordinator !== coordinator else { return }
-        self.textView = textView
-        self.coordinator = coordinator
+        attachments.removeAll { $0.textView == nil }
+        if attachments.contains(where: { $0.textView === textView && $0.coordinator === coordinator }) {
+            return
+        }
+        attachments.removeAll { $0.textView === textView }
+        attachments.append(Attachment(textView: textView, coordinator: coordinator))
         onAttach?(textView)
     }
 
-    func detach() {
-        guard textView != nil else { return }
-        textView = nil
-        coordinator = nil
-        onAttach?(nil)
+    /// Detach one view. The others keep working — closing one window must not
+    /// silence the document in the window still open.
+    func detach(textView: NSTextView) {
+        let hadView = attachments.contains { $0.textView === textView }
+        attachments.removeAll { $0.textView === textView || $0.textView == nil }
+        guard hadView else { return }
+        onAttach?(self.textView)
     }
 }
 
