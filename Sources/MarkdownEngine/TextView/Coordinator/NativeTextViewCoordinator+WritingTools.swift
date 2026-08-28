@@ -212,9 +212,11 @@ extension NativeTextViewCoordinator {
         let center = NotificationCenter.default
         wtUndoObserverTokens = [
             center.addObserver(forName: .NSUndoManagerDidUndoChange, object: um, queue: .main) { [weak self] _ in
-                guard let self, let tv = self.textView, self.isWritingToolsActive else { return }
-                self.wtUndoneDuringSession = true
-                self.wtPostUndoSnapshot = tv.string
+                MainActor.assumeIsolated {
+                    guard let self, let tv = self.textView, self.isWritingToolsActive else { return }
+                    self.wtUndoneDuringSession = true
+                    self.wtPostUndoSnapshot = tv.string
+                }
             }
         ]
     }

@@ -110,7 +110,6 @@ struct FlattenedRunsTests {
 
     @Test("Degenerate ranges are dropped, not applied out of bounds")
     func degenerate() {
-        let text = String(repeating: "w", count: 20)
         let ranges: [StyledRange] = [
             (NSRange(location: 5, length: 0), [.foregroundColor: NSColor.red]),
             (NSRange(location: NSNotFound, length: 3), [.foregroundColor: NSColor.red]),

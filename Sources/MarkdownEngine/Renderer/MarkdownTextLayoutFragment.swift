@@ -86,10 +86,11 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// Extend rendering bounds for code-block backgrounds (full container width)
     /// and block images drawn below text via paragraphSpacing.
     nonisolated override var renderingSurfaceBounds: CGRect {
-        // The class is nonisolated because NSTextLayoutFragment is, but every
-        // caller is a TextKit 2 layout callback and those run on the main
-        // thread. Assert it rather than assume it: an off-main call would
-        // otherwise read main-actor state with no diagnostic.
+        // The class is nonisolated because NSTextLayoutFragment is, so each
+        // main-actor read below is hopped individually. This states the whole
+        // contract once and fails loudly if it is ever broken: TextKit 2
+        // creates, measures and draws fragments only from the layout manager's
+        // own main-thread callbacks.
         MainActor.preconditionIsolated("TextKit 2 measures fragments on the main thread")
         var bounds = super.renderingSurfaceBounds
         // Task checkboxes too: the box draws left of the first glyph (marker
@@ -269,8 +270,10 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             effectiveHeight -= lastLF.typographicBounds.height
         }
 
-        let scale = textLayoutManager?.textContainer?.textView?.window?.backingScaleFactor
-            ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        let textView = textLayoutManager?.textContainer?.textView
+        let scale = MainActor.assumeIsolated {
+            textView?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        }
         let rawY = point.y
         let rawMaxY = point.y + effectiveHeight
         let snappedY = floor(rawY * scale) / scale
@@ -552,9 +555,14 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
         let containerWidth = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
         let textView = textLayoutManager?.textContainer?.textView
-        let font = (textView as? NativeTextView)?.baseFont
-            ?? textView?.font
-            ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let fontIdentity = MainActor.assumeIsolated {
+            let font = (textView as? NativeTextView)?.baseFont
+                ?? textView?.font
+                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (name: font.fontName, size: font.pointSize)
+        }
+        let font = NSFont(name: fontIdentity.name, size: fontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fontIdentity.size)
         let containerX = point.x - layoutFragmentFrame.origin.x
 
         // Walk each line fragment in this layout fragment and decorate those
@@ -713,10 +721,16 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// advance so a `•` of a different width still sits where `-`/`*`/`+` was.
     private func drawBulletMarkers(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
-        let selectionRanges: [NSRange] = {
-            guard let tv = textLayoutManager?.textContainer?.textView else { return [] }
-            return tv.selectedRanges.map { $0.rangeValue }.filter { $0.length > 0 }
-        }()
+        let textView = textLayoutManager?.textContainer?.textView
+        let selectionRanges = MainActor.assumeIsolated {
+            textView?.selectedRanges.map { $0.rangeValue }.filter { $0.length > 0 } ?? []
+        }
+        let fallbackFontIdentity = MainActor.assumeIsolated {
+            let font = textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (name: font.fontName, size: font.pointSize)
+        }
+        let fallbackFont = NSFont(name: fallbackFontIdentity.name, size: fallbackFontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fallbackFontIdentity.size)
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -731,7 +745,7 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             guard let pos = self.drawPosition(forDocumentCharAt: attrRange.location, point: point) else { return }
 
             let font = (ts.attribute(.font, at: attrRange.location, effectiveRange: nil) as? NSFont)
-                ?? (self.textLayoutManager?.textContainer?.textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
+                ?? fallbackFont
             // A `.bulletMarker` range means the styler painted the raw char
             // `.clear`, so something must ALWAYS be drawn over the slot. Outside
             // a selection that's the rendered `•`; while the marker sits inside
@@ -765,6 +779,18 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// every item below an insertion read one lower than it renders.
     private func drawOrderedMarkers(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
+        // The view's base font, NOT the run's: the source marker carries the
+        // near-zero hidden-marker font that keeps it invisible under a
+        // selection, and drawing the number at 0.1pt would hide it too.
+        let textView = textLayoutManager?.textContainer?.textView
+        let fontIdentity = MainActor.assumeIsolated {
+            let font = (textView as? NativeTextView)?.baseFont
+                ?? textView?.font
+                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (name: font.fontName, size: font.pointSize)
+        }
+        let font = NSFont(name: fontIdentity.name, size: fontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fontIdentity.size)
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -775,13 +801,6 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         ts.enumerateAttribute(.orderedMarker, in: range, options: []) { [weak self] value, attrRange, _ in
             guard let self, let number = value as? String else { return }
             guard let pos = self.drawPosition(forDocumentCharAt: attrRange.location, point: point) else { return }
-            // The view's base font, NOT the run's: the source marker carries the
-            // near-zero hidden-marker font that keeps it invisible under a
-            // selection, and drawing the number at 0.1pt would hide it too.
-            let textView = self.textLayoutManager?.textContainer?.textView
-            let font = (textView as? NativeTextView)?.baseFont
-                ?? textView?.font
-                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
             let glyph = number as NSString
             let glyphAttrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: theme.bodyText]
             let topY = pos.baselineY - font.ascender
@@ -793,6 +812,24 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     private func drawTaskCheckboxes(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
+        // Use baseFont, NOT NSTextView.font — its getter returns the first
+        // char's font (0.1pt in a heading-first doc → 1px boxes).
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        let fontIdentity = MainActor.assumeIsolated {
+            let font = textView?.baseFont ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (
+                name: font.fontName,
+                size: font.pointSize,
+                checkboxSize: TaskCheckboxGeometry.size(for: font)
+            )
+        }
+        let font = NSFont(name: fontIdentity.name, size: fontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fontIdentity.size)
+        let size = fontIdentity.checkboxSize
+        let scale = MainActor.assumeIsolated {
+            textView?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        }
+        let fallbackStyle = MainActor.assumeIsolated { TaskCheckboxStyle.default }
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -814,19 +851,14 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
             // Box collapsed to 0.1pt, so pos.x sits at the content edge; the
             // square is right-aligned to it (shared with the click hit-test).
-            // Use baseFont, NOT NSTextView.font — its getter returns the first
-            // char's font (0.1pt in a heading-first doc → 1px boxes).
-            let font = (textLayoutManager?.textContainer?.textView as? NativeTextView)?.baseFont
-                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
             let ascent = max(0, font.ascender)
             let descent = max(0, -font.descender)
-            let size = TaskCheckboxGeometry.size(for: font)
-            let boxX = TaskCheckboxGeometry.boxX(contentX: pos.x, size: size)
+            let boxX = MainActor.assumeIsolated {
+                TaskCheckboxGeometry.boxX(contentX: pos.x, size: size)
+            }
             let centerY = pos.baselineY + (descent - ascent) / 2
             let boxY = centerY - size / 2
 
-            let scale = textLayoutManager?.textContainer?.textView?.window?.backingScaleFactor
-                ?? NSScreen.main?.backingScaleFactor ?? 2.0
             func alignToPixel(_ value: CGFloat) -> CGFloat {
                 (value * scale).rounded(.toNearestOrAwayFromZero) / scale
             }
@@ -838,7 +870,6 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             let configuration = configurationSnapshot
             let style = configuration.taskCheckbox
             let symbolName = isChecked ? style.checkedSymbolName : style.uncheckedSymbolName
-            let fallbackStyle = MainActor.assumeIsolated { TaskCheckboxStyle.default }
             let fallbackName = isChecked
                 ? fallbackStyle.checkedSymbolName
                 : fallbackStyle.uncheckedSymbolName

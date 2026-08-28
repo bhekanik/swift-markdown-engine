@@ -72,9 +72,12 @@ extension NativeTextView {
             caretIndicatorObservation?.invalidate()
             observedCaretIndicator = indicator
             caretIndicatorObservation = indicator.observe(\.frame, options: [.new]) { [weak self] _, _ in
-                guard let self, !self.isApplyingCaretShift else { return }
-                self.applyBlockImageCaretPolicy()
-                self.fixPhantomTrailingCaret()
+                // NSTextInsertionIndicator frame changes are driven by AppKit on the main thread.
+                MainActor.assumeIsolated {
+                    guard let self, !self.isApplyingCaretShift else { return }
+                    self.applyBlockImageCaretPolicy()
+                    self.fixPhantomTrailingCaret()
+                }
             }
         }
         guard let ts = textStorage, let indicator = observedCaretIndicator,

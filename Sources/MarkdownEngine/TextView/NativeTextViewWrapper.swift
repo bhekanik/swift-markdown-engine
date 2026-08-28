@@ -290,50 +290,55 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         scrollView.contentView.postsBoundsChangedNotifications = true
         var lastObservedViewportWidth = scrollView.contentView.bounds.width
         NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: scrollView.contentView, queue: nil) { _ in
-            // Refresh code-block overlays only on real viewport width changes, not on TextKit height-only echoes during typing.
-            let newWidth = scrollView.contentView.bounds.width
-            if abs(newWidth - lastObservedViewportWidth) > 0.5 {
-                lastObservedViewportWidth = newWidth
-                // Re-center the column by position (no redraw) so it stays smooth during live resize.
-                // Read readingWidth from the live textView.configuration (a class, captured by
-                // reference) instead of the struct `configuration` captured by value at
-                // makeNSView time — the embedder may change readingWidth between updates.
-                if textView.configuration.readingWidth != nil {
-                    textView.centerReadingColumn(forClipWidth: newWidth)
+            // AppKit posts NSView geometry notifications during main-thread view mutations.
+            MainActor.assumeIsolated {
+                // Refresh code-block overlays only on real viewport width changes, not on TextKit height-only echoes during typing.
+                let newWidth = scrollView.contentView.bounds.width
+                if abs(newWidth - lastObservedViewportWidth) > 0.5 {
+                    lastObservedViewportWidth = newWidth
+                    // Re-center the column by position (no redraw) so it stays smooth during live resize.
+                    // Read readingWidth from the live textView.configuration (a class, captured by
+                    // reference) instead of the struct `configuration` captured by value at
+                    // makeNSView time — the embedder may change readingWidth between updates.
+                    if textView.configuration.readingWidth != nil {
+                        textView.centerReadingColumn(forClipWidth: newWidth)
+                    }
+                    context.coordinator.didEnsureLayoutForCurrentDocument = false
+                    context.coordinator.updateCodeBlockSelection(textView: textView)
                 }
-                context.coordinator.didEnsureLayoutForCurrentDocument = false
-                context.coordinator.updateCodeBlockSelection(textView: textView)
+                // Only react with overscroll recalc when the viewport itself resizes
+                // (window resize). Without this guard, TextKit-induced frame changes echo
+                // back here and re-trigger recalcOverscroll, causing a 149pt height
+                // oscillation after clicks. Compare the CONTAINER (the document view) height
+                // to the viewport — it tracks the viewport for short docs.
+                guard let container = scrollView.documentView as? NativeTextViewContainer else { return }
+                // Read heightBehavior from the live textView.configuration (a class,
+                // captured by reference) — not the struct `configuration` captured by
+                // value at makeNSView time. Without this, a runtime .fitsContent→.scrolls
+                // switch leaves this closure permanently early-returning, so viewport-
+                // resize-driven recalcOverscroll is skipped → stale overscroll.
+                if textView.configuration.heightBehavior == .fitsContent {
+                    // In .fitsContent the container is content-tall (not viewport-tall),
+                    // so the container-vs-viewport guard below is always true — which
+                    // would fire recalcOverscroll on every clip-view frame change. Only
+                    // width changes need a re-measure (text re-wraps); height-only
+                    // changes are already handled by the width-change block above.
+                    return
+                }
+                guard abs(container.frame.height - scrollView.contentView.bounds.height) > 1 else { return }
+                textView.recalcOverscroll(for: scrollView)
+                scrollView.clampToInsets()
             }
-            // Only react with overscroll recalc when the viewport itself resizes
-            // (window resize). Without this guard, TextKit-induced frame changes echo
-            // back here and re-trigger recalcOverscroll, causing a 149pt height
-            // oscillation after clicks. Compare the CONTAINER (the document view) height
-            // to the viewport — it tracks the viewport for short docs.
-            guard let container = scrollView.documentView as? NativeTextViewContainer else { return }
-            // Read heightBehavior from the live textView.configuration (a class,
-            // captured by reference) — not the struct `configuration` captured by
-            // value at makeNSView time. Without this, a runtime .fitsContent→.scrolls
-            // switch leaves this closure permanently early-returning, so viewport-
-            // resize-driven recalcOverscroll is skipped → stale overscroll.
-            if textView.configuration.heightBehavior == .fitsContent {
-                // In .fitsContent the container is content-tall (not viewport-tall),
-                // so the container-vs-viewport guard below is always true — which
-                // would fire recalcOverscroll on every clip-view frame change. Only
-                // width changes need a re-measure (text re-wraps); height-only
-                // changes are already handled by the width-change block above.
-                return
-            }
-            guard abs(container.frame.height - scrollView.contentView.bounds.height) > 1 else { return }
-            textView.recalcOverscroll(for: scrollView)
-            scrollView.clampToInsets()
         }
         NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scrollView.contentView, queue: nil) { _ in
-            textView.ensureVisibleLayout()
-            if context.coordinator.isWritingToolsActive {
-                context.coordinator.fixWritingToolsChildWindowIfNeeded(textView: textView)
+            MainActor.assumeIsolated {
+                textView.ensureVisibleLayout()
+                if context.coordinator.isWritingToolsActive {
+                    context.coordinator.fixWritingToolsChildWindowIfNeeded(textView: textView)
+                }
+                scrollView.clampToInsets()
+                context.coordinator.updateCodeBlockSelection(textView: textView)
             }
-            scrollView.clampToInsets()
-            context.coordinator.updateCodeBlockSelection(textView: textView)
         }
         return scrollView
     }
