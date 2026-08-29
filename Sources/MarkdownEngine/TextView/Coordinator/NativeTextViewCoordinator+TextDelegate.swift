@@ -730,15 +730,15 @@ extension NativeTextViewCoordinator {
         }
         let preController = editorController
         let preRevision = preController?.documentRevision
+        let preStorageGeneration = textStorageMutationGeneration
         if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }
-        // Any completed nested text edit advances the controller revision,
-        // including changes without a published mutation. Checking that O(1)
-        // counter preserves stale-edit rejection without comparing the whole
-        // document again on every keystroke.
+        // The controller revision covers completed engine edits; the storage
+        // generation also covers direct NSTextStorage writes by embedders.
         guard editorController === preController,
-              preController?.documentRevision == preRevision else {
+              preController?.documentRevision == preRevision,
+              textStorageMutationGeneration == preStorageGeneration else {
             discardPendingTextProposal()
             return false
         }

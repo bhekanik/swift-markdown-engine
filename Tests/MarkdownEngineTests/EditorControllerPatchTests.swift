@@ -281,6 +281,34 @@ struct EditorControllerPatchTests {
         #expect(coordinator.pendingEditCount == 0)
     }
 
+    @Test("a direct storage edit invalidates a pending single edit")
+    func directStorageEditInvalidatesPendingSingleEdit() {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let responder = TextFinderResponder()
+        responder.onStringWillChange = {
+            textView.textStorage?.replaceCharacters(
+                in: NSRange(location: 2, length: 1),
+                with: "C"
+            )
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        ) == false)
+
+        #expect(textView.string == "abCdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+    }
+
     @Test("batch storage and publication finish before callback reentry")
     func batchCallbackReentryRunsAfterRequestedPatches() {
         var mutations: [MarkdownTextMutation] = []

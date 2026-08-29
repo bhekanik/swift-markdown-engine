@@ -63,6 +63,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     private var busObservers: [NSObjectProtocol] = []
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
+    /// O(1) boundary token for character edits that bypass the controller's
+    /// completed-mutation revision, such as direct `NSTextStorage` writes.
+    var textStorageMutationGeneration: UInt64 = 0
     /// The view managed through the public AppKit adopt/detach lifecycle.
     /// SwiftUI owns its separate dismantle path.
     weak var appKitAdoptedTextView: NSTextView?
@@ -576,8 +579,21 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         self.fontSize = fontSize
         self.lastSyncedText = text.wrappedValue
         super.init()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleTextStorageDidProcessEditing(_:)),
+            name: NSTextStorage.didProcessEditingNotification,
+            object: nil
+        )
         // Init + didSet share this helper so the observer tracks whichever service is current.
         subscribeToAppearanceNotification()
+    }
+
+    @objc private func handleTextStorageDidProcessEditing(_ notification: Notification) {
+        guard let storage = notification.object as? NSTextStorage,
+              storage === textView?.textStorage,
+              storage.editedMask.contains(.editedCharacters) else { return }
+        textStorageMutationGeneration &+= 1
     }
 
     /// (Re)register the syntax-highlighter appearance observer; idempotent and unsubscribes on nil.
