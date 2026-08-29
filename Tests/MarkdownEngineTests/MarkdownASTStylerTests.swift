@@ -471,6 +471,25 @@ struct MarkdownASTStylerTests {
     }
 
     @MainActor
+    @Test("invalid bare destination escapes never style their labels as links")
+    func invalidBareDestinationEscapesAreNotClickable() {
+        let cases = [
+            #"[x](https://example.com/a\ b)"#,
+            #"[x](https://example.com/a\\ b)"#,
+            "[x](https://example.com/a\\\nb)",
+            #"![x](https://example.com/a\ b)"#,
+            "[id]: /a\\ b\n\n[x][id]",
+        ]
+
+        for source in cases {
+            let rendered = render(source)
+            expectSourceBytesUnchanged(source, rendered)
+            let label = (source as NSString).range(of: "x")
+            #expect(rendered.attribute(.link, at: label.location, effectiveRange: nil) == nil)
+        }
+    }
+
+    @MainActor
     @Test("reference links resolve from full definitions during scoped styling")
     func scopedReferenceLinksUseFullDefinitionMap() throws {
         let source = "[Straße   Note][ STRASSE NOTE ]\n\n[strasse note]: https://example.com \"title\"\n[other]: /two\n"

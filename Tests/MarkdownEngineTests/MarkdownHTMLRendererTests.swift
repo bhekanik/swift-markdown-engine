@@ -63,6 +63,23 @@ struct MarkdownHTMLRendererTests {
 """#)
     }
 
+    @Test("invalid bare destination escapes do not create links or images")
+    func invalidBareDestinationEscapes() {
+        let cases = [
+            #"[x](https://example.com/a\ b)"#,
+            #"[x](https://example.com/a\\ b)"#,
+            "[x](https://example.com/a\\\nb)",
+            #"![x](https://example.com/a\ b)"#,
+            "[id]: /a\\ b\n\n[x][id]",
+        ]
+
+        for source in cases {
+            let rendered = html(source)
+            #expect(!rendered.contains(">x</a>"), "Unexpected active link for \(source.debugDescription)")
+            #expect(!rendered.contains("<img"), "Unexpected active image for \(source.debugDescription)")
+        }
+    }
+
     @Test("fenced code block — language class, no language, html escaping")
     func fencedCode() {
         #expect(html("```swift\nlet x = 1\n```") == "<pre><code class=\"language-swift\">let x = 1</code></pre>")

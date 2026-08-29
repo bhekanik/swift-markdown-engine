@@ -121,6 +121,21 @@ struct MarkdownTextProjectionTests {
         #expect(projection.string == "escaped*alt escaped]alt slash\\\nfoo [bar][foo!]\n\n")
     }
 
+    @Test("invalid bare destination escapes remain literal")
+    func projectsInvalidBareDestinationEscapesLiterally() {
+        let cases: [(source: String, visible: String)] = [
+            (#"[x](https://example.com/a\ b)"#, #"[x](https://example.com/a\ b)"#),
+            (#"[x](https://example.com/a\\ b)"#, #"[x](https://example.com/a\ b)"#),
+            ("[x](https://example.com/a\\\nb)", "[x](https://example.com/a\nb)"),
+            (#"![x](https://example.com/a\ b)"#, #"![x](https://example.com/a\ b)"#),
+            ("[id]: /a\\ b\n\n[x][id]", "[id]: /a\\ b\n\n[x][id]"),
+        ]
+
+        for entry in cases {
+            #expect(project(entry.source).string == entry.visible)
+        }
+    }
+
     @Test("every projected span round-trips across all golden constructs")
     func goldenSpansRoundTrip() {
         for entry in GoldenCorpusTests.corpus {

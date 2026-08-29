@@ -112,6 +112,21 @@ struct MarkdownAccessibilityProjectionTests {
         ])
     }
 
+    @Test("invalid bare destination escapes expose no semantic roles")
+    func invalidBareDestinationEscapes() {
+        let cases = [
+            #"[x](https://example.com/a\ b)"#,
+            #"[x](https://example.com/a\\ b)"#,
+            "[x](https://example.com/a\\\nb)",
+            #"![x](https://example.com/a\ b)"#,
+            "[id]: /a\\ b\n\n[x][id]",
+        ]
+
+        for source in cases {
+            #expect(project(source).spans.isEmpty)
+        }
+    }
+
     @Test("raw mode exposes source text without rendered structure")
     func rawModeIsUnstructuredSource() {
         let source = "# [Heading](https://example.com)\n"

@@ -332,6 +332,25 @@ struct InlineParserTests {
         }
     }
 
+    @Test("bare destinations do not escape whitespace or line endings")
+    func invalidBareDestinationEscapes() {
+        let invalid = [
+            #"[x](https://example.com/a\ b)"#,
+            #"[x](https://example.com/a\\ b)"#,
+            "[x](https://example.com/a\\\nb)",
+            "[x](https://example.com/a\\\\\nb)",
+            #"![x](https://example.com/a\ b)"#,
+        ]
+
+        for source in invalid {
+            #expect(InlineParser.parse(source).allSatisfy { node in
+                if case .link = node { return false }
+                if case .image = node { return false }
+                return true
+            }, "Unexpected active target in \(source.debugDescription)")
+        }
+    }
+
     @Test("full, collapsed, and shortcut reference links preserve their label shape")
     func referenceLinks() {
         #expect(InlineParser.parse("[text][ID]") == [

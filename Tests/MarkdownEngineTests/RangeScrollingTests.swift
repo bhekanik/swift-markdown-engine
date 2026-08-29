@@ -129,6 +129,58 @@ struct RangeScrollingTests {
         #expect(compatibilitySwitches.read() == 0)
     }
 
+    @Test("nearest reveals an entire multiline range that fits the viewport")
+    func revealsFittingMultilineRange() throws {
+        let text = (0..<100)
+            .map { "Line \($0): alpha bravo charlie delta" }
+            .joined(separator: "\n") + "\n"
+        let mounted = try mount(text: text)
+        defer { mounted.window.contentView = nil }
+
+        let ns = text as NSString
+        let start = ns.range(of: "Line 10:").location
+        let end = NSMaxRange(ns.range(of: "Line 20:"))
+        let range = NSRange(location: start, length: end - start)
+        let clipView = mounted.scrollView.contentView
+        let beforeY = clipView.bounds.minY
+
+        #expect(mounted.controller.scroll(range: range, position: .nearest))
+        #expect(clipView.bounds.minY > beforeY)
+
+        let firstLine = try lineRect(at: start, in: mounted.textView)
+            .offsetBy(dx: mounted.textView.frame.minX, dy: mounted.textView.frame.minY)
+        let lastLine = try lineRect(at: end - 1, in: mounted.textView)
+            .offsetBy(dx: mounted.textView.frame.minX, dy: mounted.textView.frame.minY)
+        let visibleTop = clipView.bounds.minY + mounted.scrollView.contentInsets.top
+        let visibleBottom = clipView.bounds.maxY - mounted.scrollView.contentInsets.bottom
+        #expect(firstLine.minY >= visibleTop - 0.5)
+        #expect(lastLine.maxY <= visibleBottom + 0.5)
+
+        #expect(mounted.controller.scroll(range: range, position: .center))
+        #expect(abs(firstLine.union(lastLine).midY - clipView.bounds.midY) < 2)
+    }
+
+    @Test("nearest keeps an intersecting oversized range stable")
+    func oversizedRangeDoesNotOscillate() throws {
+        let text = (0..<100)
+            .map { "Line \($0): alpha bravo charlie delta" }
+            .joined(separator: "\n") + "\n"
+        let mounted = try mount(text: text)
+        defer { mounted.window.contentView = nil }
+
+        let ns = text as NSString
+        let start = ns.range(of: "Line 30:").location
+        let end = NSMaxRange(ns.range(of: "Line 90:"))
+        let range = NSRange(location: start, length: end - start)
+        let clipView = mounted.scrollView.contentView
+
+        #expect(mounted.controller.scroll(range: range, position: .nearest))
+        let firstY = clipView.bounds.minY
+        #expect(firstY > 0)
+        #expect(mounted.controller.scroll(range: range, position: .nearest))
+        #expect(abs(clipView.bounds.minY - firstY) < 0.5)
+    }
+
     @Test("detached and invalid ranges are refused")
     func refusesRangesItCannotScroll() throws {
         let mounted = try mount(text: "alpha\n")

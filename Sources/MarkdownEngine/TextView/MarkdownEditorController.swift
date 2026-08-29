@@ -28,7 +28,7 @@ public struct MarkdownTextPatch: Sendable, Equatable {
 public enum MarkdownScrollPosition: Sendable, Equatable {
     /// Move only enough to reveal a range that is outside the viewport.
     case nearest
-    /// Put the range's line at the vertical center of the viewport.
+    /// Put the range's vertical center at the viewport's vertical center.
     case center
 }
 

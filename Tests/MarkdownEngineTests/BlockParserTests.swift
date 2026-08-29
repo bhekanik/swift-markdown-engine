@@ -158,6 +158,13 @@ struct BlockParserTests {
         #expect(BlockParser.parse(malformed).first?.kind == .paragraph)
     }
 
+    @Test("link definitions do not escape destination whitespace")
+    func invalidBareDefinitionEscapes() {
+        for source in [#"[id]: /a\ b"#, #"[id]: /a\\ b"#] {
+            #expect(BlockParser.parse(source).allSatisfy { $0.kind != .linkDefinition })
+        }
+    }
+
     @Test("footnote definitions include four-space continuation lines")
     func footnoteDefinitionContinuation() throws {
         let text = "[^note]: first\n    *second*\nplain"

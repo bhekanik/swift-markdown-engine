@@ -316,8 +316,8 @@ extension NativeTextView {
             // The inner scroll view has no scrollable range. Propagate the
             // fragment rect to the enclosing page scroller without entering
             // NSTextView's default range-scrolling path.
-            guard let rect = lineRect(for: range, in: textLayoutManager,
-                                      documentLength: documentLength) else { return false }
+            guard let rect = rangeRect(for: range, in: textLayoutManager,
+                                       documentLength: documentLength) else { return false }
             return propagateCaretRevealToEnclosingScroller(rect: rect)
         }
 
@@ -333,8 +333,8 @@ extension NativeTextView {
         // Three passes were sufficient for the 10k-word table/image fixture;
         // the bound prevents an unstable layout from spinning the run loop.
         for _ in 0..<3 {
-            guard let localRect = lineRect(for: range, in: textLayoutManager,
-                                           documentLength: documentLength) else { return false }
+            guard let localRect = rangeRect(for: range, in: textLayoutManager,
+                                            documentLength: documentLength) else { return false }
             let targetRect = localRect.offsetBy(dx: frame.origin.x, dy: frame.origin.y)
             let visibleTop = clipView.bounds.minY + topInset
             let visibleBottom = clipView.bounds.maxY - bottomInset
@@ -342,7 +342,17 @@ extension NativeTextView {
 
             switch position {
             case .nearest:
-                if targetRect.minY < visibleTop {
+                if targetRect.height + 2 * margin > usableHeight {
+                    // A range taller than the viewport cannot be wholly visible.
+                    // Keep an intersecting viewport stable; otherwise reveal its nearest edge.
+                    if targetRect.maxY <= visibleTop {
+                        targetY = targetRect.maxY - clipView.bounds.height + bottomInset + margin
+                    } else if targetRect.minY >= visibleBottom {
+                        targetY = targetRect.minY - topInset - margin
+                    } else {
+                        return true
+                    }
+                } else if targetRect.minY < visibleTop {
                     targetY = targetRect.minY - topInset - margin
                 } else if targetRect.maxY > visibleBottom {
                     targetY = targetRect.maxY - clipView.bounds.height + bottomInset + margin
@@ -365,17 +375,41 @@ extension NativeTextView {
         return true
     }
 
-    /// The target line in text-view coordinates. TextKit reports segment
+    /// The target range in text-view coordinates. TextKit reports segment
     /// geometry in text-container coordinates, so the text-container origin
-    /// carries `textContainerInset` into the result. A caret at document end
-    /// has no fragment at its exact location, so fragment lookup steps back
-    /// while segment lookup still tries the true caret first.
-    private func lineRect(
+    /// carries `textContainerInset` into the result.
+    private func rangeRect(
         for range: NSRange,
         in textLayoutManager: NSTextLayoutManager,
         documentLength: Int
     ) -> CGRect? {
-        let revealOffset = min(range.location, max(0, documentLength - 1))
+        let endOffset = range.length == 0
+            ? range.location
+            : min(range.location + range.length - 1, max(0, documentLength - 1))
+        var result = lineRect(
+            at: range.location,
+            in: textLayoutManager,
+            documentLength: documentLength
+        )
+        if endOffset != range.location,
+           let endRect = lineRect(
+               at: endOffset,
+               in: textLayoutManager,
+               documentLength: documentLength
+           ) {
+            result = result?.union(endRect) ?? endRect
+        }
+        return result
+    }
+
+    /// A caret at document end has no fragment at its exact location, so
+    /// fragment lookup steps back while segment lookup still tries the caret.
+    private func lineRect(
+        at offset: Int,
+        in textLayoutManager: NSTextLayoutManager,
+        documentLength: Int
+    ) -> CGRect? {
+        let revealOffset = min(offset, max(0, documentLength - 1))
         guard let contentManager = textLayoutManager.textContentManager,
               let start = contentManager.location(
                 textLayoutManager.documentRange.location,
@@ -388,7 +422,7 @@ extension NativeTextView {
             options: [.ensuresLayout]
         ) { fragment in
             result = fragment.layoutFragmentFrame
-            for segmentOffset in [min(range.location, documentLength), revealOffset] {
+            for segmentOffset in [min(offset, documentLength), revealOffset] {
                 guard let location = contentManager.location(
                     textLayoutManager.documentRange.location,
                     offsetBy: segmentOffset
