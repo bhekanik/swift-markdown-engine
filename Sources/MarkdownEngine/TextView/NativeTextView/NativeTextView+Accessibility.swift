@@ -293,15 +293,26 @@ extension NativeTextView {
     }
 
     private func accessibilityLocalRect(forSourceRange range: NSRange) -> CGRect? {
-        guard range.length > 0,
+        let sourceLength = (string as NSString).length
+        guard Self.isValidAccessibilityRange(range, length: sourceLength),
               let textLayoutManager,
               let contentManager = textLayoutManager.textContentManager,
               let start = contentManager.location(
                 contentManager.documentRange.location,
                 offsetBy: range.location
-              ),
+              ) else { return nil }
+        if range.length == 0 {
+            return accessibilityCaretRect(
+                at: start,
+                sourceOffset: range.location,
+                textLayoutManager: textLayoutManager,
+                contentManager: contentManager
+            )
+        }
+        guard
               let end = contentManager.location(start, offsetBy: range.length),
               let textRange = NSTextRange(location: start, end: end) else { return nil }
+        textLayoutManager.ensureLayout(for: textRange)
         var result = CGRect.null
         textLayoutManager.enumerateTextSegments(
             in: textRange,
@@ -313,6 +324,50 @@ extension NativeTextView {
             return true
         }
         return result.isNull ? nil : result
+    }
+
+    private func accessibilityCaretRect(
+        at location: NSTextLocation,
+        sourceOffset: Int,
+        textLayoutManager: NSTextLayoutManager,
+        contentManager: NSTextContentManager
+    ) -> CGRect? {
+        let caretRange = NSTextRange(location: location)
+        textLayoutManager.ensureLayout(for: caretRange)
+        var result: CGRect?
+        textLayoutManager.enumerateTextSegments(
+            in: caretRange,
+            type: .standard,
+            options: []
+        ) { _, rect, _, _ in
+            result = CGRect(x: rect.minX, y: rect.minY, width: 0, height: rect.height)
+                .offsetBy(dx: self.textContainerOrigin.x, dy: self.textContainerOrigin.y)
+            return false
+        }
+        if let result, result.height > 0 { return result }
+
+        guard sourceOffset > 0,
+              let previous = contentManager.location(location, offsetBy: -1),
+              let previousRange = NSTextRange(location: previous, end: location)
+        else { return nil }
+        textLayoutManager.ensureLayout(for: previousRange)
+        textLayoutManager.enumerateTextSegments(
+            in: previousRange,
+            type: .selection,
+            options: []
+        ) { _, rect, _, _ in
+            let precedingCharacter = (self.string as NSString).character(at: sourceOffset - 1)
+            let startsNextLine = precedingCharacter == 0x0A || precedingCharacter == 0x0D
+            result = CGRect(
+                x: startsNextLine ? 0 : rect.maxX,
+                y: startsNextLine ? rect.maxY : rect.minY,
+                width: 0,
+                height: rect.height
+            )
+                .offsetBy(dx: self.textContainerOrigin.x, dy: self.textContainerOrigin.y)
+            return false
+        }
+        return result
     }
 
     private static func isValidAccessibilityRange(_ range: NSRange, length: Int) -> Bool {

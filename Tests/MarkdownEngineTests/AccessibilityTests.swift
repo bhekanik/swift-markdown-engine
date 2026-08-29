@@ -182,6 +182,61 @@ struct AccessibilityTests {
         #expect(compatibilitySwitches.read() == 0)
     }
 
+    @Test("caret frames use projected TextKit 2 insertion points")
+    func projectedCaretFrames() throws {
+        let source = "# Alpha [bravo](https://secret.example)\n"
+        let visible = "Alpha bravo\n"
+        let mounted = try mountedView(text: source)
+        defer { mounted.window.contentView = nil }
+
+        let visibleNSString = visible as NSString
+        let offsets = [
+            0,
+            visibleNSString.range(of: "bravo").location,
+            visibleNSString.length,
+        ]
+        let frames = offsets.map { offset in
+            mounted.textView.accessibilityFrame(
+                for: NSRange(location: offset, length: 0)
+            )
+        }
+        for frame in frames {
+            #expect(frame.width == 0)
+            #expect(frame.height > 0)
+            #expect(frame != .zero)
+        }
+        let firstCharacter = mounted.textView.accessibilityFrame(
+            for: NSRange(location: 0, length: 1)
+        )
+        #expect(firstCharacter.width > 0)
+        #expect(frames[0].origin == firstCharacter.origin)
+        #expect(abs(frames[2].minY - frames[0].minY) >= frames[0].height / 2)
+
+        let unterminated = try mountedView(text: "# Alpha")
+        defer { unterminated.window.contentView = nil }
+        let unterminatedStart = unterminated.textView.accessibilityFrame(
+            for: NSRange(location: 0, length: 0)
+        )
+        let unterminatedEnd = unterminated.textView.accessibilityFrame(
+            for: NSRange(location: 5, length: 0)
+        )
+        #expect(abs(unterminatedEnd.minY - unterminatedStart.minY) < 1)
+        #expect(unterminatedEnd.minX > unterminatedStart.minX)
+        #expect(unterminatedEnd.width == 0 && unterminatedEnd.height > 0)
+
+        #expect(mounted.textView.accessibilityFrame(
+            for: NSRange(location: visibleNSString.length + 1, length: 0)
+        ) == .zero)
+        #expect(mounted.textView.accessibilityFrame(
+            for: NSRange(location: NSNotFound, length: 0)
+        ) == .zero)
+
+        let detached = view(text: source)
+        #expect(detached.accessibilityFrame(
+            for: NSRange(location: 0, length: 0)
+        ) == .zero)
+    }
+
     @Test("attributed text carries heading, list, link, image and footnote semantics")
     func attributedStructure() throws {
         let source = """
