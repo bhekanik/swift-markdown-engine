@@ -75,6 +75,36 @@ struct TableCellSourceTests {
         #expect(row.cells.flatMap(\.escapedPipeMarkers).count == 2)
     }
 
+    @Test func everyNormalizedRangeMapsToAValidUTF16SourceRange() throws {
+        let sources = [
+            #"\|"#,
+            #"a\|b"#,
+            #"\|a\|"#,
+            #"🧑🏽‍💻\|z"#,
+            #"[a\|b](u\|v)"#,
+        ]
+        for source in sources {
+            let cell = try #require(
+                MarkdownTableRowSource.row("| \(source) |").cells.first
+            )
+            let normalizedLength = (cell.normalizedText as NSString).length
+            for location in 0...normalizedLength {
+                for length in 0...(normalizedLength - location) {
+                    let mapped = try #require(cell.sourceRange(
+                        forNormalizedRange: NSRange(location: location, length: length)
+                    ))
+                    #expect(mapped.location >= cell.sourceRange.location)
+                    #expect(mapped.length >= 0)
+                    #expect(NSMaxRange(mapped) <= NSMaxRange(cell.sourceRange))
+                }
+            }
+        }
+
+        let escapedPipe = try #require(MarkdownTableRowSource.row(#"| \| |"#).cells.first)
+        #expect(escapedPipe.sourceRange(forNormalizedRange: NSRange(location: 0, length: 0))
+            == NSRange(location: escapedPipe.sourceRange.location + 1, length: 0))
+    }
+
     @Test func escapedPipeLinkSemanticsUseRenderedCellSource() throws {
         let source = #"""
         | Link | Image |

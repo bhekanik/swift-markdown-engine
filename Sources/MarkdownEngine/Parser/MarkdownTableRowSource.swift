@@ -52,6 +52,9 @@ struct MarkdownTableRowSource {
             let end = NSMaxRange(range)
             let start = sourceRange.location + range.location
                 + markerCount(before: range.location, includingBoundary: true)
+            if range.length == 0 {
+                return NSRange(location: start, length: 0)
+            }
             let sourceEnd = sourceRange.location + end
                 + markerCount(before: end, includingBoundary: false)
             return NSRange(location: start, length: sourceEnd - start)
