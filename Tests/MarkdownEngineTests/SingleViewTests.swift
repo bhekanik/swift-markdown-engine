@@ -400,6 +400,37 @@ struct SingleViewTests {
         #expect(attached.string == "ALPHA\n")
     }
 
+    @Test("a remount exposes authoritative text before Finder attaches")
+    func remountFinderSeesAuthoritativeText() throws {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let host = NSHostingView(rootView: IdentityHost(controller: controller, identity: 1))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        _ = try #require(controller.textView)
+        #expect(controller.applyPatch(
+            range: NSRange(location: 0, length: 5),
+            replacement: "ALPHA"
+        ))
+
+        let responder = TextFinderResponder()
+        var attachedProjections: [String] = []
+        controller.onAttach = { textView in
+            guard textView != nil else { return }
+            attachedProjections.append(controller.textProjection.string)
+            controller.textFinderActionResponder = responder
+        }
+
+        host.rootView = IdentityHost(controller: controller, identity: 2)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        host.layoutSubtreeIfNeeded()
+
+        #expect(controller.textProjection.string == "ALPHA\n")
+        #expect(attachedProjections == ["ALPHA\n"])
+        #expect(responder.stringWillChangeCount == 0)
+    }
+
     // MARK: - Two windows, the supported way
 
     /// Two windows on one document are two controllers, each with its own

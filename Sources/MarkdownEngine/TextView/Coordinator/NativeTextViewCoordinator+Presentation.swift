@@ -104,7 +104,14 @@ extension NativeTextViewCoordinator {
     /// already been told about.
     func takeOverFreedController(_ controller: MarkdownEditorController) {
         guard let textView, editorController == nil else { return }
-        guard controller.attach(textView: textView, coordinator: self) else { return }
+        // `onAttach` can install Finder and read its client immediately. Reserve
+        // the slot now, but announce it only after this view uses the document's
+        // authoritative storage instead of its stale SwiftUI snapshot.
+        guard controller.attach(
+            textView: textView,
+            coordinator: self,
+            notifyEmbedder: false
+        ) else { return }
         editorController = controller
         isDetachedFromDocument = false
 
@@ -123,6 +130,7 @@ extension NativeTextViewCoordinator {
         invalidateParseCache()
         rebuildTextStorageAndStyle(textView, from: authoritative, invalidateLayout: true)
         didInitialFormatting = true
+        controller.notifyEmbedderOfAttachment(textView)
         reportAttachment(textView)
     }
 }

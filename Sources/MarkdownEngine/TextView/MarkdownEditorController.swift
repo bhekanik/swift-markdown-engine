@@ -352,7 +352,11 @@ public final class MarkdownEditorController {
     ///   different view is already attached; the caller must not then treat this
     ///   controller as its own.
     @discardableResult
-    func attach(textView: NSTextView, coordinator: NativeTextViewCoordinator) -> Bool {
+    func attach(
+        textView: NSTextView,
+        coordinator: NativeTextViewCoordinator,
+        notifyEmbedder: Bool = true
+    ) -> Bool {
         // A view that has been deallocated is not an attachment holding the
         // slot; `weak` already emptied it.
         if attachment?.textView == nil { attachment = nil }
@@ -370,8 +374,13 @@ public final class MarkdownEditorController {
         }
         let isNewView = attachment?.textView !== textView
         attachment = Attachment(textView: textView, coordinator: coordinator)
-        if isNewView { onAttach?(textView) }
+        if isNewView, notifyEmbedder { onAttach?(textView) }
         return true
+    }
+
+    func notifyEmbedderOfAttachment(_ textView: NSTextView) {
+        guard attachment?.textView === textView else { return }
+        onAttach?(textView)
     }
 
     /// A view that asked for this controller while another still held it.
