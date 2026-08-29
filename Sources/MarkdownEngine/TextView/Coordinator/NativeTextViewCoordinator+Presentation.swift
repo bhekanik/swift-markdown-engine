@@ -103,7 +103,9 @@ extension NativeTextViewCoordinator {
     /// left behind, and writing it back would revert edits the embedder has
     /// already been told about.
     func takeOverFreedController(_ controller: MarkdownEditorController) {
-        guard let textView, editorController == nil else { return }
+        guard let textView,
+              editorController == nil,
+              requestedControllerWhileDetached === controller else { return }
         // `onAttach` can install Finder and read its client immediately. Reserve
         // the slot now, but announce it only after this view uses the document's
         // authoritative storage instead of its stale SwiftUI snapshot.
@@ -113,6 +115,7 @@ extension NativeTextViewCoordinator {
             notifyEmbedder: false
         ) else { return }
         editorController = controller
+        requestedControllerWhileDetached = nil
         pendingAttachmentAnnouncement = controller
         hasPendingAttachmentAnnouncement = true
         isDetachedFromDocument = false
@@ -131,6 +134,13 @@ extension NativeTextViewCoordinator {
         previousDisplayLength = (authoritative as NSString).length
         invalidateParseCache()
         rebuildTextStorageAndStyle(textView, from: authoritative, invalidateLayout: true)
+        if let restoreKey = pendingSelectionRestore {
+            let remembered = selectionByDocument[restoreKey] ?? NSRange(location: 0, length: 0)
+            textView.setSelectedRange(
+                remembered.clamped(toLength: (authoritative as NSString).length)
+            )
+            pendingSelectionRestore = nil
+        }
         didInitialFormatting = true
         reportPendingAttachment(textView)
     }

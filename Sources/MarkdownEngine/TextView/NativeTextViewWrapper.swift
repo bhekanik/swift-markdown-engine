@@ -302,6 +302,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             ) {
             context.coordinator.pendingAttachmentAnnouncement = owner
             context.coordinator.hasPendingAttachmentAnnouncement = true
+            context.coordinator.requestedControllerWhileDetached = nil
             context.coordinator.isDetachedFromDocument = false
         } else if controller != nil {
             // Refused above. Ask to be handed the controller when it frees up:
@@ -309,11 +310,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             // original and then sends this view no further update pass, so
             // re-checking on the next pass would never happen.
             context.coordinator.editorController = nil
+            context.coordinator.requestedControllerWhileDetached = controller
             context.coordinator.isDetachedFromDocument = true
             controller?.awaitSlot(context.coordinator)
             context.coordinator.reportAttachment(nil)
         } else {
             context.coordinator.editorController = nil
+            context.coordinator.requestedControllerWhileDetached = nil
             context.coordinator.isDetachedFromDocument = false
             context.coordinator.hasPendingAttachmentAnnouncement = true
         }
@@ -388,7 +391,15 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             return
         }
         let isNodeSwitch = context.coordinator.documentId != documentId
-        let controllerChanged = context.coordinator.editorController !== controller
+        let targetControllerIsUnavailable = controller.map {
+            $0.isAttached && $0.textView !== textView
+        } == true
+        let currentController = context.coordinator.editorController
+            ?? context.coordinator.requestedControllerWhileDetached
+        let waitingControllerBecameAvailable =
+            context.coordinator.requestedControllerWhileDetached === controller
+            && !targetControllerIsUnavailable
+        let controllerChanged = currentController !== controller || waitingControllerBecameAvailable
 
         // Scroll persistence belongs to the SwiftUI wrapper, not the attached
         // document, so its current closures are always safe to refresh here.
@@ -465,14 +476,10 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // before building: a controller that already drives another view
         // refuses this one, and the swap below would otherwise leave this view
         // laying out through a document it is not attached to.
-        if controllerChanged, let controller, controller.isAttached,
-           controller.textView !== textView {
+        if targetControllerIsUnavailable && controllerChanged {
             NSLog("MarkdownEngine: a view asked to show a document that already has one. "
                   + "A controller drives exactly one view — give a second window its own "
                   + "MarkdownEditorController and forward onTextMutation into its applyPatch.")
-            context.coordinator.isDetachedFromDocument = true
-            controller.awaitSlot(context.coordinator)
-            return
         }
         if controllerChanged {
             if let previous = context.coordinator.editorController {
@@ -495,6 +502,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 textView.setSelectedRange(NSRange(location: 0, length: 0))
             }
             context.coordinator.onAttachmentChange = onAttachmentChange
+            context.coordinator.resetAttachmentReportForNewObserver()
             context.coordinator.onTextMutation = onTextMutation
             context.coordinator.onBuildContextMenu = onBuildContextMenu
             context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
@@ -508,8 +516,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             // the layout manager leaves the view with no content manager and
             // the selection it reads back afterwards is neither zero nor in
             // range (measured: 1235 against a length of 0).
-            context.coordinator.editorController = controller
-            if let controller, let layoutManager = textView.textLayoutManager {
+            context.coordinator.editorController = targetControllerIsUnavailable ? nil : controller
+            context.coordinator.requestedControllerWhileDetached = nil
+            if !targetControllerIsUnavailable,
+               let controller,
+               let layoutManager = textView.textLayoutManager {
                 controller.adopt(layoutManager: layoutManager)
             } else if let layoutManager = textView.textLayoutManager,
                       layoutManager.textContentManager == nil {
@@ -523,22 +534,28 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.invalidateParseCache()
             context.coordinator.pendingSelectionRestore = controller.map { ObjectIdentifier($0) }
         }
-        // A view this controller refused — another view already has it — must
-        // not go on to write the document's configuration or rebuild its
-        // storage from this view's text.
-        if let controller,
-           !controller.attach(
-                textView: textView,
-                coordinator: context.coordinator,
-                notifyEmbedder: false
-           ) {
-            return
+        // An unavailable target cannot own this view yet. Keep the requested
+        // snapshot isolated and inert until the controller hands over its storage.
+        if targetControllerIsUnavailable, let controller {
+            context.coordinator.isDetachedFromDocument = true
+            context.coordinator.requestedControllerWhileDetached = controller
+            controller.awaitSlot(context.coordinator)
+        } else {
+            if let controller,
+               !controller.attach(
+                    textView: textView,
+                    coordinator: context.coordinator,
+                    notifyEmbedder: false
+               ) {
+                return
+            }
+            if controllerChanged || (controller == nil && context.coordinator.isDetachedFromDocument) {
+                context.coordinator.pendingAttachmentAnnouncement = controller
+                context.coordinator.hasPendingAttachmentAnnouncement = true
+            }
+            context.coordinator.requestedControllerWhileDetached = nil
+            context.coordinator.isDetachedFromDocument = false
         }
-        if controllerChanged || (controller == nil && context.coordinator.isDetachedFromDocument) {
-            context.coordinator.pendingAttachmentAnnouncement = controller
-            context.coordinator.hasPendingAttachmentAnnouncement = true
-        }
-        context.coordinator.isDetachedFromDocument = false
         context.coordinator.configuration.undo = configuration.undo
         textView.configuration.undo = configuration.undo
         textView.allowsUndo = configuration.undo == .engine
@@ -709,7 +726,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // The new document is laid out, so its remembered caret is meaningful
         // again — clamped, because the document it was recorded in may have
         // been longer than this one.
-        if let restoreKey = context.coordinator.pendingSelectionRestore {
+        if !targetControllerIsUnavailable,
+           let restoreKey = context.coordinator.pendingSelectionRestore {
             let remembered = context.coordinator.selectionByDocument[restoreKey]
                 ?? NSRange(location: 0, length: 0)
             textView.setSelectedRange(
@@ -768,6 +786,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         context.coordinator.didInitialFormatting = true
+        if targetControllerIsUnavailable && controllerChanged {
+            context.coordinator.reportAttachment(nil)
+        }
         context.coordinator.reportPendingAttachment(textView)
     }
 

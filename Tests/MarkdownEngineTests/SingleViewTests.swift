@@ -689,6 +689,156 @@ struct SingleViewTests {
         #expect(events == ["A:on", "A:off", "B:on"])
     }
 
+    @Test("an occupied controller swap takes over when the target frees")
+    func occupiedControllerSwapTakesOverWithoutAnotherUpdate() throws {
+        _ = NSApplication.shared
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        let (occupyingView, _) = view(on: documentB, text: "bravo\n")
+        let text = MutableTextBox("alpha\n")
+        var events: [String] = []
+        var mutationsA: [MarkdownTextMutation] = []
+        var mutationsB: [MarkdownTextMutation] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: documentA,
+            onMutation: { mutationsA.append($0) },
+            onAttachmentChange: { events.append("A:\($0 == nil ? "off" : "on")") }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let targetView = try #require(documentA.textView)
+
+        text.value = "bravo\n"
+        let targetRoot = MutableAttachmentHost(
+            text: text,
+            controller: documentB,
+            onMutation: { mutation in
+                mutationsB.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+        )
+        host.rootView = targetRoot
+        host.layoutSubtreeIfNeeded()
+
+        #expect(documentA.textView == nil)
+        #expect(documentB.textView === occupyingView)
+        #expect(targetView.string == "bravo\n")
+        #expect(targetView.textLayoutManager?.textContentManager !== documentA.textContentStorage)
+        #expect(targetView.textLayoutManager?.textContentManager !== documentB.textContentStorage)
+        #expect(events == ["A:on", "A:off", "B:off"])
+
+        host.rootView = targetRoot
+        host.layoutSubtreeIfNeeded()
+        #expect(documentA.textView == nil)
+        #expect(documentB.textView === occupyingView)
+        #expect(targetView.string == "bravo\n")
+        #expect(events == ["A:on", "A:off", "B:off"])
+
+        targetView.insertText("?", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        #expect(targetView.string == "bravo?\n")
+        #expect(text.value == "bravo\n")
+        #expect(mutationsA.isEmpty)
+        #expect(mutationsB.isEmpty)
+
+        documentB.detach(textView: occupyingView)
+
+        #expect(documentB.textView === targetView)
+        #expect(targetView.textLayoutManager?.textContentManager === documentB.textContentStorage)
+        #expect(targetView.string == "bravo\n")
+        #expect(events == ["A:on", "A:off", "B:off", "B:on"])
+
+        targetView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        #expect(text.value == "bravo!\n")
+        #expect(targetView.string == "bravo!\n")
+        #expect(mutationsA.isEmpty)
+        #expect(mutationsB == [MarkdownTextMutation(
+            range: NSRange(location: 5, length: 0),
+            replacement: "!"
+        )])
+    }
+
+    @Test("an occupied swap can free the target from its detached callback")
+    func occupiedControllerSwapHandlesReentrantRelease() throws {
+        _ = NSApplication.shared
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        let (occupyingView, _) = view(on: documentB, text: "bravo\n")
+        let text = MutableTextBox("alpha\n")
+        var events: [String] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: documentA,
+            onMutation: { _ in },
+            onAttachmentChange: { events.append("A:\($0 == nil ? "off" : "on")") }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let targetView = try #require(documentA.textView)
+
+        text.value = "bravo\n"
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: documentB,
+            onMutation: { text.apply($0) },
+            onAttachmentChange: { textView in
+                events.append("B:\(textView == nil ? "off" : "on")")
+                if textView == nil {
+                    documentB.detach(textView: occupyingView)
+                }
+            }
+        )
+        host.layoutSubtreeIfNeeded()
+
+        #expect(documentA.textView == nil)
+        #expect(documentB.textView === targetView)
+        #expect(targetView.textLayoutManager?.textContentManager === documentB.textContentStorage)
+        #expect(targetView.string == "bravo\n")
+        #expect(events == ["A:on", "A:off", "B:off", "B:on"])
+    }
+
+    @Test("an occupied swap restores the target document selection after takeover")
+    func occupiedControllerSwapRestoresTargetSelection() throws {
+        _ = NSApplication.shared
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        let host = NSHostingView(rootView: ControllerSwapHost(
+            controller: documentB,
+            label: "B",
+            text: "bravo\n",
+            record: { _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let targetView = try #require(documentB.textView)
+        targetView.setSelectedRange(NSRange(location: 3, length: 0))
+
+        host.rootView = ControllerSwapHost(
+            controller: documentA,
+            label: "A",
+            text: "alpha\n",
+            record: { _ in }
+        )
+        host.layoutSubtreeIfNeeded()
+        let (occupyingView, _) = view(on: documentB, text: "bravo\n")
+
+        host.rootView = ControllerSwapHost(
+            controller: documentB,
+            label: "B",
+            text: "bravo\n",
+            record: { _ in }
+        )
+        host.layoutSubtreeIfNeeded()
+
+        documentB.detach(textView: occupyingView)
+
+        #expect(documentB.textView === targetView)
+        #expect(targetView.selectedRange() == NSRange(location: 3, length: 0))
+    }
+
     @Test("selection-derived callbacks switch before the incoming document rebuilds")
     func controllerSwapUsesIncomingSelectionCallbacks() throws {
         _ = NSApplication.shared

@@ -67,6 +67,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// Embedder handle for external patches and the text-view seam. Weak: the
     /// embedder owns it and outlives the editor.
     weak var editorController: MarkdownEditorController?
+    /// The requested document while its controller is still driving another view.
+    /// Kept separate so this view can stay isolated yet accept the later handoff.
+    weak var requestedControllerWhileDetached: MarkdownEditorController?
     var onAttachmentChange: ((NSTextView?) -> Void)?
     /// Reserved controller whose public attachment callbacks must wait until
     /// `updateNSView` has synchronized storage, styling, and host callbacks.
@@ -87,6 +90,11 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         onAttachmentChange?(textView)
     }
 
+    func resetAttachmentReportForNewObserver() {
+        didReportAttachment = false
+        reportedAttachedTextView = nil
+    }
+
     func reportPendingAttachment(_ textView: NSTextView) {
         guard hasPendingAttachmentAnnouncement else { return }
         hasPendingAttachmentAnnouncement = false
@@ -103,6 +111,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
               controller.textView === textView else {
             if editorController === controller {
                 editorController = nil
+                requestedControllerWhileDetached = nil
                 isDetachedFromDocument = true
             }
             return
@@ -120,8 +129,8 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     ///
     /// It is showing its text on a TextKit stack of its own and speaks for
     /// nobody: its edits are not the document's edits, so they must not reach
-    /// the embedder's binding or its edit feed. Cleared by
-    /// ``takeOverFreedController(_:)`` when the document frees up.
+    /// the embedder's binding or its edit feed. Cleared when the requested
+    /// controller frees or the wrapper selects another available target.
     var isDetachedFromDocument = false
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
