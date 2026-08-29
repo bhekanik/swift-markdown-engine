@@ -625,17 +625,11 @@ enum InlineParser {
                         continue scan
                     }
                 }
-                if character == langle {
-                    var angleClose = i + 1
-                    while angleClose < end {
-                        let angleCharacter = ns.character(at: angleClose)
-                        if angleCharacter == newline || angleCharacter == carriageReturn { break }
-                        if angleCharacter == rangle {
-                            i = angleClose + 1
-                            continue scan
-                        }
-                        angleClose += 1
-                    }
+                if character == langle,
+                   let angleSpan = matchAutolink(ns, end, start: i)
+                    ?? matchRawHTMLTag(ns, end, start: i) {
+                    i = NSMaxRange(angleSpan.fullRange)
+                    continue
                 } else if character == lbracket {
                     depth += 1
                 } else if character == rbracket {

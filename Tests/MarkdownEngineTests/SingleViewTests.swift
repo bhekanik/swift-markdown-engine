@@ -1372,6 +1372,28 @@ struct SingleViewTests {
         }
     }
 
+    private struct PersistenceReentryHost: View {
+        let text: String
+        let documentId: String
+        let controller: MarkdownEditorController
+        let onMutation: (MarkdownTextMutation) -> Void
+        let onAttachmentChange: (NSTextView?) -> Void
+        let persist: (String, CGFloat) -> Void
+
+        var body: some View {
+            NativeTextViewWrapper(
+                text: .constant(text),
+                controller: controller,
+                fontName: "Helvetica",
+                fontSize: 16,
+                documentId: documentId,
+                onAttachmentChange: onAttachmentChange,
+                onTextMutation: onMutation,
+                onPersistScrollOffset: persist
+            )
+        }
+    }
+
     private struct MutableAttachmentHost: View {
         let text: MutableTextBox
         let controller: MarkdownEditorController?
@@ -1759,6 +1781,140 @@ struct SingleViewTests {
             range: NSRange(location: 0, length: 5),
             replacement: "ALPHA"
         )])
+    }
+
+    @Test("a persistence callback cannot overwrite an incoming controller mutation")
+    func persistenceReentryPreservesIncomingAuthority() throws {
+        _ = NSApplication.shared
+        let first = MarkdownEditorController()
+        let second = MarkdownEditorController()
+        var persistedPatch: Bool?
+        var mutations: [MarkdownTextMutation] = []
+        var attachments: [String] = []
+
+        let host = NSHostingView(rootView: PersistenceReentryHost(
+            text: "alpha",
+            documentId: "A",
+            controller: first,
+            onMutation: { _ in },
+            onAttachmentChange: { attachments.append("A:\($0 == nil ? "off" : "on")") },
+            persist: { _, _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        func secondRoot(_ text: String) -> PersistenceReentryHost {
+            PersistenceReentryHost(
+                text: text,
+                documentId: "B",
+                controller: second,
+                onMutation: { mutations.append($0) },
+                onAttachmentChange: { attachments.append("B:\($0 == nil ? "off" : "on")") },
+                persist: { _, _ in
+                    persistedPatch = second.applyPatch(
+                        range: NSRange(location: 0, length: 0),
+                        replacement: "X"
+                    )
+                }
+            )
+        }
+
+        host.rootView = secondRoot("bravo")
+        host.layoutSubtreeIfNeeded()
+
+        let secondView = try #require(second.textView)
+        #expect(persistedPatch == true)
+        #expect(secondView.string == "Xbravo")
+        #expect(second.text == "Xbravo")
+        #expect(secondView.textLayoutManager?.textContentManager === second.textContentStorage)
+        #expect(second.selectedRange == NSRange(location: 0, length: 0))
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 0, length: 0),
+            replacement: "X"
+        )])
+        #expect(attachments == ["A:on", "A:off", "B:on"])
+
+        persistedPatch = nil
+        host.rootView = secondRoot("bravo")
+        host.layoutSubtreeIfNeeded()
+        #expect(second.text == "Xbravo")
+        #expect(persistedPatch == nil)
+        #expect(mutations.count == 1)
+        #expect(attachments == ["A:on", "A:off", "B:on"])
+
+        host.rootView = secondRoot("Xbravo")
+        host.layoutSubtreeIfNeeded()
+        host.rootView = secondRoot("Ybravo")
+        host.layoutSubtreeIfNeeded()
+        #expect(second.text == "Ybravo")
+        #expect(mutations.count == 1)
+    }
+
+    @Test("persistence callback authority stays with the document it mutates")
+    func persistenceReentryControls() {
+        _ = NSApplication.shared
+
+        let outgoing = MarkdownEditorController()
+        let incoming = MarkdownEditorController()
+        var outgoingPatch: Bool?
+        var hostState = 0
+        let host = NSHostingView(rootView: PersistenceReentryHost(
+            text: "alpha",
+            documentId: "A",
+            controller: outgoing,
+            onMutation: { _ in },
+            onAttachmentChange: { _ in },
+            persist: { _, _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        host.rootView = PersistenceReentryHost(
+            text: "bravo",
+            documentId: "B",
+            controller: incoming,
+            onMutation: { _ in },
+            onAttachmentChange: { _ in },
+            persist: { _, _ in
+                hostState += 1
+                outgoingPatch = outgoing.applyPatch(
+                    range: NSRange(location: 0, length: 0),
+                    replacement: "X"
+                )
+            }
+        )
+        host.layoutSubtreeIfNeeded()
+        #expect(hostState == 1)
+        #expect(outgoingPatch == false)
+        #expect(incoming.text == "bravo")
+
+        let shared = MarkdownEditorController()
+        var sharedPatch: Bool?
+        let sharedHost = NSHostingView(rootView: PersistenceReentryHost(
+            text: "alpha",
+            documentId: "A",
+            controller: shared,
+            onMutation: { _ in },
+            onAttachmentChange: { _ in },
+            persist: { _, _ in }
+        ))
+        sharedHost.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        sharedHost.layoutSubtreeIfNeeded()
+        sharedHost.rootView = PersistenceReentryHost(
+            text: "bravo",
+            documentId: "B",
+            controller: shared,
+            onMutation: { _ in },
+            onAttachmentChange: { _ in },
+            persist: { _, _ in
+                sharedPatch = shared.applyPatch(
+                    range: NSRange(location: 0, length: 0),
+                    replacement: "X"
+                )
+            }
+        )
+        sharedHost.layoutSubtreeIfNeeded()
+        #expect(sharedPatch == true)
+        #expect(shared.text == "bravo")
     }
 
     @Test("reentrant teardown does not publish a late wrapper attachment")

@@ -745,7 +745,29 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 }
                 // The embedder's store applies its own retention — it is asked live,
                 // so it can see what the snapshot above was taken too early to know.
+                let incomingController = context.coordinator.editorController
+                let incomingRevision = incomingController?.documentRevision
                 onPersistScrollOffset?(outgoingId, offsetY)
+                if controllerChanged,
+                   incomingController === controller,
+                   context.coordinator.editorController === incomingController,
+                   incomingController?.documentRevision != incomingRevision {
+                    if let incomingController,
+                       let incomingRevision,
+                       let records = incomingController.documentMutationRecords(after: incomingRevision),
+                       let replayed = Self.replayDocumentMutations(records, onto: textToSynchronize) {
+                        textToSynchronize = replayed
+                    } else {
+                        textToSynchronize = textView.string
+                    }
+                    if let controller, textToSynchronize != text {
+                        context.coordinator.staleBindingAfterControllerTakeover = (
+                            ObjectIdentifier(controller),
+                            documentId,
+                            text
+                        )
+                    }
+                }
             }
             // Snapshot the outgoing document's content so a later
             // switch-back can detect a file rewritten while it was backgrounded.
@@ -916,6 +938,25 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.reportAttachment(nil)
         }
         context.coordinator.reportPendingAttachment(textView)
+    }
+
+    private static func replayDocumentMutations(
+        _ records: [MarkdownDocumentMutationRecord],
+        onto text: String
+    ) -> String? {
+        let result = NSMutableString(string: text)
+        for record in records {
+            guard let mutation = record.mutation else { continue }
+            let length = result.length
+            guard mutation.range.location >= 0,
+                  mutation.range.location <= length,
+                  mutation.range.length >= 0,
+                  mutation.range.length <= length - mutation.range.location else {
+                return nil
+            }
+            result.replaceCharacters(in: mutation.range, with: mutation.replacement)
+        }
+        return result as String
     }
 
     public func makeCoordinator() -> Coordinator {

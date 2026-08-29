@@ -153,6 +153,11 @@ struct CoordinatorAdoptTests {
         var value = 0
     }
 
+    private final class SelectionEventRecorder: @unchecked Sendable {
+        var events: [String] = []
+        var didReenter = false
+    }
+
     @Test("adopt wires the delegate, styles the document and attaches the controller")
     func adoptWiresEverything() throws {
         _ = NSApplication.shared
@@ -710,5 +715,96 @@ struct CoordinatorAdoptTests {
         #expect(controller.documentRevision == 0)
         #expect(controller.documentMutationDelta == 0)
         #expect(controller.documentPublishedDelta == 0)
+    }
+
+    @Test("selection notification reentry leaves the current caret state last")
+    func selectionNotificationReentryAbortsStaleSequence() {
+        _ = NSApplication.shared
+        let bold = Notification.Name("CoordinatorAdoptTests.selectionReentryBold")
+        let italic = Notification.Name("CoordinatorAdoptTests.selectionReentryItalic")
+        let highlight = Notification.Name("CoordinatorAdoptTests.selectionReentryHighlight")
+        var configuration = MarkdownEditorConfiguration.default
+        configuration.services.bus.selectionBoldDidChange = bold
+        configuration.services.bus.selectionItalicDidChange = italic
+        configuration.services.bus.selectionHighlightDidChange = highlight
+        let controller = MarkdownEditorController()
+        let coordinator = NativeTextViewWrapper(
+            text: .constant("**b** *i*"),
+            configuration: configuration,
+            controller: controller
+        ).makeCoordinator()
+        let textView = NSTextView(usingTextLayoutManager: true)
+        #expect(coordinator.adopt(textView, text: "**b** *i*"))
+
+        let recorder = SelectionEventRecorder()
+        let center = NotificationCenter.default
+        let boldObserver = center.addObserver(forName: bold, object: nil, queue: nil) { note in
+            let value = note.userInfo?["isBold"] as? Bool ?? false
+            MainActor.assumeIsolated {
+                recorder.events.append("B:\(value)")
+                if value, !recorder.didReenter {
+                    recorder.didReenter = true
+                    controller.selectedRange = NSRange(location: 7, length: 0)
+                }
+            }
+        }
+        let italicObserver = center.addObserver(forName: italic, object: nil, queue: nil) { note in
+            let value = note.userInfo?["isItalic"] as? Bool ?? false
+            MainActor.assumeIsolated { recorder.events.append("I:\(value)") }
+        }
+        let highlightObserver = center.addObserver(forName: highlight, object: nil, queue: nil) { note in
+            let value = note.userInfo?["isHighlight"] as? Bool ?? false
+            MainActor.assumeIsolated { recorder.events.append("H:\(value)") }
+        }
+        defer {
+            center.removeObserver(boldObserver)
+            center.removeObserver(italicObserver)
+            center.removeObserver(highlightObserver)
+        }
+
+        controller.selectedRange = NSRange(location: 2, length: 0)
+
+        #expect(controller.selectedRange == NSRange(location: 7, length: 0))
+        #expect(recorder.events == ["B:true", "B:false", "I:true", "H:false"])
+    }
+
+    @Test("selection notification detachment aborts the remaining state sequence")
+    func selectionNotificationDetachmentAbortsSequence() {
+        _ = NSApplication.shared
+        let bold = Notification.Name("CoordinatorAdoptTests.selectionDetachBold")
+        let italic = Notification.Name("CoordinatorAdoptTests.selectionDetachItalic")
+        var configuration = MarkdownEditorConfiguration.default
+        configuration.services.bus.selectionBoldDidChange = bold
+        configuration.services.bus.selectionItalicDidChange = italic
+        let controller = MarkdownEditorController()
+        let coordinator = NativeTextViewWrapper(
+            text: .constant("**b** *i*"),
+            configuration: configuration,
+            controller: controller
+        ).makeCoordinator()
+        let textView = NSTextView(usingTextLayoutManager: true)
+        #expect(coordinator.adopt(textView, text: "**b** *i*"))
+
+        let recorder = SelectionEventRecorder()
+        let center = NotificationCenter.default
+        let boldObserver = center.addObserver(forName: bold, object: nil, queue: nil) { note in
+            let value = note.userInfo?["isBold"] as? Bool ?? false
+            MainActor.assumeIsolated {
+                recorder.events.append("B:\(value)")
+                #expect(coordinator.detach(textView))
+            }
+        }
+        let italicObserver = center.addObserver(forName: italic, object: nil, queue: nil) { _ in
+            MainActor.assumeIsolated { recorder.events.append("I") }
+        }
+        defer {
+            center.removeObserver(boldObserver)
+            center.removeObserver(italicObserver)
+        }
+
+        controller.selectedRange = NSRange(location: 2, length: 0)
+
+        #expect(recorder.events == ["B:true"])
+        #expect(!controller.isAttached)
     }
 }

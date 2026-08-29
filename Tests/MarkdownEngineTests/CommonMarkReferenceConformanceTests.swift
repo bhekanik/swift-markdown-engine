@@ -247,6 +247,62 @@ struct CommonMarkReferenceConformanceTests {
         #expect(MarkdownHTMLRenderer.html(from: escapedAngle).contains("href=\"/uri\""))
     }
 
+    @Test("recognized angle spans control bracket association inside link and image labels")
+    func quotedRawHTMLInsideLabels() {
+        let referenceLabels = [
+            #"outer <x attr="> [">"#,
+            #"outer <x attr='> ['>"#,
+        ]
+        for label in referenceLabels {
+            let source = "[\(label)][ref]\n\n[ref]: /uri\n"
+            let ast = DocumentAST.parse(source)
+            #expect(linkCounts(in: ast).references == 1)
+            #expect(MarkdownHTMLRenderer.html(from: source)
+                .contains("<a href=\"/uri\">\(escapedHTML(label))</a>"))
+            #expect(MarkdownTextProjection.make(markdown: source).string == "\(label)\n\n")
+
+            let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+            #expect(accessibility.text.string == "\(label)\n\n")
+            #expect(accessibility.spans.contains(where: { span in
+                span.role == .link(destination: "/uri")
+                    && span.visibleRange == NSRange(location: 0, length: (label as NSString).length)
+            }))
+
+            let styled = MarkdownRendering.attributedString(
+                for: source,
+                fontName: NSFont.systemFont(ofSize: 16).fontName,
+                fontSize: 16
+            )
+            #expect(styled.attribute(.link, at: 1, effectiveRange: nil) != nil)
+            #expect(styled.attribute(.link, at: (label as NSString).length, effectiveRange: nil) != nil)
+        }
+
+        let inlineLabel = #"outer <x attr="> [">"#
+        let inline = "[\(inlineLabel)](https://example.com)"
+        #expect(semanticInlines(in: DocumentAST.parse(inline)).links == 1)
+        #expect(MarkdownHTMLRenderer.html(from: inline)
+            == "<p><a href=\"https://example.com\">\(escapedHTML(inlineLabel))</a></p>")
+        #expect(MarkdownTextProjection.make(markdown: inline).string == inlineLabel)
+        #expect(MarkdownAccessibilityProjection.make(markdown: inline).spans.contains(where: {
+            $0.role == .link(destination: "https://example.com")
+        }))
+
+        let imageLabel = #"outer <x attr='> ['>"#
+        let image = "![\(imageLabel)](/image.png)"
+        #expect(semanticInlines(in: DocumentAST.parse(image)).images == 1)
+        #expect(MarkdownHTMLRenderer.html(from: image)
+            == "<p><img src=\"/image.png\" alt=\"\(escapedHTML(imageLabel))\"></p>")
+        #expect(MarkdownTextProjection.make(markdown: image).string == imageLabel)
+        #expect(MarkdownAccessibilityProjection.make(markdown: image).spans.contains(where: {
+            $0.role == .image(label: imageLabel, destination: "/image.png")
+        }))
+
+        for malformed in [#"outer <x attr=""#, #"outer <x attr=" ["#] {
+            let source = "[\(malformed)][ref]\n\n[ref]: /uri\n"
+            #expect(linkCounts(in: DocumentAST.parse(source)).references == 1)
+        }
+    }
+
     @Test("CommonMark 604/605 email autolinks share HTML, styling and accessibility destinations")
     func semanticAutolinkDestinations() {
         let cases = [
@@ -314,9 +370,14 @@ struct CommonMarkReferenceConformanceTests {
         func visit(_ nodes: [InlineNode]) {
             for node in nodes {
                 switch node {
+                case .link(_, _, _, _, _, let children):
+                    links += 1
+                    visit(children)
                 case .referenceLink(_, _, _, _, let children):
                     links += 1
                     visit(children)
+                case .image:
+                    images += 1
                 case .referenceImage(_, _, _, _, let children):
                     images += 1
                     visit(children)
@@ -364,6 +425,14 @@ struct CommonMarkReferenceConformanceTests {
             if case .paragraph(_, let nodes) = block { visit(nodes) }
         }
         return (references, autolinks)
+    }
+
+    private func escapedHTML(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
 }

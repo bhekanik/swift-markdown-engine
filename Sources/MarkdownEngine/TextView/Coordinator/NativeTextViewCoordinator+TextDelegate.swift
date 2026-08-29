@@ -398,7 +398,9 @@ extension NativeTextViewCoordinator {
            tv.textStorage?.attribute(.link, at: selRange.location, effectiveRange: nil) != nil {
             return
         }
-        PerfTrace.measure("selStates") { updateSelectionStates(tv, nsText: nsText) }
+        guard PerfTrace.measure("selStates", {
+            updateSelectionStates(tv, nsText: nsText)
+        }) else { return }
         let selLoc = selRange.location
 
         // Selection change fires BEFORE textDidChange mid-edit: hand the
@@ -891,9 +893,22 @@ extension NativeTextViewCoordinator {
         return (containerX - f.minX) / f.width
     }
 
-    func updateSelectionStates(_ tv: NSTextView, nsText: NSString? = nil) {
+    @discardableResult
+    func updateSelectionStates(_ tv: NSTextView, nsText: NSString? = nil) -> Bool {
         let nsText = nsText ?? (tv.string as NSString)
         let selRange = tv.selectedRange()
+        let sourceController = editorController
+        let sourceRevision = sourceController?.documentRevision
+        let sourceDocumentId = documentId
+        let sourceParseGeneration = parseGeneration
+        func sourceIsCurrent() -> Bool {
+            textView === tv
+                && editorController === sourceController
+                && sourceController?.documentRevision == sourceRevision
+                && documentId == sourceDocumentId
+                && parseGeneration == sourceParseGeneration
+                && tv.selectedRange() == selRange
+        }
         let bus = configuration.services.bus
         let center = NotificationCenter.default
         if let name = bus.selectionBoldDidChange {
@@ -901,19 +916,23 @@ extension NativeTextViewCoordinator {
                 name: name, object: nil,
                 userInfo: ["isBold": isSelectionBold(in: nsText, range: selRange)]
             )
+            guard sourceIsCurrent() else { return false }
         }
         if let name = bus.selectionItalicDidChange {
             center.post(
                 name: name, object: nil,
                 userInfo: ["isItalic": isSelectionItalic(in: nsText, range: selRange)]
             )
+            guard sourceIsCurrent() else { return false }
         }
         if let name = bus.selectionHighlightDidChange {
             center.post(
                 name: name, object: nil,
                 userInfo: ["isHighlight": isSelectionHighlight(in: nsText, range: selRange)]
             )
+            guard sourceIsCurrent() else { return false }
         }
+        return true
     }
 
     func handleBacktab(_ textView: NSTextView) -> Bool {
