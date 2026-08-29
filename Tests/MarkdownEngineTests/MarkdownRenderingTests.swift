@@ -225,9 +225,8 @@ struct CoordinatorAdoptTests {
         #expect(controller.documentMutationDelta == 0)
         #expect(controller.documentPublishedDelta == 0)
 
-        controller.detach(textView: second)
-        #expect(controller.textView === first)
-        controller.detach(textView: first)
+        #expect(firstCoordinator.detach(first))
+        #expect(controller.isAttached == false)
         #expect(secondCoordinator.adopt(second, text: "stale"))
         #expect(controller.textView === second)
         #expect(second.string == "alpha")
@@ -246,6 +245,115 @@ struct CoordinatorAdoptTests {
         #expect(controller.documentRevision == 1)
         #expect(controller.documentMutationDelta == 1)
         #expect(controller.documentPublishedDelta == 1)
+    }
+
+    @Test("public detach releases storage and permits authoritative re-adoption")
+    func publicDetachCompletesTheAdoptionLifecycle() {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        var attachmentEvents: [Bool] = []
+        controller.onAttach = { attachmentEvents.append($0 != nil) }
+        let coordinator = NativeTextViewWrapper(
+            text: .constant("alpha"),
+            controller: controller
+        ).makeCoordinator()
+        let textView = NSTextView(frame: .zero)
+        let stranger = NSTextView(frame: .zero)
+
+        #expect(coordinator.adopt(textView, text: "alpha"))
+        #expect(coordinator.adopt(textView, text: "stale"))
+        #expect(textView.string == "alpha")
+        #expect(attachmentEvents == [true])
+        #expect(controller.textContentStorage.textLayoutManagers.count == 1)
+        textView.setSelectedRange(NSRange(location: 3, length: 0))
+        #expect(coordinator.detach(stranger) == false)
+        #expect(controller.textView === textView)
+
+        #expect(coordinator.detach(textView))
+        #expect(controller.isAttached == false)
+        #expect(attachmentEvents == [true, false])
+        #expect(textView.delegate == nil)
+        #expect(textView.textLayoutManager?.delegate == nil)
+        #expect(textView.textLayoutManager?.textContentManager != nil)
+        #expect(textView.textLayoutManager?.textContentManager !== controller.textContentStorage)
+        #expect(textView.string == "alpha")
+        #expect(textView.selectedRange() == NSRange(location: 3, length: 0))
+        #expect(coordinator.detach(textView) == false)
+
+        #expect(coordinator.adopt(textView, text: "stale"))
+        #expect(controller.textView === textView)
+        #expect(textView.string == "alpha")
+        #expect(textView.textLayoutManager?.textContentManager === controller.textContentStorage)
+        #expect(attachmentEvents == [true, false, true])
+        #expect(coordinator.detach(textView))
+        #expect(controller.isAttached == false)
+    }
+
+    @Test("one controllerless coordinator manages one public view at a time")
+    func controllerlessAdoptionRequiresDetachBeforeReplacement() {
+        _ = NSApplication.shared
+        var mutations: [MarkdownTextMutation] = []
+        let coordinator = NativeTextViewWrapper(
+            text: .constant("alpha"),
+            onTextMutation: { mutations.append($0) }
+        ).makeCoordinator()
+        let first = NSTextView(frame: .zero)
+        let second = NSTextView(frame: .zero)
+
+        #expect(coordinator.adopt(first, text: "alpha"))
+        #expect(coordinator.adopt(second, text: "bravo") == false)
+        #expect(coordinator.textView === first)
+        #expect(first.delegate === coordinator)
+        #expect(second.delegate == nil)
+        first.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        #expect(mutations == [
+            MarkdownTextMutation(range: NSRange(location: 5, length: 0), replacement: "!"),
+        ])
+
+        #expect(coordinator.detach(first))
+        #expect(first.delegate == nil)
+        #expect(coordinator.adopt(second, text: "bravo"))
+        #expect(coordinator.textView === second)
+        #expect(second.string == "bravo")
+        #expect(coordinator.detach(second))
+    }
+
+    @Test("public detach tolerates synchronous re-adoption from onAttach")
+    func publicDetachSupportsReentrantAttachmentCallback() {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let coordinator = NativeTextViewWrapper(
+            text: .constant("alpha"),
+            controller: controller
+        ).makeCoordinator()
+        let first = NSTextView(frame: .zero)
+        let replacement = NSTextView(frame: .zero)
+        var events: [String] = []
+        var shouldReattach = true
+        var nestedResult: Bool?
+        controller.onAttach = { textView in
+            events.append(textView == nil ? "off" : "on")
+            guard textView == nil, shouldReattach else { return }
+            shouldReattach = false
+            nestedResult = coordinator.adopt(replacement, text: "stale")
+        }
+
+        #expect(coordinator.adopt(first, text: "alpha"))
+        #expect(coordinator.detach(first))
+
+        #expect(nestedResult == true)
+        #expect(events == ["on", "off", "on"])
+        #expect(controller.textView === replacement)
+        #expect(coordinator.textView === replacement)
+        #expect(replacement.string == "alpha")
+        #expect(replacement.textLayoutManager?.textContentManager === controller.textContentStorage)
+        #expect(first.delegate == nil)
+        #expect(first.string == "alpha")
+        #expect(first.textLayoutManager?.textContentManager != nil)
+        #expect(first.textLayoutManager?.textContentManager !== controller.textContentStorage)
+
+        #expect(coordinator.detach(replacement))
+        #expect(controller.isAttached == false)
     }
 
     @Test("adopt announces only after controller storage is live")

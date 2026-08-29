@@ -63,6 +63,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     private var busObservers: [NSObjectProtocol] = []
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
+    /// The view managed through the public AppKit adopt/detach lifecycle.
+    /// SwiftUI owns its separate dismantle path.
+    weak var appKitAdoptedTextView: NSTextView?
     var layoutBridge: LayoutBridge?
     var layoutDelegate: MarkdownLayoutManagerDelegate?
     /// Embedder handle for external patches and the text-view seam. Weak: the
