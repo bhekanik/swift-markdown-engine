@@ -511,6 +511,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.editorController = controller
             if let controller, let layoutManager = textView.textLayoutManager {
                 controller.adopt(layoutManager: layoutManager)
+            } else if let layoutManager = textView.textLayoutManager,
+                      layoutManager.textContentManager == nil {
+                // Detaching the controller also detached its document storage.
+                // A controller-less wrapper needs storage of its own to remain editable.
+                NSTextContentStorage().addTextLayoutManager(layoutManager)
             }
             textView.setSelectedRange(NSRange(location: 0, length: 0))
             context.coordinator.didInitialFormatting = false
@@ -529,7 +534,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
            ) {
             return
         }
-        if controllerChanged, let controller {
+        if controllerChanged || (controller == nil && context.coordinator.isDetachedFromDocument) {
             context.coordinator.pendingAttachmentAnnouncement = controller
             context.coordinator.hasPendingAttachmentAnnouncement = true
         }

@@ -458,6 +458,93 @@ struct SingleViewTests {
         )])
     }
 
+    @Test("controller-backed wrapper becomes controller-less")
+    func controllerBackedWrapperBecomesControllerless() throws {
+        _ = NSApplication.shared
+        let text = MutableTextBox("alpha\n")
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        var attachments: [String] = []
+        let mutationHandler: (MarkdownTextMutation) -> Void = { mutation in
+            mutations.append(mutation)
+            text.apply(mutation)
+        }
+        let attachmentHandler: (NSTextView?) -> Void = { textView in
+            attachments.append(textView == nil ? "off" : "on")
+        }
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: controller,
+            onMutation: mutationHandler,
+            onAttachmentChange: attachmentHandler
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: nil,
+            onMutation: mutationHandler,
+            onAttachmentChange: attachmentHandler
+        )
+        host.layoutSubtreeIfNeeded()
+        let textView = try #require(textViews(in: host).first)
+        textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        #expect(attachments == ["on", "off", "on"])
+        #expect(text.value == "alpha!\n")
+        #expect(textView.string == "alpha!\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 5, length: 0),
+            replacement: "!"
+        )])
+    }
+
+    @Test("refused wrapper becomes controller-less")
+    func refusedWrapperBecomesControllerless() throws {
+        _ = NSApplication.shared
+        let occupied = MarkdownEditorController()
+        _ = view(on: occupied, text: "alpha\n")
+        let text = MutableTextBox("alpha\n")
+        var mutations: [MarkdownTextMutation] = []
+        var attachments: [String] = []
+        let mutationHandler: (MarkdownTextMutation) -> Void = { mutation in
+            mutations.append(mutation)
+            text.apply(mutation)
+        }
+        let attachmentHandler: (NSTextView?) -> Void = { textView in
+            attachments.append(textView == nil ? "off" : "on")
+        }
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: occupied,
+            onMutation: mutationHandler,
+            onAttachmentChange: attachmentHandler
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: nil,
+            onMutation: mutationHandler,
+            onAttachmentChange: attachmentHandler
+        )
+        host.layoutSubtreeIfNeeded()
+        let textView = try #require(textViews(in: host).first)
+        textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        #expect(attachments == ["off", "on"])
+        #expect(text.value == "alpha!\n")
+        #expect(textView.string == "alpha!\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 5, length: 0),
+            replacement: "!"
+        )])
+    }
+
     @Test("controller onAttach is a post-sync mutable boundary")
     func controllerOnAttachCanPatchInitialMount() throws {
         _ = NSApplication.shared
