@@ -34,6 +34,227 @@ struct TableCellSourceTests {
         #expect(!row[1].contains("\\|"))
     }
 
+    @Test func escapedPipeInsideCodeMatchesRenderedAndAccessibleText() throws {
+        let source = """
+        | Statement | Verdict |
+        |---|---|
+        | `P(k)` | `Var[x(1) \\| z(1:3)]` |
+        """
+        let expected = "Statement\tVerdict\nP(k)\tVar[x(1) | z(1:3)]"
+        let parsed = try #require(MarkdownStyler.parseTableSource(source))
+        let cell = try #require(parsed.rows.first?.last)
+        let formatted = MarkdownStyler.formattedCellString(
+            cell,
+            baseFont: .systemFont(ofSize: 15),
+            header: false,
+            theme: MarkdownEditorConfiguration.default.theme,
+            codeBackgroundColor: .windowBackgroundColor
+        )
+        let projection = MarkdownTextProjection.make(markdown: source)
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+
+        #expect(formatted.string == "Var[x(1) | z(1:3)]")
+        #expect(projection.string == expected)
+        #expect(accessibility.text.string == expected)
+        #expect(accessibility.spans.isEmpty)
+
+        let ns = source as NSString
+        let marker = ns.range(of: #"\|"#)
+        let pipe = NSRange(location: marker.location + 1, length: 1)
+        let visiblePipe = try #require(projection.visibleRange(for: pipe))
+        #expect((projection.string as NSString).substring(with: visiblePipe) == "|")
+        #expect(projection.visibleRange(for: NSRange(location: marker.location, length: 1))?.length == 0)
+        #expect(projection.sourceRange(for: visiblePipe) == pipe)
+    }
+
+    @Test func escapedPipeNormalizationKeepsBackslashParity() {
+        let row = MarkdownTableRowSource.row(#"\| \\| \\\|"#)
+
+        #expect(row.delimiters.count == 1)
+        #expect(row.cells.map(\.normalizedText) == [#"| \\"#, #"\\|"#])
+        #expect(row.cells.flatMap(\.escapedPipeMarkers).count == 2)
+    }
+
+    @Test func everyNormalizedRangeMapsToAValidUTF16SourceRange() throws {
+        let sources = [
+            #"\|"#,
+            #"a\|b"#,
+            #"\|a\|"#,
+            #"🧑🏽‍💻\|z"#,
+            #"[a\|b](u\|v)"#,
+        ]
+        for source in sources {
+            let cell = try #require(
+                MarkdownTableRowSource.row("| \(source) |").cells.first
+            )
+            let normalizedLength = (cell.normalizedText as NSString).length
+            for location in 0...normalizedLength {
+                for length in 0...(normalizedLength - location) {
+                    let mapped = try #require(cell.sourceRange(
+                        forNormalizedRange: NSRange(location: location, length: length)
+                    ))
+                    #expect(mapped.location >= cell.sourceRange.location)
+                    #expect(mapped.length >= 0)
+                    #expect(NSMaxRange(mapped) <= NSMaxRange(cell.sourceRange))
+                }
+            }
+        }
+
+        let escapedPipe = try #require(MarkdownTableRowSource.row(#"| \| |"#).cells.first)
+        #expect(escapedPipe.sourceRange(forNormalizedRange: NSRange(location: 0, length: 0))
+            == NSRange(location: escapedPipe.sourceRange.location + 1, length: 0))
+    }
+
+    @Test func escapedPipeLinkSemanticsUseRenderedCellSource() throws {
+        let source = #"""
+        | Link | Image |
+        |---|---|
+        | [a\|b](https://example.com/a\|b) | ![c\|d](image\|x.png) |
+        """#
+        let projection = MarkdownAccessibilityProjection.make(markdown: source)
+        let link = try #require(projection.spans.first { span in
+            if case .link = span.role { return true }
+            return false
+        })
+        let image = try #require(projection.spans.first { span in
+            if case .image = span.role { return true }
+            return false
+        })
+        let visible = (projection.text.string as NSString).substring(with: link.visibleRange)
+        let parsed = try #require(MarkdownStyler.parseTableSource(source))
+        let cell = try #require(parsed.rows.first?.first)
+
+        #expect(projection.text.string == "Link\tImage\na|b\tc|d")
+        #expect(link.role == .link(destination: "https://example.com/a|b"))
+        #expect(image.role == .image(label: "c|d", destination: "image|x.png"))
+        #expect(visible == "a|b")
+        #expect(cell == #"[a|b](https://example.com/a|b)"#)
+    }
+
+    @Test func cellsBeyondRenderedWidthStayHiddenFromProjectionAndAccessibility() throws {
+        let source = """
+        | A | B |
+        |---|---|
+        | one | two | [🧑🏽‍💻hidden](https://example.com) | ![also hidden](image.png) |
+        """
+        let projection = MarkdownTextProjection.make(markdown: source)
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+        let ns = source as NSString
+        let hidden = ns.range(of: "[🧑🏽‍💻hidden](https://example.com)")
+        let hiddenImage = ns.range(of: "![also hidden](image.png)")
+        let visibleTwo = ns.range(of: "two")
+
+        #expect(projection.string == "A\tB\none\ttwo")
+        #expect(accessibility.text.string == projection.string)
+        #expect(accessibility.spans.isEmpty)
+        #expect(projection.visibleRange(for: hidden)?.length == 0)
+        #expect(projection.visibleRange(for: hiddenImage)?.length == 0)
+        #expect(!projection.string.contains("hidden"))
+        #expect((projection.string as NSString).range(of: "https://example.com").location == NSNotFound)
+        let projectedTwo = try #require(projection.visibleRange(for: visibleTwo))
+        #expect(projection.sourceRange(for: projectedTwo) == visibleTwo)
+        #expect(!MarkdownHTMLRenderer.html(from: source).contains("hidden"))
+    }
+
+    @Test func missingCellsPreserveRenderedWidthAndClosingPipeAffinity() throws {
+        let cases = [
+            (
+                source: "| A | B |\n|---|---|\n| one |",
+                visible: "A\tB\none\t"
+            ),
+            (
+                source: "| A | B | C | D |\n|---|---|---|---|\n| 🧑🏽‍💻 |",
+                visible: "A\tB\tC\tD\n🧑🏽‍💻\t\t\t"
+            ),
+            (
+                source: "| A | B | C |\n|---|---|---|\n| |",
+                visible: "A\tB\tC\n\t\t"
+            ),
+            (
+                source: "| A | B |\r\n|---|---|\r\n| one |",
+                visible: "A\tB\r\none\t"
+            ),
+        ]
+
+        for entry in cases {
+            let projection = MarkdownTextProjection.make(markdown: entry.source)
+            let accessibility = MarkdownAccessibilityProjection.make(markdown: entry.source)
+            let parsed = try #require(MarkdownStyler.parseTableSource(entry.source))
+            let body = try #require(parsed.rows.first)
+            let rendered = "\(parsed.header.joined(separator: "\t"))\n\(body.joined(separator: "\t"))"
+            let expectedRendered = entry.visible.replacingOccurrences(of: "\r\n", with: "\n")
+            let source = entry.source as NSString
+            let closingPipe = source.range(of: "|", options: .backwards)
+            let projectedPipe = try #require(projection.visibleRange(for: closingPipe))
+            let bodyHTML = "<tr>" + body.map { "<td>\($0)</td>" }.joined() + "</tr>"
+
+            #expect(projection.string == entry.visible)
+            #expect(accessibility.text.string == entry.visible)
+            #expect(rendered == expectedRendered)
+            #expect(MarkdownHTMLRenderer.html(from: entry.source).contains(bodyHTML))
+            #expect((projection.string as NSString).substring(with: projectedPipe).allSatisfy { $0 == "\t" })
+            #expect(projection.sourceRange(for: projectedPipe) == closingPipe)
+            #expect(projection.visibleRange(for: NSRange(location: closingPipe.location, length: 0))
+                == NSRange(location: projectedPipe.location, length: 0))
+            #expect(projection.sourceRange(for: NSRange(location: projectedPipe.location, length: 0))
+                == NSRange(location: closingPipe.location, length: 0))
+            #expect(projection.sourceRange(for: NSRange(location: NSMaxRange(projectedPipe), length: 0))
+                == NSRange(location: NSMaxRange(closingPipe), length: 0))
+        }
+    }
+
+    @Test func directAndReferenceTableMediaUseSemanticVisibleText() throws {
+        let source = """
+        | Link | Image |
+        |---|---|
+        | [direct](https://direct.example) | ![Direct alt](direct.png) |
+        | [reference][link] | ![Reference alt][image] |
+
+        [link]: https://reference.example
+        [image]: reference.png
+        """
+        let parsed = try #require(MarkdownStyler.parseTableSource(
+            source.components(separatedBy: "\n\n")[0]
+        ))
+        let definitions: Set<String> = ["link", "image"]
+        let renderedRows = parsed.rows.map { row in
+            row.map {
+                MarkdownStyler.formattedCellString(
+                    $0,
+                    baseFont: .systemFont(ofSize: 15),
+                    header: false,
+                    theme: MarkdownEditorConfiguration.default.theme,
+                    codeBackgroundColor: .windowBackgroundColor,
+                    referenceDefinitions: definitions
+                ).string
+            }.joined(separator: "\t")
+        }
+        let projection = MarkdownTextProjection.make(markdown: source)
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+
+        #expect(renderedRows == ["direct\tDirect alt", "reference\tReference alt"])
+        #expect(projection.string == "Link\tImage\ndirect\tDirect alt\nreference\tReference alt\n\n")
+        #expect(accessibility.text.string == projection.string)
+        #expect(accessibility.spans.contains {
+            $0.role == .link(destination: "https://reference.example")
+        })
+        #expect(accessibility.spans.contains {
+            $0.role == .image(label: "Reference alt", destination: "reference.png")
+        })
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><a href="https://direct.example">direct</a></td>"#
+        ))
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><img src="direct.png" alt="Direct alt"></td>"#
+        ))
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><a href="https://reference.example">reference</a></td>"#
+        ))
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><img src="reference.png" alt="Reference alt"></td>"#
+        ))
+    }
+
     // MARK: - In-cell line breaks
 
     @Test func brRendersAsALineBreakInsteadOfLiteralText() {
@@ -42,8 +263,7 @@ struct TableCellSourceTests {
             baseFont: .systemFont(ofSize: 15),
             header: false,
             theme: MarkdownEditorConfiguration.default.theme,
-            codeBackgroundColor: .windowBackgroundColor,
-            latex: NoOpLatexRenderer()
+            codeBackgroundColor: .windowBackgroundColor
         )
         #expect(cell.string == "first\nsecond")
     }
@@ -56,8 +276,8 @@ struct TableCellSourceTests {
                 nsText: source as NSString,
                 tokens: [], codeTokens: [], activeTokenIndices: [],
                 baseFont: font, layoutBridge: nil, baseDefaultLineHeight: 18,
-                codeBackgroundColor: .windowBackgroundColor, latexMarkerFont: font,
-                configuration: .default, wikiLinkIDProvider: { _ in nil }
+                codeBackgroundColor: .windowBackgroundColor, hiddenMarkerFont: font,
+                configuration: .default
             )
             ctx.scopeBounds = nil
             let aqua = try #require(NSAppearance(named: .aqua))

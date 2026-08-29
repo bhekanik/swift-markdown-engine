@@ -100,17 +100,26 @@ struct ASTPipelineTests {
         #expect(link?.range == NSRange(location: 4, length: 9))
     }
 
-    @Test("bug 3: no spurious latex token across code spans")
-    func bug3CrossCodeLatex() {
-        let tokens = MarkdownTokenizer.parseTokensViaAST(in: "the `$a` and `$b` vars")
-        #expect(!tokens.contains { $0.kind == .inlineLatex })
-        #expect(tokens.filter { $0.kind == .inlineCode }.count == 2)
-    }
-
     @Test("block-level tokens are preserved (heading + emphasis in the title)")
     func headingPlusInline() {
         let tokens = MarkdownTokenizer.parseTokensViaAST(in: "# Title *x*")
         #expect(tokens.contains { $0.kind == .heading })
         #expect(tokens.contains { $0.kind == .italic })
+    }
+
+    @Test("two-tildes on their own line remain an inline strikethrough")
+    func tildeFenceDoesNotConsumeStrikethrough() throws {
+        let registry = ExtensionRegistry(extensions: [StrikethroughExtension()])
+        let block = try #require(DocumentAST.parse("~~struck~~\n", registry: registry).first)
+        guard case .paragraph(_, let inlines) = block else {
+            Issue.record("Expected paragraph")
+            return
+        }
+        #expect(inlines.contains {
+            if case .ext(let node) = $0 {
+                return node.extensionID == StrikethroughExtension.identifier
+            }
+            return false
+        })
     }
 }

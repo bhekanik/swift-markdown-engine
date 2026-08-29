@@ -18,6 +18,20 @@ struct MarkdownASTStylerTests {
     private var fontName: String { NSFont.systemFont(ofSize: 14).fontName }
 
     @MainActor
+    private func render(_ source: String, caret: Int = -1) -> NSAttributedString {
+        MarkdownRendering.attributedString(
+            for: source,
+            fontName: fontName,
+            fontSize: base,
+            caretLocation: caret
+        )
+    }
+
+    private func expectSourceBytesUnchanged(_ source: String, _ rendered: NSAttributedString) {
+        #expect(Array(rendered.string.utf8) == Array(source.utf8))
+    }
+
+    @MainActor
     @Test("scoped styling of a continuous list emits only intersecting ranges")
     func scopedContinuousListEmitsOnlyIntersectingRanges() {
         _ = NSApplication.shared
@@ -151,7 +165,7 @@ struct MarkdownASTStylerTests {
 
     /// Code is not prose: fenced blocks and inline `code` spans must carry
     /// `.spellingState: 0` so the system spell-checker leaves them alone,
-    /// matching the existing convention that links / wiki-links / LaTeX / tables
+    /// matching the existing convention that links / tables
     /// already follow.
     @Test("code blocks and inline code receive .spellingState: 0; prose does not")
     func codeRegionsSuppressSpellCheck() {
@@ -286,6 +300,289 @@ struct MarkdownASTStylerTests {
         for pos in [2, 3, 8, 9, 13, 14, 19, 20, 24, 25, 32, 33, 37, 44] {
             #expect(isHiddenMarkerFont(in: attrs, at: pos), "marker at \(pos) should be shrunk")
         }
+    }
+
+    @MainActor
+    @Test("frontmatter collapses outside and reveals as muted source inside")
+    func frontmatterCollapsesAndPreservesSource() throws {
+        let source = "---\ntitle: Note\n---\nBody"
+        let hidden = render(source)
+        expectSourceBytesUnchanged(source, hidden)
+        let hiddenFont = try #require(hidden.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let hiddenBodyFont = try #require(hidden.attribute(.font, at: 6, effectiveRange: nil) as? NSFont)
+        let hiddenColor = try #require(hidden.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        #expect(hiddenFont.pointSize < 1)
+        #expect(hiddenBodyFont.pointSize < 1)
+        #expect(hiddenColor.alphaComponent == 0)
+
+        let revealed = render(source, caret: 8)
+        let revealedFont = try #require(revealed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let revealedColor = try #require(revealed.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)
+        #expect(revealedFont.pointSize == base)
+        #expect(revealedColor == MarkdownEditorTheme.default.mutedText)
+    }
+
+    @MainActor
+    @Test("setext underline hides and reveals with its heading")
+    func setextMarkerHidesAndPreservesSource() throws {
+        let source = "Title\n---\n"
+        let hidden = render(source)
+        expectSourceBytesUnchanged(source, hidden)
+        let titleFont = try #require(hidden.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        let markerFont = try #require(hidden.attribute(.font, at: 6, effectiveRange: nil) as? NSFont)
+        #expect(titleFont.pointSize > base)
+        #expect(markerFont.pointSize < 1)
+
+        let revealed = render(source, caret: 7)
+        let revealedMarker = try #require(revealed.attribute(.font, at: 6, effectiveRange: nil) as? NSFont)
+        #expect(revealedMarker.pointSize > base)
+    }
+
+    @MainActor
+    @Test("tilde-fenced code styling preserves every source byte")
+    func tildeFencePreservesSource() {
+        let source = "~~~swift\nlet x = 1\n~~~~\n"
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.backgroundColor, at: 9, effectiveRange: nil) != nil)
+    }
+
+    @MainActor
+    @Test("indented code styling preserves indentation and source bytes")
+    func indentedCodePreservesSource() {
+        let source = "    let x = 1\n"
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.backgroundColor, at: 4, effectiveRange: nil) != nil)
+        #expect((rendered.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize ?? 0 > 1)
+    }
+
+    @MainActor
+    @Test("spaced thematic-break styling preserves source bytes")
+    func spacedThematicBreakPreservesSource() {
+        let source = "- - -\n"
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.thematicBreak, at: 0, effectiveRange: nil) as? Bool == true)
+    }
+
+    @MainActor
+    @Test("content-column list styling preserves source bytes")
+    func contentColumnListsPreserveSource() {
+        let source = "- root\n - sibling\n  - child\n\t- tab child\n"
+        expectSourceBytesUnchanged(source, render(source))
+
+        let sibling = render("- root\n - sibling\n")
+        let nested = render("- root\n  - child\n")
+        let siblingStyle = sibling.attribute(.paragraphStyle, at: 7, effectiveRange: nil) as? NSParagraphStyle
+        let nestedStyle = nested.attribute(.paragraphStyle, at: 7, effectiveRange: nil) as? NSParagraphStyle
+        #expect((nestedStyle?.headIndent ?? 0) > (siblingStyle?.headIndent ?? 0))
+    }
+
+    @MainActor
+    @Test("link and image titles hide with their targets and preserve source bytes")
+    func linkAndImageTitlesHideAndPreserveSource() throws {
+        let source = #"""
+[text](https://example.com "title")
+![alt](<https://example.com/a.png> 'caption')
+"""#
+        let ns = source as NSString
+        let hidden = render(source)
+        expectSourceBytesUnchanged(source, hidden)
+
+        let linkText = ns.range(of: "text")
+        let title = ns.range(of: "title")
+        let imageURL = ns.range(of: "https://example.com/a.png")
+        #expect(hidden.attribute(.link, at: linkText.location, effectiveRange: nil) != nil)
+        #expect(try #require(hidden.attribute(.font, at: title.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(hidden.attribute(.font, at: imageURL.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+
+        let revealed = render(source, caret: linkText.location)
+        #expect(try #require(revealed.attribute(.font, at: title.location, effectiveRange: nil) as? NSFont).pointSize == base)
+        #expect(revealed.attribute(.foregroundColor, at: title.location, effectiveRange: nil) as? NSColor == MarkdownEditorTheme.default.mutedText)
+    }
+
+    @MainActor
+    @Test("escaped destinations create decoded clickable links without changing source")
+    func escapedDestinationsAreClickable() throws {
+        let source = #"""
+[inline](https://example.com/a\)b)
+[reference][id]
+
+[id]: <https://example.com/a\>b>
+"""#
+        let rendered = render(source)
+        let ns = source as NSString
+        expectSourceBytesUnchanged(source, rendered)
+
+        let inline = try #require(
+            rendered.attribute(.link, at: ns.range(of: "inline").location, effectiveRange: nil)
+                as? URL
+        )
+        let reference = try #require(
+            rendered.attribute(.link, at: ns.range(of: "reference").location, effectiveRange: nil)
+                as? URL
+        )
+        #expect(inline == URL(string: "https://example.com/a)b"))
+        #expect(reference == URL(string: "https://example.com/a>b"))
+    }
+
+    @MainActor
+    @Test("escaped image descriptions remain images and hide escape markers")
+    func escapedImageDescriptionsRemainImages() throws {
+        let source = #"![escaped\*alt](image.png)"#
+        let rendered = render(source)
+        let ns = source as NSString
+        expectSourceBytesUnchanged(source, rendered)
+
+        let paragraph = try #require(DocumentAST.parse(source).first)
+        guard case .paragraph(_, let inlines) = paragraph,
+              case .image = inlines.first else {
+            Issue.record("Expected image AST node")
+            return
+        }
+        let escape = ns.range(of: #"\*"#)
+        let escapeFont = try #require(
+            rendered.attribute(.font, at: escape.location, effectiveRange: nil) as? NSFont
+        )
+        #expect(escapeFont.pointSize < 1)
+        #expect((rendered.attribute(.font, at: escape.location + 1, effectiveRange: nil) as? NSFont)?.pointSize == base)
+    }
+
+    @MainActor
+    @Test("escaped reference labels resolve without decoding label identity")
+    func escapedReferenceLabelsPreserveIdentity() throws {
+        let source = #"""
+[foo][ref\[] [bar][foo\!]
+
+[ref\[]: /uri
+[foo!]: /wrong
+"""#
+        let rendered = render(source)
+        let ns = source as NSString
+        expectSourceBytesUnchanged(source, rendered)
+
+        #expect(rendered.attribute(.link, at: ns.range(of: "foo").location, effectiveRange: nil)
+            as? URL == URL(string: "https:///uri"))
+        let unmatchedEscape = ns.range(of: #"\!"#)
+        #expect(try #require(
+            rendered.attribute(.font, at: unmatchedEscape.location, effectiveRange: nil) as? NSFont
+        ).pointSize < 1)
+    }
+
+    @MainActor
+    @Test("invalid bare destination escapes never style their labels as links")
+    func invalidBareDestinationEscapesAreNotClickable() {
+        let cases = [
+            #"[x](https://example.com/a\ b)"#,
+            #"[x](https://example.com/a\\ b)"#,
+            "[x](https://example.com/a\\\nb)",
+            #"![x](https://example.com/a\ b)"#,
+            "[id]: /a\\ b\n\n[x][id]",
+        ] + LinkDestinationTestFixtures.invalidBareControlDocuments
+
+        for source in cases {
+            let rendered = render(source)
+            expectSourceBytesUnchanged(source, rendered)
+            let labelMarker = (source as NSString).range(of: "[x]", options: .backwards)
+            let label = NSRange(location: labelMarker.location + 1, length: 1)
+            #expect(rendered.attribute(.link, at: label.location, effectiveRange: nil) == nil)
+        }
+    }
+
+    @MainActor
+    @Test("reference links resolve from full definitions during scoped styling")
+    func scopedReferenceLinksUseFullDefinitionMap() throws {
+        let source = "[Straße   Note][ STRASSE NOTE ]\n\n[strasse note]: https://example.com \"title\"\n[other]: /two\n"
+        let ns = source as NSString
+        let referenceLine = ns.lineRange(for: NSRange(location: 0, length: 0))
+        let definitionRange = ns.range(of: "[strasse note]:")
+
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+        #expect(rendered.attribute(.link, at: 1, effectiveRange: nil) != nil)
+        #expect(try #require(rendered.attribute(.font, at: definitionRange.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+
+        let scoped = MarkdownASTStyler.styleAttributes(
+            text: source,
+            fontName: fontName,
+            fontSize: base,
+            scopedRanges: [referenceLine]
+        )
+        let storage = NSMutableAttributedString(string: source)
+        TextStylingService.applyStyledRanges(
+            scoped,
+            paragraphs: [referenceLine],
+            baseAttributes: [.font: NSFont(name: fontName, size: base) ?? .systemFont(ofSize: base)],
+            to: storage
+        )
+        #expect(Array(storage.string.utf8) == Array(source.utf8))
+        #expect(storage.attribute(.link, at: 1, effectiveRange: nil) != nil)
+
+        let revealedDefinitions = render(source, caret: ns.range(of: "[other]:").location + 2)
+        #expect(try #require(revealedDefinitions.attribute(.font, at: definitionRange.location, effectiveRange: nil) as? NSFont).pointSize == base)
+    }
+
+    @MainActor
+    @Test("footnote references superscript the id, expose footnoteID, and keep definitions inline-styled")
+    func footnotesStyleAndPreserveSource() throws {
+        let source = "See [^one].\n\n[^one]: *note*\n    continued\n"
+        let ns = source as NSString
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+
+        let referenceLabel = ns.range(of: "one")
+        let referenceOpen = ns.range(of: "[^")
+        let definitionLabel = ns.range(of: "one", options: .backwards)
+        let definitionOpen = ns.range(of: "[^", options: .backwards)
+        #expect(rendered.attribute(.footnoteID, at: referenceLabel.location, effectiveRange: nil) as? String == "one")
+        #expect((rendered.attribute(.baselineOffset, at: referenceLabel.location, effectiveRange: nil) as? CGFloat ?? 0) > 0)
+        #expect(try #require(rendered.attribute(.font, at: referenceOpen.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: definitionOpen.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect((rendered.attribute(.baselineOffset, at: definitionLabel.location, effectiveRange: nil) as? CGFloat ?? 0) > 0)
+        #expect((rendered.attribute(.font, at: ns.range(of: "note", options: .backwards).location, effectiveRange: nil) as? NSFont)?.fontDescriptor.symbolicTraits.contains(.italic) == true)
+
+        let revealed = render(source, caret: referenceLabel.location)
+        #expect((revealed.attribute(.baselineOffset, at: referenceLabel.location, effectiveRange: nil) as? CGFloat ?? 0) == 0)
+        #expect(try #require(revealed.attribute(.font, at: referenceOpen.location, effectiveRange: nil) as? NSFont).pointSize == base)
+    }
+
+    @MainActor
+    @Test("hard-break markers hide only before internal newlines")
+    func hardBreaksHideAndPreserveSource() throws {
+        let source = "first  \nsecond\\\nlast  "
+        let ns = source as NSString
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+
+        let firstSpaces = ns.range(of: "  \n")
+        let backslash = ns.range(of: "\\\n")
+        let finalSpaces = ns.range(of: "  ", options: .backwards)
+        #expect(try #require(rendered.attribute(.font, at: firstSpaces.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: backslash.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: finalSpaces.location, effectiveRange: nil) as? NSFont).pointSize == base)
+
+        let revealed = render(source, caret: 1)
+        #expect(try #require(revealed.attribute(.font, at: firstSpaces.location, effectiveRange: nil) as? NSFont).pointSize == base)
+    }
+
+    @MainActor
+    @Test("autolink brackets hide while raw HTML and comparisons stay literal")
+    func autolinkBracketsHideAndPreserveSource() throws {
+        let source = "<https://example.com> <mailto:someone@example.com> a < b <span>"
+        let ns = source as NSString
+        let rendered = render(source)
+        expectSourceBytesUnchanged(source, rendered)
+
+        let url = ns.range(of: "https://example.com")
+        let firstOpen = ns.range(of: "<")
+        let html = ns.range(of: "<span>")
+        #expect(rendered.attribute(.link, at: url.location, effectiveRange: nil) != nil)
+        #expect(try #require(rendered.attribute(.font, at: firstOpen.location, effectiveRange: nil) as? NSFont).pointSize < 1)
+        #expect(try #require(rendered.attribute(.font, at: html.location, effectiveRange: nil) as? NSFont).pointSize == base)
+
+        let revealed = render(source, caret: url.location)
+        #expect(try #require(revealed.attribute(.font, at: firstOpen.location, effectiveRange: nil) as? NSFont).pointSize == base)
     }
 }
 

@@ -30,9 +30,9 @@ extension NativeTextView {
                 let paraRange = (ts.string as NSString).paragraphRange(
                     for: NSRange(location: sel.location, length: 0)
                 )
-                ts.enumerateAttribute(.latexIsBlock, in: paraRange, options: []) { value, range, stop in
+                ts.enumerateAttribute(.renderedImageIsBlock, in: paraRange, options: []) { value, range, stop in
                     guard value as? Bool == true else { return }
-                    if ts.attribute(.latexBlockOffsetY, at: range.location, effectiveRange: nil) != nil {
+                    if ts.attribute(.renderedBlockOffsetY, at: range.location, effectiveRange: nil) != nil {
                         resize = true
                     } else {
                         hide = true
@@ -72,9 +72,12 @@ extension NativeTextView {
             caretIndicatorObservation?.invalidate()
             observedCaretIndicator = indicator
             caretIndicatorObservation = indicator.observe(\.frame, options: [.new]) { [weak self] _, _ in
-                guard let self, !self.isApplyingCaretShift else { return }
-                self.applyBlockImageCaretPolicy()
-                self.fixPhantomTrailingCaret()
+                // NSTextInsertionIndicator frame changes are driven by AppKit on the main thread.
+                MainActor.assumeIsolated {
+                    guard let self, !self.isApplyingCaretShift else { return }
+                    self.applyBlockImageCaretPolicy()
+                    self.fixPhantomTrailingCaret()
+                }
             }
         }
         guard let ts = textStorage, let indicator = observedCaretIndicator,

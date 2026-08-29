@@ -24,12 +24,14 @@ import Foundation
 
 /// The block-level classification of a run of lines.
 enum BlockKind: Equatable {
+    case frontmatter     // opening `---` through a closing `---` / `...`
+    case linkDefinition  // consecutive `[id]: destination "title"` lines
+    case footnoteDefinition // `[^id]: body` plus four-space continuation lines
     case paragraph       // inline-bearing
-    case heading         // single ATX line (`# …`), inline-bearing content
+    case heading         // ATX or setext, inline-bearing content
     case blockquote      // consecutive `>` lines, inline-bearing per line
     case list            // consecutive list-item lines (`-`/`*`/`+` or `1.`/`1)`)
-    case fencedCode      // ```…``` — opaque (no inline parsing inside)
-    case blockLatex      // $$…$$ — opaque
+    case fencedCode      // fenced or indented code, opaque to inline parsing
     case table           // GFM table — opaque (rendered as a unit)
     case thematicBreak   // `---` / `***` / `___` — produces no token today
     case blank           // blank / whitespace-only line(s) — separator
@@ -54,6 +56,15 @@ struct BufferDiff {
 }
 
 enum BlockParser {
+
+    /// How many times the reparse window may grow before the splice is
+    /// abandoned for one full parse. Each growth reparses the window from its
+    /// start, so this bounds an otherwise quadratic walk.
+    private static let maximumWindowExtensions = 8
+
+    /// The largest window worth splicing, in UTF-16 units. Past this a full
+    /// parse costs about the same and produces no risk of a mis-splice.
+    private static let maximumIncrementalWindow = 16_384
 
     private static let cacheLock = NSLock()
     private static var cachedChars: [unichar]?     // UTF-16 buffer of the last parse
@@ -125,12 +136,9 @@ enum BlockParser {
         return BufferDiff(changeStart: p, changeEndOld: oldLen - s, changeEndNew: newLen - s, delta: newLen - oldLen)
     }
 
-    /// Does any LINE touched by `[lo, hi)` contain a `$$` or ``` that can ripple?
-    /// Line-expanded, not just ±3 around the edit: block delimiters are
-    /// line-classified with a TRIMMED prefix (`isBlockLatexOpen`), so editing
-    /// the leading whitespace of an indented `$$` opener flips the pairing
-    /// from arbitrarily far away from the literal `$$`. The boundary walk is
-    /// capped; hitting the cap reports a delimiter (conservative full parse).
+    /// Does any LINE touched by `[lo, hi)` contain a paired block delimiter? The
+    /// boundary walk is capped; hitting the cap reports a delimiter
+    /// (conservative full parse).
     static func hasBlockDelimiter(_ buf: [unichar], _ lo: Int, _ hi: Int, fences: [[unichar]] = []) -> Bool {
         let cap = 4096
         var start = max(0, lo - 3)
@@ -147,12 +155,24 @@ enum BlockParser {
             steps += 1
             if steps > cap { return true }
         }
+        var lineStart = start
+        while lineStart < end {
+            var lineEnd = lineStart
+            while lineEnd < end, buf[lineEnd] != 0x0A, buf[lineEnd] != 0x0D { lineEnd += 1 }
+            if isFrontmatterDelimiter(buf, from: lineStart, to: lineEnd) { return true }
+            lineStart = lineEnd + 1
+            if lineEnd < end, buf[lineEnd] == 0x0D,
+               lineStart < end, buf[lineStart] == 0x0A {
+                lineStart += 1
+            }
+        }
         var i = start
         while i < end {
-            if buf[i] == 0x24 {                                          // $
-                if i + 1 < end, buf[i + 1] == 0x24 { return true }       // $$
-            } else if buf[i] == 0x60, i + 2 < end, buf[i + 1] == 0x60, buf[i + 2] == 0x60 {
+            if buf[i] == 0x60, i + 2 < end, buf[i + 1] == 0x60, buf[i + 2] == 0x60 {
                 return true                                              // ```
+            }
+            if buf[i] == 0x7E, i + 2 < end, buf[i + 1] == 0x7E, buf[i + 2] == 0x7E {
+                return true                                              // ~~~
             }
             // Extension fences pair with a distant partner exactly like ``` —
             // an edit touching one must force the full reparse too.
@@ -181,7 +201,7 @@ enum BlockParser {
         guard changeStart >= 0, changeEnd <= oldLen, diff.changeEndNew <= newLen,
               changeStart <= changeEnd, changeStart <= diff.changeEndNew else { return nil }
 
-        // A fence/block-LaTeX/extension delimiter in the edit can pair with a distant partner → full reparse.
+        // A fence or extension delimiter in the edit can pair with a distant partner → full reparse.
         let fences = registry.blockEntries.map(\.fenceChars)
         if hasBlockDelimiter(o, changeStart, changeEnd, fences: fences)
             || hasBlockDelimiter(n, changeStart, diff.changeEndNew, fences: fences) {
@@ -204,29 +224,71 @@ enum BlockParser {
         }
         let lastIdx = lo
         let winFirst = max(0, min(firstIdx, lastIdx) - 1)
-        let winLast = min(oldBlocks.count - 1, max(firstIdx, lastIdx) + 1)
+        var winLast = min(oldBlocks.count - 1, max(firstIdx, lastIdx) + 1)
 
-        // 3. Opaque multi-line blocks (fences / block LaTeX) in the window are
-        // fine for INTERIOR edits: the window contains each block wholly, the
-        // ±3 delimiter guard above already bailed on any edit that creates,
-        // destroys, or touches a ``` / $$ pairing, and an edit that UN-closes
-        // a block (trailing chars on its closer line) makes the reparsed block
+        // 3. Opaque multi-line fenced blocks in the window are fine for
+        // INTERIOR edits: the window contains each block wholly, the ±3
+        // delimiter guard above already bailed on any edit that creates,
+        // destroys, or touches a ``` pairing, and an edit that UN-closes a
+        // block (trailing chars on its closer line) makes the reparsed block
         // reach the window end — caught by the trailing guard below. Typing
         // inside a code block used to fall back to a full O(doc) reparse on
         // every keystroke because of an unconditional bail here.
 
         // 4. Window → new-text range (window start is before the edit → unchanged).
         let winStart = oldBlocks[winFirst].range.location
-        let winEndNew = NSMaxRange(oldBlocks[winLast].range) + delta
-        guard winStart >= 0, winEndNew >= winStart, winEndNew <= newLen else { return nil }
+        guard winStart >= 0 else { return nil }
 
-        // 5. Reparse just the window substring, shift to absolute new coords.
-        let windowText = newNS.substring(with: NSRange(location: winStart, length: winEndNew - winStart))
-        let reparsed = computeBlocks(windowText, registry: registry).map { $0.shifted(by: winStart) }
-        // A trailing fence/latex/extension block reaching the window end might continue past it.
+        // 5. Reparse the window, extending it until the trailing block cannot
+        // absorb or reinterpret untouched suffix lines. A fixed block margin
+        // is insufficient because setext underlines, table separators and
+        // continuation lines act on the block before them.
+        //
+        // Bounded, because each extension reparses from `winStart` again: a
+        // document of blocks that are all context-sensitive — alternating list
+        // items and blockquote lines, say — never reaches a stable trailing
+        // block, so the window walks to the end and the whole thing is
+        // quadratic. Measured before this bound: 370 ms per keystroke on a
+        // 10 kB alternating chain, against an 8 ms budget. Past either limit a
+        // single full parse is both cheaper and simpler than continuing, so
+        // give up and let the caller do exactly one.
+        var winEndNew = 0
+        var reparsed: [Block] = []
+        var extensions = 0
+        while true {
+            winEndNew = NSMaxRange(oldBlocks[winLast].range) + delta
+            guard winEndNew >= winStart, winEndNew <= newLen else { return nil }
+            guard winEndNew - winStart <= maximumIncrementalWindow else { return nil }
+            let windowText = newNS.substring(
+                with: NSRange(location: winStart, length: winEndNew - winStart)
+            )
+            reparsed = computeBlocks(
+                windowText,
+                registry: registry,
+                documentOffset: winStart
+            ).map { $0.shifted(by: winStart) }
+
+            guard winLast + 1 < oldBlocks.count,
+                  trailingBlockNeedsFollowingText(
+                    reparsed,
+                    windowEnd: winEndNew,
+                    in: newNS,
+                    registry: registry
+                  )
+            else { break }
+            extensions += 1
+            guard extensions <= maximumWindowExtensions else { return nil }
+            winLast += 1
+        }
+        // A trailing fence or extension block reaching the window end might continue past it.
         if let last = reparsed.last, NSMaxRange(last.range) >= winEndNew {
             switch last.kind {
-            case .fencedCode, .blockLatex, .ext: return nil
+            case .frontmatter, .fencedCode, .ext:
+                if !opaqueBlockClosesWithinRange(last, in: newNS, registry: registry) {
+                    return nil
+                }
+            case .linkDefinition, .footnoteDefinition:
+                return nil
             case .paragraph:
                 // The edit may have dissolved the separator that used to end
                 // this paragraph (backspace-joining two paragraphs): if the
@@ -258,7 +320,100 @@ enum BlockParser {
         return (result, reparsed.count)
     }
 
-    static func computeBlocks(_ text: String, registry: ExtensionRegistry = .empty) -> [Block] {
+    private static func trailingBlockNeedsFollowingText(
+        _ blocks: [Block],
+        windowEnd: Int,
+        in text: NSString,
+        registry: ExtensionRegistry
+    ) -> Bool {
+        guard let last = blocks.last, NSMaxRange(last.range) >= windowEnd else {
+            return false
+        }
+        // The question is not "is this KIND context-sensitive" but "can the line
+        // that actually follows change THIS block". Answering it by kind alone
+        // extended the window for a list item followed by a blockquote, which
+        // cannot continue it — and in a document that alternates the two, the
+        // window never settles and walks to the end.
+        let next = lineAfter(windowEnd, in: text)
+        switch last.kind {
+        case .list:
+            // A list block groups list-item lines and their indented
+            // continuations; a blank line or anything else ends it.
+            guard let next else { return false }
+            return isListItem(next) || isIndentedCodeLine(next)
+        case .blockquote:
+            guard let next else { return false }
+            return isBlockquote(next)
+        case .table:
+            guard let next else { return false }
+            return isTableRow(next)
+        case .paragraph, .linkDefinition, .footnoteDefinition:
+            // A paragraph absorbs almost any non-blank line, and a following
+            // `===`/`---` turns it into a setext heading; definitions take
+            // indented continuations. A blank line ends all three, and that is
+            // the common case, so this is cheap in practice.
+            guard let next else { return false }
+            return !isBlank(next)
+        case .frontmatter, .fencedCode, .ext:
+            return !opaqueBlockClosesWithinRange(last, in: text, registry: registry)
+        case .blank:
+            guard blocks.count > 1 else { return false }
+            let previous = blocks[blocks.count - 2]
+            guard previous.kind == .fencedCode else { return false }
+            return !opaqueBlockClosesWithinRange(previous, in: text, registry: registry)
+        case .heading, .thematicBreak:
+            return false
+        }
+    }
+
+    /// The whole line beginning at `offset`, or nil at the end of the document.
+    private static func lineAfter(_ offset: Int, in text: NSString) -> String? {
+        guard offset >= 0, offset < text.length else { return nil }
+        return text.substring(with: text.lineRange(for: NSRange(location: offset, length: 0)))
+    }
+
+    private static func opaqueBlockClosesWithinRange(
+        _ block: Block,
+        in text: NSString,
+        registry: ExtensionRegistry
+    ) -> Bool {
+        let blockEnd = NSMaxRange(block.range)
+        guard block.range.location >= 0, block.range.length > 0, blockEnd <= text.length else {
+            return false
+        }
+
+        let openingLine = NSIntersectionRange(
+            text.lineRange(for: NSRange(location: block.range.location, length: 0)),
+            block.range
+        )
+        let closingLine = NSIntersectionRange(
+            text.lineRange(for: NSRange(location: blockEnd - 1, length: 0)),
+            block.range
+        )
+        guard closingLine.location > openingLine.location else { return false }
+
+        let openingText = text.substring(with: openingLine)
+        let closingText = text.substring(with: closingLine)
+        switch block.kind {
+        case .frontmatter:
+            let close = lineBody(closingText)
+            return lineBody(openingText) == "---" && (close == "---" || close == "...")
+        case .fencedCode:
+            guard let opening = fence(openingText) else { return false }
+            return isFenceClose(closingText, opening: opening)
+        case .ext(let id):
+            guard let fence = registry.blockEntry(for: id)?.fence else { return false }
+            return closingText.hasPrefix(fence)
+        default:
+            return false
+        }
+    }
+
+    static func computeBlocks(
+        _ text: String,
+        registry: ExtensionRegistry = .empty,
+        documentOffset: Int = 0
+    ) -> [Block] {
         let nsText = text as NSString
         let length = nsText.length
         guard length > 0 else { return [] }
@@ -274,23 +429,31 @@ enum BlockParser {
 
         func lineText(_ i: Int) -> String { nsText.substring(with: lines[i]) }
 
-        /// Line index of the fence closing a code block opened at `start`; nil when unclosed.
-        func fenceCloseIndex(from start: Int) -> Int? {
+        /// Line index of the matching fence closing a code block opened at `start`; nil when unclosed.
+        func fenceCloseIndex(from start: Int, opening: Fence) -> Int? {
             var scan = start + 1
             while scan < lines.count {
-                if isFence(lineText(scan)) { return scan }
+                if isFenceClose(lineText(scan), opening: opening) { return scan }
                 scan += 1
             }
             return nil
         }
 
-        /// Line index of the `$$` closing a block-LaTeX run opened at `start`; nil if none.
-        func blockLatexCloseIndex(from start: Int) -> Int? {
-            let open = lineText(start).trimmingCharacters(in: .whitespacesAndNewlines)
-            if open.dropFirst(2).contains("$$") { return start }
-            var j = start + 1
-            while j < lines.count { if lineText(j).contains("$$") { return j }; j += 1 }
+        func frontmatterCloseIndex() -> Int? {
+            guard documentOffset == 0, lineBody(lineText(0)) == "---" else { return nil }
+            for scan in 1..<lines.count {
+                let body = lineBody(lineText(scan))
+                if body == "---" || body == "..." { return scan }
+            }
             return nil
+        }
+
+        func isLinkDefinitionLine(_ index: Int) -> Bool {
+            MarkdownLinkSyntax.linkDefinition(in: nsText, lineRange: lines[index]) != nil
+        }
+
+        func isFootnoteDefinitionLine(_ index: Int) -> Bool {
+            MarkdownLinkSyntax.footnoteDefinitionHeader(in: nsText, lineRange: lines[index]) != nil
         }
 
         // 2. Classify + group.
@@ -299,19 +462,54 @@ enum BlockParser {
         while i < lines.count {
             let line = lineText(i)
 
-            if isBlank(line) {
+            if i == 0, let end = frontmatterCloseIndex() {
+                blocks.append(Block(kind: .frontmatter, range: union(lines[i...end])))
+                i = end + 1
+
+            } else if isFootnoteDefinitionLine(i) {
+                var end = i
+                while end + 1 < lines.count, isIndentedCodeLine(lineText(end + 1)) {
+                    end += 1
+                }
+                blocks.append(Block(kind: .footnoteDefinition, range: union(lines[i...end])))
+                i = end + 1
+
+            } else if isLinkDefinitionLine(i) {
+                var end = i
+                while end + 1 < lines.count, isLinkDefinitionLine(end + 1) { end += 1 }
+                blocks.append(Block(kind: .linkDefinition, range: union(lines[i...end])))
+                i = end + 1
+
+            } else if isBlank(line) {
                 var end = i
                 while end + 1 < lines.count, isBlank(lineText(end + 1)) { end += 1 }
                 blocks.append(Block(kind: .blank, range: union(lines[i...end])))
                 i = end + 1
 
-            } else if isFence(line), let end = fenceCloseIndex(from: i) {
+            } else if let opening = fence(line), let end = fenceCloseIndex(from: i, opening: opening) {
                 blocks.append(Block(kind: .fencedCode, range: union(lines[i...end])))
                 i = end + 1
 
             } else if isThematicBreak(line) {
                 blocks.append(Block(kind: .thematicBreak, range: lines[i]))
                 i += 1
+
+            } else if isIndentedCodeLine(line) && !isListItem(line) {
+                var scan = i
+                var end = i
+                while scan + 1 < lines.count {
+                    let next = lineText(scan + 1)
+                    if isBlank(next) {
+                        scan += 1
+                    } else if isIndentedCodeLine(next) {
+                        scan += 1
+                        end = scan
+                    } else {
+                        break
+                    }
+                }
+                blocks.append(Block(kind: .fencedCode, range: union(lines[i...end])))
+                i = end + 1
 
             } else if isHeading(line) {
                 blocks.append(Block(kind: .heading, range: lines[i]))
@@ -324,9 +522,14 @@ enum BlockParser {
                 i = end + 1
 
             } else if isListItem(line) {
-                // Consecutive list-item lines form one list block; per-item detail is parsed in DocumentAST.
+                // Four-column continuation lines belong to the preceding item;
+                // classifying them as code would split a list in the middle.
                 var end = i
-                while end + 1 < lines.count, isListItem(lineText(end + 1)) { end += 1 }
+                while end + 1 < lines.count {
+                    let next = lineText(end + 1)
+                    guard isListItem(next) || isIndentedCodeLine(next) else { break }
+                    end += 1
+                }
                 blocks.append(Block(kind: .list, range: union(lines[i...end])))
                 i = end + 1
 
@@ -335,11 +538,6 @@ enum BlockParser {
                 var end = i + 1
                 while end + 1 < lines.count, isTableRow(lineText(end + 1)) { end += 1 }
                 blocks.append(Block(kind: .table, range: union(lines[i...end])))
-                i = end + 1
-
-            } else if isBlockLatexOpen(line), let end = blockLatexCloseIndex(from: i) {
-                // Block LaTeX `$$…$$` — a single line or a `$$`-delimited run.
-                blocks.append(Block(kind: .blockLatex, range: union(lines[i...end])))
                 i = end + 1
 
             } else if let entry = registry.blockEntry(opening: line) {
@@ -359,21 +557,38 @@ enum BlockParser {
             } else {
                 // Paragraph: merge consecutive plain (non-blank, non-special) lines.
                 var end = i
+                var setextEnd: Int?
                 while end + 1 < lines.count {
                     let next = lineText(end + 1)
+                    if setextLevel(next) != nil {
+                        setextEnd = end + 1
+                        break
+                    }
+                    // Indented code cannot interrupt paragraph text. This check
+                    // must precede list/heading recognition on the indented line.
+                    if isIndentedCodeLine(next) {
+                        end += 1
+                        continue
+                    }
                     if isBlank(next) || isThematicBreak(next)
-                        || isHeading(next) || isBlockquote(next) || isListItem(next) { break }
-                    // A table (row + separator), a CLOSED code fence, a
-                    // block-LaTeX run, or an extension fence interrupts it —
+                        || isHeading(next) || isBlockquote(next) || isListItem(next)
+                        || isLinkDefinitionLine(end + 1) || isFootnoteDefinitionLine(end + 1) { break }
+                    // A table (row + separator), a CLOSED code fence, or an
+                    // extension fence interrupts it —
                     // an unclosed opener stays part of the paragraph.
-                    if isFence(next), fenceCloseIndex(from: end + 1) != nil { break }
+                    if let opening = fence(next),
+                       fenceCloseIndex(from: end + 1, opening: opening) != nil { break }
                     if isTableRow(next), end + 2 < lines.count, isTableSeparator(lineText(end + 2)) { break }
-                    if isBlockLatexOpen(next), blockLatexCloseIndex(from: end + 1) != nil { break }
                     if registry.blockEntry(opening: next) != nil { break }
                     end += 1
                 }
-                blocks.append(Block(kind: .paragraph, range: union(lines[i...end])))
-                i = end + 1
+                if let setextEnd {
+                    blocks.append(Block(kind: .heading, range: union(lines[i...setextEnd])))
+                    i = setextEnd + 1
+                } else {
+                    blocks.append(Block(kind: .paragraph, range: union(lines[i...end])))
+                    i = end + 1
+                }
             }
         }
         return blocks
@@ -385,17 +600,74 @@ enum BlockParser {
         line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// An opening or closing fence line: starts with three backticks.
-    private static func isFence(_ line: String) -> Bool {
-        line.hasPrefix("```")
+    private struct Fence {
+        let character: Character
+        let count: Int
     }
 
-    /// `^\s*(-{3,}|\*{3,}|_{3,})\s*$` — a solid run of 3+ of one of `- * _`.
+    /// Column-zero matching preserves the engine's existing fence indentation contract.
+    private static func fence(_ line: String) -> Fence? {
+        let body = lineBody(line)
+        guard let character = body.first, character == "`" || character == "~" else { return nil }
+        let count = body.prefix { $0 == character }.count
+        guard count >= 3 else { return nil }
+        return Fence(character: character, count: count)
+    }
+
+    private static func isFenceClose(_ line: String, opening: Fence) -> Bool {
+        let body = lineBody(line)
+        let run = body.prefix { $0 == opening.character }
+        guard run.count >= opening.count else { return false }
+        return body.dropFirst(run.count).allSatisfy { $0 == " " || $0 == "\t" }
+    }
+
     private static func isThematicBreak(_ line: String) -> Bool {
         let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard t.count >= 3, let first = t.first,
+        guard let first = t.first,
               first == "-" || first == "*" || first == "_" else { return false }
-        return t.allSatisfy { $0 == first }
+        let markers = t.filter { $0 != " " && $0 != "\t" }
+        return markers.count >= 3 && markers.allSatisfy { $0 == first }
+    }
+
+    private static func setextLevel(_ line: String) -> Int? {
+        let body = lineBody(line)
+        let indent = body.prefix { $0 == " " }.count
+        guard indent <= 3 else { return nil }
+        let rest = body.dropFirst(indent)
+        guard let marker = rest.first, marker == "=" || marker == "-" else { return nil }
+        let run = rest.prefix { $0 == marker }
+        guard !run.isEmpty,
+              rest.dropFirst(run.count).allSatisfy({ $0 == " " || $0 == "\t" }) else { return nil }
+        return marker == "=" ? 1 : 2
+    }
+
+    private static func isIndentedCodeLine(_ line: String) -> Bool {
+        indentationColumns(line) >= 4
+    }
+
+    private static func indentationColumns(_ line: String) -> Int {
+        var column = 0
+        for character in line {
+            if character == " " {
+                column += 1
+            } else if character == "\t" {
+                column += 4 - column % 4
+            } else {
+                break
+            }
+        }
+        return column
+    }
+
+    private static func lineBody(_ line: String) -> Substring {
+        line.dropLast(line.reversed().prefix { $0.isNewline }.count)
+    }
+
+    private static func isFrontmatterDelimiter(_ buf: [unichar], from start: Int, to end: Int) -> Bool {
+        guard end - start == 3 else { return false }
+        let first = buf[start]
+        guard first == 0x2D || first == 0x2E else { return false }
+        return buf[start + 1] == first && buf[start + 2] == first
     }
 
     /// `^\s*#{1,6} +…` — 1–6 hashes after optional indent, then at least one space.
@@ -450,11 +722,6 @@ enum BlockParser {
         return !middle.isEmpty && middle.allSatisfy {
             $0 == "-" || $0 == ":" || $0 == "|" || $0 == " " || $0 == "\t"
         }
-    }
-
-    /// A block-LaTeX opener: a line whose content starts with `$$`.
-    private static func isBlockLatexOpen(_ line: String) -> Bool {
-        line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("$$")
     }
 
     private static func union(_ ranges: ArraySlice<NSRange>) -> NSRange {

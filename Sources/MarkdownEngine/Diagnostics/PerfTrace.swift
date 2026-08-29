@@ -19,8 +19,8 @@ import Foundation
 enum PerfTrace {
 #if DEBUG
     static var enabled = ProcessInfo.processInfo.environment["MD_PERF"] != "0"
-    /// Opt-in for the sampled full-rebuild verifier asserts (wiki splice,
-    /// backtick census, parse buffer). They run 3× O(doc) work synchronously
+    /// Opt-in for the sampled full-rebuild verifier asserts (backtick census,
+    /// parse buffer). They run 3× O(doc) work synchronously
     /// on every 64th keystroke — periodic spikes that pollute the PERF
     /// numbers — so they stay off unless explicitly requested.
     static let verifyEnabled = ProcessInfo.processInfo.environment["MD_PERF_VERIFY"] == "1"
@@ -30,7 +30,7 @@ enum PerfTrace {
 #endif
 
     // All call sites run on the main thread (the coordinator + text view are
-    // main-actor), so plain static state is safe under the package's Swift 5 mode.
+    // main-actor), so plain static state is safe under the package's Swift 6 isolation.
     private static var active = false
     private static var frameStart: UInt64 = 0
     private static var docLength = 0

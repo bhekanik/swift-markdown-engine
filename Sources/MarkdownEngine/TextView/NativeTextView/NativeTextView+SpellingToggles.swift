@@ -8,7 +8,7 @@
 //  these action methods. We forward to `super` so the standard menu state
 //  flips, then snapshot the result into the coordinator so the user's choice
 //  survives the next `updateAutocorrectSettings` pass (which otherwise
-//  restores the "on" state whenever the caret leaves a code/LaTeX/link span).
+//  restores the "on" state whenever the caret leaves a code/link span).
 //
 
 import AppKit

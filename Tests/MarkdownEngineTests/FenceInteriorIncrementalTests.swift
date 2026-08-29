@@ -4,11 +4,10 @@
 //
 //  Created by Luca Chen on 12.07.26.
 //
-//  Typing INSIDE a fenced code / $$ block used to bail the incremental block
-//  parse (full O(doc) reparse every keystroke). The window splice now handles
-//  interior edits; these pin the two main cases plus the indented-$$ opener
-//  regression the review caught. Broad differential coverage lives in the
-//  pre-existing ParseIncrementalEquivalenceTests fuzz (fence + $$ templates).
+//  Typing INSIDE a fenced code block used to bail the incremental block parse
+//  (full O(doc) reparse every keystroke). The window splice now handles
+//  interior edits. Broad differential coverage lives in the pre-existing
+//  ParseIncrementalEquivalenceTests fuzz.
 //
 
 import Foundation
@@ -54,21 +53,21 @@ struct FenceInteriorIncrementalTests {
         #expect(spliceEqualsFullParse(old, at: editLoc, remove: 1, insert: "value") == true)
     }
 
-    @Test func interiorBlockLatexEditSplicesIncrementally() {
-        let old = "before\n\n$$\nE = mc^2\n$$\n\nafter text"
-        let editLoc = (old as NSString).range(of: "mc^2").location
-        #expect(spliceEqualsFullParse(old, at: editLoc, remove: 0, insert: "k") == true)
+    @Test("a paragraph abutting a closed fence still takes the splice path")
+    func paragraphBeforeClosedFenceSplicesIncrementally() throws {
+        let old = "first paragraph\n```swift\nlet x = 1\n```\nafter\n"
+        let editLoc = (old as NSString).range(of: "paragraph").location + 4
+        let (new, diff) = splice(old, at: editLoc, remove: 0, insert: "X")
+
+        let spliced = try #require(BlockParser.incrementalParse(
+            oldChars: chars(old),
+            oldBlocks: BlockParser.computeBlocks(old),
+            newChars: chars(new),
+            newNS: new as NSString,
+            diff: diff
+        ))
+
+        #expect(spliced.blocks == BlockParser.computeBlocks(new))
     }
 
-    // Review regression: isBlockLatexOpen matches the TRIMMED line prefix, so
-    // an edit in the leading whitespace of an indented `$$` opener flips its
-    // pairing from past the old ±3-char delimiter guard. The splice must bail
-    // or match ground truth.
-    @Test func indentedLatexOpenerWhitespaceInsertStaysEquivalent() {
-        let old = "intro\n\n   $$\n   a = 1\n   $$\nmiddle text\n\n$$\nb = 2\n$$\ntail"
-        let openerLoc = (old as NSString).range(of: "   $$").location
-        if let result = spliceEqualsFullParse(old, at: openerLoc, remove: 0, insert: "x") {
-            #expect(result)
-        }
-    }
 }

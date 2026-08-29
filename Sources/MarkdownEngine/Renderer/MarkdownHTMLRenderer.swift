@@ -21,66 +21,56 @@ public enum MarkdownHTMLRenderer {
     /// unregistered extension's syntax stays literal text.
     public static func html(
         from markdown: String,
-        extensions: [any MarkdownExtension] = [],
-        directives: [any MarkdownDirective] = [],
-        directiveSettings: DirectiveRegistrySettings = .default
+        extensions: [any MarkdownExtension] = []
     ) -> String {
         let ns = markdown as NSString
-        let env = Env(registry: ExtensionRegistry(
-                          extensions: extensions,
-                          directives: DirectiveRegistry(directives: directives, settings: directiveSettings)
-                      ),
+        let registry = ExtensionRegistry(extensions: extensions)
+        let blocks = DocumentAST.parse(markdown, registry: registry)
+        var definitions: [String: ReferenceDefinition] = [:]
+        for block in blocks {
+            guard case .linkDefinition(_, let label, let destination, let title) = block else { continue }
+            let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label)
+            if definitions[key] == nil {
+                definitions[key] = ReferenceDefinition(
+                    destination: MarkdownLinkSyntax.unescapedText(in: ns, range: destination),
+                    title: title.map { MarkdownLinkSyntax.unescapedText(in: ns, range: $0) }
+                )
+            }
+        }
+        let env = Env(registry: registry,
                       byID: {
                           var out: [String: any MarkdownExtension] = [:]
                           for ext in extensions { out[ext.id] = ext }
                           return out
                       }(),
-                      directivesByID: {
-                          var out: [String: any MarkdownDirective] = [:]
-                          for directive in directives { out[directive.id] = directive }
-                          return out
-                      }())
-        let blocks = DocumentAST.parse(markdown, registry: env.registry)
+                      definitions: definitions)
         let pieces = blocks.compactMap { block(for: $0, ns: ns, env: env) }
         return pieces.joined(separator: "\n")
     }
 
     /// Extension lookup threaded through the render walk.
+    private struct ReferenceDefinition {
+        let destination: String
+        let title: String?
+    }
+
     private struct Env {
         let registry: ExtensionRegistry
         let byID: [String: any MarkdownExtension]
-        var directivesByID: [String: any MarkdownDirective] = [:]
-        static let empty = Env(registry: .empty, byID: [:])
-
-        /// The directive behind an AST node id, or nil when the node is an
-        /// ordinary extension span.
-        func directive(forNodeID nodeID: String) -> (any MarkdownDirective)? {
-            DirectiveRegistry.directiveID(forNodeID: nodeID).flatMap { directivesByID[$0] }
-        }
-    }
-
-    /// Render a directive node: arguments are recovered from the prefix marker,
-    /// exactly as the styler does, so HTML and on-screen styling can never
-    /// disagree about what was passed.
-    private static func directiveHTML(
-        _ directive: any MarkdownDirective,
-        node: ExtensionInlineNode,
-        bodyHTML: String,
-        ns: NSString
-    ) -> String {
-        let prefix = node.markers.first ?? node.range
-        let arguments = DirectiveArguments(
-            parsing: DirectiveScanner.argumentsRange(inPrefix: prefix, of: ns),
-            in: ns,
-            schema: directive.syntax.parameters
-        )
-        return directive.html(arguments: arguments, bodyHTML: bodyHTML)
+        let definitions: [String: ReferenceDefinition]
+        static let empty = Env(registry: .empty, byID: [:], definitions: [:])
     }
 
     // MARK: - Blocks
 
     private static func block(for node: BlockNode, ns: NSString, env: Env) -> String? {
         switch node {
+        case .frontmatter, .linkDefinition:
+            return nil
+
+        case .footnoteDefinition(_, _, _, let inlines):
+            return "<p>\(renderInlines(inlines, ns: ns, env: env))</p>"
+
         case .heading(let level, _, _, let inlines):
             let l = min(max(level, 1), 6)
             return "<h\(l)>\(renderInlines(inlines, ns: ns, env: env))</h\(l)>"
@@ -97,11 +87,8 @@ public enum MarkdownHTMLRenderer {
         case .codeBlock(let range):
             return renderCodeBlock(range: range, ns: ns)
 
-        case .blockLatex(let range):
-            return "<pre>\(escape(ns.substring(with: range).trimmingCharacters(in: .newlines)))</pre>"
-
         case .table(let range):
-            return renderTable(range: range, ns: ns)
+            return renderTable(range: range, ns: ns, env: env)
 
         case .thematicBreak:
             return "<hr>"
@@ -131,7 +118,11 @@ public enum MarkdownHTMLRenderer {
             .map(stripQuoteMarkers)
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
-        let inlines = InlineParser.parse(stripped, registry: env.registry)
+        let inlines = InlineParser.parse(
+            stripped,
+            registry: env.registry,
+            referenceDefinitions: Set(env.definitions.keys)
+        )
         return "<blockquote>\(renderInlines(inlines, ns: stripped as NSString, env: env))</blockquote>"
     }
 
@@ -193,9 +184,15 @@ public enum MarkdownHTMLRenderer {
         var lines = raw.components(separatedBy: "\n")
         if lines.last == "" { lines.removeLast() }   // drop trailing-newline artifact
 
-        let language = fenceLanguage(lines.first ?? "")
-        var body = Array(lines.dropFirst())
-        if let last = body.last, isFenceLine(last) { body.removeLast() }
+        let opening = fence(lines.first ?? "")
+        let language = opening?.language
+        var body: [String]
+        if let opening {
+            body = Array(lines.dropFirst())
+            if let last = body.last, isFenceLine(last, matching: opening) { body.removeLast() }
+        } else {
+            body = lines.map(stripCodeIndent)
+        }
 
         let escaped = escape(body.joined(separator: "\n"))
         if let language, !language.isEmpty {
@@ -204,26 +201,56 @@ public enum MarkdownHTMLRenderer {
         return "<pre><code>\(escaped)</code></pre>"
     }
 
-    /// The parser only produces column-0 backtick fences (BlockParser.isFence),
-    /// so match that contract when stripping the closing fence line.
-    private static func isFenceLine(_ line: String) -> Bool {
-        line.hasPrefix("```")
+    private static func isFenceLine(
+        _ line: String,
+        matching opening: (character: Character, count: Int, language: String?)
+    ) -> Bool {
+        let run = line.prefix { $0 == opening.character }
+        return run.count >= opening.count
+            && line.dropFirst(run.count).allSatisfy { $0 == " " || $0 == "\t" }
     }
 
-    /// Language info-string from an opening fence line (chars after the backticks).
-    private static func fenceLanguage(_ line: String) -> String? {
-        let lang = line.drop { $0 == "`" }.trimmingCharacters(in: .whitespaces)
-        return lang.isEmpty ? nil : lang
+    private static func fence(_ line: String) -> (character: Character, count: Int, language: String?)? {
+        guard let character = line.first, character == "`" || character == "~" else { return nil }
+        let count = line.prefix { $0 == character }.count
+        guard count >= 3 else { return nil }
+        let language = line.dropFirst(count).trimmingCharacters(in: .whitespaces)
+        return (character, count, language.isEmpty ? nil : language)
     }
 
-    private static func renderTable(range: NSRange, ns: NSString) -> String {
+    private static func stripCodeIndent(_ line: String) -> String {
+        var rest = Substring(line)
+        var column = 0
+        while column < 4, let character = rest.first {
+            if character == " " {
+                column += 1
+            } else if character == "\t" {
+                column = 4
+            } else {
+                break
+            }
+            rest = rest.dropFirst()
+        }
+        return String(rest)
+    }
+
+    private static func renderTable(range: NSRange, ns: NSString, env: Env) -> String {
         let raw = ns.substring(with: range)
         guard let parsed = MarkdownStyler.parseTableSource(raw) else {
             return "<pre>\(escape(raw.trimmingCharacters(in: .newlines)))</pre>"
         }
-        let head = parsed.header.map { "<th>\(escape($0))</th>" }.joined()
+        func renderCell(_ cell: String) -> String {
+            let cellSource = cell as NSString
+            let nodes = MarkdownTableRowSource.inlineNodes(
+                in: cell,
+                registry: env.registry,
+                referenceDefinitions: Set(env.definitions.keys)
+            )
+            return renderInlines(nodes, ns: cellSource, env: env)
+        }
+        let head = parsed.header.map { "<th>\(renderCell($0))</th>" }.joined()
         let body = parsed.rows.map { row in
-            "<tr>" + row.map { "<td>\(escape($0))</td>" }.joined() + "</tr>"
+            "<tr>" + row.map { "<td>\(renderCell($0))</td>" }.joined() + "</tr>"
         }.joined()
         return "<table><thead><tr>\(head)</tr></thead><tbody>\(body)</tbody></table>"
     }
@@ -255,30 +282,50 @@ public enum MarkdownHTMLRenderer {
             case .boldItalic: return "<strong><em>\(inner)</em></strong>"
             }
 
-        case .link(_, _, let url, _, let children):
-            return "<a href=\"\(escape(ns.substring(with: url)))\">\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
+        case .link(_, _, let url, let title, _, let children):
+            let titleAttribute = title.map {
+                " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""
+            } ?? ""
+            let destination = MarkdownLinkSyntax.unescapedText(in: ns, range: url)
+            return "<a href=\"\(escape(destination))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
 
-        case .image(_, let alt, let url, _):
-            return "<img src=\"\(escape(ns.substring(with: url)))\" alt=\"\(escape(ns.substring(with: alt)))\">"
+        case .image(_, let alt, let url, let title, _):
+            let titleAttribute = title.map {
+                " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""
+            } ?? ""
+            let destination = MarkdownLinkSyntax.unescapedText(in: ns, range: url)
+            let label = MarkdownLinkSyntax.unescapedText(in: ns, range: alt)
+            return "<img src=\"\(escape(destination))\" alt=\"\(escape(label))\"\(titleAttribute)>"
 
-        case .wikiLink(_, let name, _, _):
-            return escape(ns.substring(with: name))
+        case .referenceImage(_, let alt, let label, _, let children):
+            let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label ?? alt)
+            guard let definition = env.definitions[key] else {
+                return escape(ns.substring(with: alt))
+            }
+            let titleAttribute = definition.title.map { " title=\"\(escape($0))\"" } ?? ""
+            let imageLabel = InlineParser.plainText(children, source: ns)
+            return "<img src=\"\(escape(definition.destination))\" alt=\"\(escape(imageLabel))\"\(titleAttribute)>"
 
-        case .imageEmbed(_, let target, _):
-            let t = escape(ns.substring(with: target))
-            return "<img src=\"\(t)\" alt=\"\(t)\">"
+        case .referenceLink(let range, let textRange, let label, _, let children):
+            let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label ?? textRange)
+            guard let definition = env.definitions[key] else {
+                return escape(MarkdownLinkSyntax.unescapedText(in: ns, range: range))
+            }
+            let titleAttribute = definition.title.map { " title=\"\(escape($0))\"" } ?? ""
+            return "<a href=\"\(escape(definition.destination))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
+
+        case .footnoteReference(_, let label, _):
+            return "<sup>\(escape(ns.substring(with: label)))</sup>"
+
+        case .hardBreak:
+            return "<br>\n"
+
+        case .autolink(_, let url, _):
+            let label = ns.substring(with: url)
+            let destination = MarkdownLinkSyntax.autolinkDestination(in: ns, range: url)
+            return "<a href=\"\(escape(destination))\">\(escape(label))</a>"
 
         case .ext(let node):
-            // A self-contained directive has no body; a container's body is
-            // its content range.
-            if let directive = env.directive(forNodeID: node.extensionID) {
-                let inner = node.markers.isEmpty
-                    ? ""
-                    : (node.children.isEmpty
-                        ? escape(ns.substring(with: node.contentRange))
-                        : renderInlines(node.children, ns: ns, env: env))
-                return directiveHTML(directive, node: node, bodyHTML: inner, ns: ns)
-            }
             guard let ext = env.byID[node.extensionID] else {
                 return escape(ns.substring(with: node.range))   // unknown id → literal
             }
@@ -286,9 +333,6 @@ public enum MarkdownHTMLRenderer {
                 ? escape(ns.substring(with: node.contentRange))
                 : renderInlines(node.children, ns: ns, env: env, linkable: linkable)
             return ext.html(childrenHTML: inner)
-
-        case .inlineLatex(let range, _, _):
-            return escape(ns.substring(with: range))
 
         case .escape(_, let character, _):
             return escape(ns.substring(with: character))

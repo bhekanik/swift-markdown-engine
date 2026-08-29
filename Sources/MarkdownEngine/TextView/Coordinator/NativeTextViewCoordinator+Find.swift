@@ -21,39 +21,29 @@ extension NSAttributedString.Key {
 }
 
 extension NativeTextViewCoordinator {
-    /// Legacy path: the host computes match ranges and posts them. Kept for compatibility, but
-    /// it trusts SOURCE-coordinate ranges, which misalign wherever the displayed text is shorter
-    /// than the source (node links etc.). Prefer `handleFindQuery`.
-    @objc func handleFindScrollToRange(_ notification: Notification) {
-        guard let info = notification.userInfo,
-              let currentIndex = info["currentIndex"] as? Int,
-              let allRanges = info["allRanges"] as? [NSRange] else { return }
+    func handleFindScrollToRange(
+        range _: NSRange?,
+        currentIndex: Int,
+        allRanges: [NSRange]
+    ) {
         renderFindMatches(allRanges, currentIndex: currentIndex)
     }
 
-    /// Find against the engine's OWN displayed text (`tv.string`). Matches are computed in
-    /// DISPLAY coordinates, so highlights land correctly even where the displayed text differs
-    /// from the source (node links rendered shorter than `[[Name|UUID]]`, LaTeX, images). Posts
-    /// the match count back via `bus.findResults` so the host can show "x of y".
-    @objc func handleFindQuery(_ notification: Notification) {
-        guard let tv = textView,
-              let info = notification.userInfo,
-              let query = info["query"] as? String else { return }
+    func handleFindQuery(query: String, currentIndex requestedIndex: Int) {
+        guard let tv = textView else { return }
         // Every live coordinator hears this (`object: nil`), and an editor the host
         // has routed away from can outlive its view for a while — it is not the
         // document being searched, and its answer would overwrite the real one's.
         // Measured: 24 coordinators replying to one ⌘F, 22 of them windowless with
         // an empty buffer, each reporting 0 matches and resetting the host's index.
         guard tv.window != nil else { return }
-        let requestedIndex = info["currentIndex"] as? Int ?? 0
-
         let allRanges = findMatches(of: query, in: tv.string as NSString)
         let currentIndex = allRanges.isEmpty ? 0 : min(max(requestedIndex, 0), allRanges.count - 1)
         renderFindMatches(allRanges, currentIndex: currentIndex)
         postFindResults(count: allRanges.count)
     }
 
-    /// All ranges of `query` in `haystack` (display coordinates), case- and
+    /// All ranges of `query` in `haystack` (file coordinates), case- and
     /// diacritic-insensitive. Shared by find and replace.
     func findMatches(of query: String, in haystack: NSString) -> [NSRange] {
         guard !query.isEmpty else { return [] }
@@ -78,18 +68,15 @@ extension NativeTextViewCoordinator {
 
     /// Replace the current find match with the replacement string (one undo
     /// step), then re-highlight and report the remaining match count.
-    @objc func handleReplaceCurrent(_ notification: Notification) {
+    func handleReplaceCurrent(query: String, replacement: String, currentIndex requestedIndex: Int) {
         guard let tv = textView, tv.isEditable,
-              let info = notification.userInfo,
-              let query = info["query"] as? String, !query.isEmpty,
-              let replacement = info["replacement"] as? String else { return }
-        let requestedIndex = info["currentIndex"] as? Int ?? 0
+              !query.isEmpty else { return }
 
         let matches = findMatches(of: query, in: tv.string as NSString)
         guard !matches.isEmpty else { postFindResults(count: 0); return }
         let idx = min(max(requestedIndex, 0), matches.count - 1)
         let target = matches[idx]
-        guard NSMaxRange(target) <= (tv.string as NSString).length else { return }
+        guard target.isWithin(documentLength: (tv.string as NSString).length) else { return }
 
         tv.breakUndoCoalescing()
         isProgrammaticEdit = true
@@ -109,23 +96,23 @@ extension NativeTextViewCoordinator {
     }
 
     /// Replace every find match in a single undo step, then re-highlight.
-    @objc func handleReplaceAll(_ notification: Notification) {
+    func handleReplaceAll(query: String, replacement: String) {
         guard let tv = textView, tv.isEditable,
-              let info = notification.userInfo,
-              let query = info["query"] as? String, !query.isEmpty,
-              let replacement = info["replacement"] as? String else { return }
+              !query.isEmpty else { return }
 
         let matches = findMatches(of: query, in: tv.string as NSString)
         guard !matches.isEmpty else { postFindResults(count: 0); return }
 
-        // Group as one undo; edit back-to-front so earlier ranges stay valid.
         let orderedRanges = matches.reversed().map { NSValue(range: $0) }
         let replacements = Array(repeating: replacement, count: matches.count)
 
         tv.breakUndoCoalescing()
         isProgrammaticEdit = true
         defer { isProgrammaticEdit = false }
-        guard tv.shouldChangeText(inRanges: orderedRanges, replacementStrings: replacements) else { return }
+        guard tv.shouldChangeText(
+            inRanges: orderedRanges,
+            replacementStrings: replacements
+        ) else { return }
         tv.textStorage?.beginEditing()
         for match in matches.reversed() {
             tv.textStorage?.replaceCharacters(in: match, with: replacement)
@@ -185,7 +172,7 @@ extension NativeTextViewCoordinator {
         let currentHighlightColor = theme.findCurrentMatchHighlight
 
         for (i, matchRange) in allRanges.enumerated() {
-            guard matchRange.location + matchRange.length <= fullRange.length else { continue }
+            guard matchRange.isWithin(documentLength: fullRange.length) else { continue }
             let color = (i == currentIndex) ? currentHighlightColor : highlightColor
             storage?.addAttribute(.backgroundColor, value: color, range: matchRange)
             storage?.addAttribute(.findHighlight, value: true, range: matchRange)
@@ -198,7 +185,7 @@ extension NativeTextViewCoordinator {
         // Scroll the current match into view.
         guard allRanges.indices.contains(currentIndex) else { return }
         let range = allRanges[currentIndex]
-        guard range.location + range.length <= fullRange.length else { return }
+        guard range.isWithin(documentLength: fullRange.length) else { return }
         // Scroll via TextKit 2 fragment layout, which works whether or not the
         // reading column is active. `scrollRangeToVisible` is unreliable for
         // off-screen content in a TextKit 2 text view (it routes through the
@@ -232,7 +219,7 @@ extension NativeTextViewCoordinator {
         }
     }
 
-    @objc func handleFindClearHighlights(_ notification: Notification) {
+    func handleFindClearHighlights() {
         guard let tv = textView else { return }
         let scrollView = tv.enclosingScrollView
         let preY = scrollView?.contentView.bounds.origin.y ?? 0

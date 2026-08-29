@@ -5,7 +5,7 @@
 
 import Foundation
 
-/// One completed native editor mutation in UTF-16 display-text coordinates.
+/// One completed native editor mutation in UTF-16 file coordinates.
 ///
 /// `range` addresses the text before the edit and `replacement` is the exact
 /// string that replaced it. MarkdownEngine reports only transitions backed by

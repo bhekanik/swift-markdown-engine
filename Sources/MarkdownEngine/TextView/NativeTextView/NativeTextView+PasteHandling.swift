@@ -21,21 +21,26 @@ extension NativeTextView {
 
         let pasteboard = NSPasteboard.general
 
-        if let imageEmbed = onPasteImage?(pasteboard), !imageEmbed.isEmpty {
-            insertBlockEmbed(imageEmbed)
+        // Our own copy: prefer the private raw-markdown flavor so an in-app
+        // copy→paste round-trips byte-exact, so this must win over the HTML
+        // branch below.
+        // Verbatim, both of them: the private flavor because
+        // MarkdownPasteboardWriter documents it as byte-exact, and everything
+        // in raw mode because raw is the source. Sanitising either one trimmed
+        // indented-code prefixes and trailing hard-break spaces, so pasting a
+        // copy from another Recto view changed the document.
+        let verbatim = pasteboard.string(forType: MarkdownPasteboardWriter.markdownType)
+            ?? (configuration.rawSourceMode
+                ? pasteboard.string(forType: .string)
+                    ?? textFromPastedFileURL(pasteboard: pasteboard)
+                : nil)
+        if let verbatim, !verbatim.isEmpty {
+            insertPasted(verbatim, replacementRange: selectedRange())
             return
         }
-
-        // Our own copy: prefer the private raw-markdown flavor so an in-app
-        // copy→paste round-trips byte-exact. The derived HTML flavor is lossy
-        // (e.g. the HTML renderer drops the `|UUID` of a wiki link), so this
-        // must win over the HTML branch below.
-        if let ownMarkdown = pasteboard.string(forType: MarkdownPasteboardWriter.markdownType) {
-            let sanitized = sanitizePastedText(ownMarkdown)
-            if !sanitized.isEmpty {
-                insertPreservingBlockquote(sanitized)
-                return
-            }
+        if configuration.rawSourceMode {
+            pasteAsPlainText(sender)
+            return
         }
 
         // Rich paste: convert an HTML flavor (Claude, browsers, Word, Notion)
@@ -106,21 +111,6 @@ extension NativeTextView {
         return t.count >= 3 && t.hasPrefix("|") && t.hasSuffix("|")
     }
 
-    private func insertBlockEmbed(_ embed: String) {
-        let sel = selectedRange()
-        let nsText = string as NSString
-        var prefix = ""
-        var suffix = ""
-        if sel.location > 0, nsText.character(at: sel.location - 1) != 0x0A {
-            prefix = "\n"
-        }
-        let afterLocation = sel.location + sel.length
-        if afterLocation < nsText.length, nsText.character(at: afterLocation) != 0x0A {
-            suffix = "\n"
-        }
-        insertPasted(prefix + embed + suffix, replacementRange: sel)
-    }
-
     /// Reads the textual content of a pasted markdown/text file URL — the
     /// fallback that makes iOS Universal Clipboard pastes useful.
     private func textFromPastedFileURL(pasteboard: NSPasteboard) -> String? {
@@ -148,9 +138,9 @@ extension NativeTextView {
     }
 
     override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if let answer = validateTextFinderAction(item) { return answer }
         if item.action == #selector(paste(_:)) {
             let pasteboard = NSPasteboard.general
-            if PasteboardImageReader.canPasteImage(from: pasteboard) { return true }
             if textFromPastedFileURL(pasteboard: pasteboard) != nil { return true }
         }
         return super.validateUserInterfaceItem(item)

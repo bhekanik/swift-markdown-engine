@@ -70,14 +70,13 @@ struct BlockParserTests {
 
     @Test("an unclosed fence stays literal text — blocks below are not swallowed")
     func unclosedFenceDoesNotSwallow() {
-        // ```\n then a table, a thematic break, block LaTeX, and a link
+        // ```\n then a table, a thematic break, and a link
         // paragraph — none of them may end up inside a code block.
-        let text = "```\n\n|a|b|\n|-|-|\n|1|2|\n\n---\n\n$$x$$\n\n[l](u)"
+        let text = "```\n\n|a|b|\n|-|-|\n|1|2|\n\n---\n\n[l](u)"
         let blocks = BlockParser.parse(text)
         #expect(!blocks.contains { $0.kind == .fencedCode })
         #expect(blocks.contains { $0.kind == .table })
         #expect(blocks.contains { $0.kind == .thematicBreak })
-        #expect(blocks.contains { $0.kind == .blockLatex })
         assertTiles(text)
     }
 
@@ -101,5 +100,171 @@ struct BlockParserTests {
         let text = "> a\n> b\nc"
         #expect(BlockParser.parse(text) == [b(.blockquote, 0, 8), b(.paragraph, 8, 1)])
         assertTiles(text)
+    }
+
+    @Test("frontmatter only pairs at document start and unterminated openers stay thematic breaks")
+    func frontmatterPairingIsDocumentScoped() {
+        let text = "---\ntitle: x\n...\nbody"
+        #expect(BlockParser.parse(text) == [
+            b(.frontmatter, 0, 17),
+            b(.paragraph, 17, 4),
+        ])
+        #expect(BlockParser.parse("---\ntitle: x") == [
+            b(.thematicBreak, 0, 4),
+            b(.paragraph, 4, 8),
+        ])
+        #expect(BlockParser.parse("body\n\n---\n") == [
+            b(.paragraph, 0, 5),
+            b(.blank, 5, 1),
+            b(.thematicBreak, 6, 4),
+        ])
+        assertTiles(text)
+    }
+
+    @Test("consecutive link definitions group and retain every destination")
+    func linkDefinitionsGroup() {
+        let text = " [One]: <https://example.com/a b> \"title\"\n[Two]: /two\n\nbody"
+        let blocks = BlockParser.parse(text)
+        #expect(blocks.map(\.kind) == [.linkDefinition, .blank, .paragraph])
+        #expect(blocks[0].range == NSRange(location: 0, length: 54))
+
+        let definitions = DocumentAST.parse(text).compactMap { node -> (String, String)? in
+            guard case .linkDefinition(_, let label, let destination, _) = node else { return nil }
+            let ns = text as NSString
+            return (ns.substring(with: label), ns.substring(with: destination))
+        }
+        #expect(definitions.map(\.0) == ["One", "Two"])
+        #expect(definitions.map(\.1) == ["https://example.com/a b", "/two"])
+        assertTiles(text)
+    }
+
+    @Test("link definitions find unescaped angle closers and retain source bytes")
+    func escapedLinkDefinitionDestination() throws {
+        let text = #"[id]: <https://example.com/a\>b> "ti\*tle""#
+        let node = try #require(DocumentAST.parse(text).first)
+        guard case .linkDefinition(let range, _, let destination, let title) = node else {
+            Issue.record("Expected link definition")
+            return
+        }
+        let ns = text as NSString
+        #expect(ns.substring(with: range) == text)
+        #expect(ns.substring(with: destination) == #"https://example.com/a\>b"#)
+        #expect(MarkdownLinkSyntax.unescapedText(in: ns, range: destination)
+            == "https://example.com/a>b")
+        #expect(title.map { MarkdownLinkSyntax.unescapedText(in: ns, range: $0) }
+            == "ti*tle")
+
+        let malformed = #"[id]: <https://example.com/a\>"#
+        #expect(BlockParser.parse(malformed).first?.kind == .paragraph)
+    }
+
+    @Test("reference labels reject raw and evenly escaped opening brackets")
+    func invalidReferenceLabelBrackets() {
+        for source in ["[ref[]: /uri", #"[ref\\[]: /uri"#] {
+            #expect(BlockParser.parse(source).allSatisfy { $0.kind != .linkDefinition })
+        }
+        #expect(BlockParser.parse(#"[ref\[]: /uri"#).first?.kind == .linkDefinition)
+    }
+
+    @Test("link definitions reject bare destination whitespace and ASCII controls")
+    func invalidBareDefinitionEscapes() {
+        let invalid = [#"[id]: /a\ b"#, #"[id]: /a\\ b"#]
+            + LinkDestinationTestFixtures.invalidBareControlReferences
+        for source in invalid {
+            #expect(BlockParser.parse(source).allSatisfy { $0.kind != .linkDefinition })
+        }
+    }
+
+    @Test("footnote definitions include four-space continuation lines")
+    func footnoteDefinitionContinuation() throws {
+        let text = "[^note]: first\n    *second*\nplain"
+        #expect(BlockParser.parse(text).map(\.kind) == [.footnoteDefinition, .paragraph])
+        let node = try #require(DocumentAST.parse(text).first)
+        guard case .footnoteDefinition(let range, let label, let markers, let inlines) = node else {
+            Issue.record("Expected footnote definition")
+            return
+        }
+        #expect(range == NSRange(location: 0, length: 28))
+        #expect((text as NSString).substring(with: label) == "note")
+        #expect(markers.count == 3)
+        #expect(inlines.contains { if case .emphasis = $0 { return true }; return false })
+        assertTiles(text)
+    }
+
+    @Test("frontmatter and tilde delimiters force a full incremental parse")
+    func newPairedDelimitersRipple() {
+        for text in ["---\n", "...\n", "~~~swift\n"] {
+            let chars = Array(text.utf16)
+            #expect(BlockParser.hasBlockDelimiter(chars, 0, chars.count))
+        }
+    }
+
+    @Test("setext underline closes a paragraph before thematic-break classification")
+    func setextHeadingPrecedesThematicBreak() {
+        let text = "Title\n---\nbody"
+        #expect(BlockParser.parse(text) == [
+            b(.heading, 0, 10),
+            b(.paragraph, 10, 4),
+        ])
+        if let first = DocumentAST.parse(text).first,
+           case .heading(let level, let range, let markers, _) = first {
+            #expect(level == 2)
+            #expect(range == NSRange(location: 0, length: 10))
+            #expect(markers == [NSRange(location: 6, length: 4)])
+        } else {
+            Issue.record("Expected setext heading node")
+        }
+        #expect(BlockParser.parse("Title\n = \t\n") == [b(.heading, 0, 11)])
+        assertTiles(text)
+    }
+
+    @Test("setext underline only closes paragraphs")
+    func setextDoesNotCloseOtherBlocks() {
+        #expect(BlockParser.parse("# Heading\n---\n").map(\.kind) == [.heading, .thematicBreak])
+        #expect(BlockParser.parse("- item\n---\n").map(\.kind) == [.list, .thematicBreak])
+        #expect(BlockParser.parse("> quote\n---\n").map(\.kind) == [.blockquote, .thematicBreak])
+        #expect(BlockParser.parse("\n---\n").map(\.kind) == [.blank, .thematicBreak])
+    }
+
+    @Test("tilde fences require matching characters and sufficient closing length")
+    func tildeFencePairing() {
+        let text = "~~~~swift\nx\n~~~~~\n"
+        #expect(BlockParser.parse(text) == [b(.fencedCode, 0, 18)])
+        let token = MarkdownTokenizer.parseTokensViaAST(in: text).first { $0.kind == .codeBlock }
+        #expect(token.flatMap { MarkdownTokenizer.extractLanguage(from: $0, in: text) } == "swift")
+        #expect(!BlockParser.parse("~~~~\nx\n~~~\n").contains { $0.kind == .fencedCode })
+        #expect(!BlockParser.parse("~~~\nx\n```\n").contains { $0.kind == .fencedCode })
+    }
+
+    @Test("indented code keeps internal blanks but leaves trailing blanks outside")
+    func indentedCodeBlock() {
+        let text = "    one\n\n\t two\n\nbody"
+        #expect(BlockParser.parse(text) == [
+            b(.fencedCode, 0, 15),
+            b(.blank, 15, 1),
+            b(.paragraph, 16, 4),
+        ])
+        #expect(BlockParser.parse("    # literal heading\n").map(\.kind) == [.fencedCode])
+        assertTiles(text)
+    }
+
+    @Test("indented code cannot interrupt a paragraph or split list content")
+    func indentedCodePrecedence() throws {
+        #expect(BlockParser.parse("paragraph\n    continuation\n").map(\.kind) == [.paragraph])
+        #expect(BlockParser.parse("- item\n    continuation\n").map(\.kind) == [.list])
+        let node = try #require(DocumentAST.parse("- item\n    continuation\n").first)
+        guard case .list(_, let items) = node else {
+            Issue.record("Expected list")
+            return
+        }
+        #expect(items.count == 1)
+    }
+
+    @Test("spaced thematic breaks win over lists while ordinary bullets remain lists")
+    func spacedThematicBreaks() {
+        for source in ["- - -\n", "* * *\n", "_ _ _\n", "-  -  -\n"] {
+            #expect(BlockParser.parse(source).map(\.kind) == [.thematicBreak], "source \(source.debugDescription)")
+        }
+        #expect(BlockParser.parse("- item\n").map(\.kind) == [.list])
     }
 }

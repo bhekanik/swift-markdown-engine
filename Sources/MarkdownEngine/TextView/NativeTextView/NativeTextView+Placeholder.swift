@@ -5,8 +5,7 @@
 //  Created by Luca Chen on 11.06.26.
 //
 //  Embedder-supplied ghost text shown while the document is empty. Lives inside
-//  the text view, so it sits below the scroll-away header band, tracks its
-//  animation, and scrolls with the content.
+//  the text view and scrolls with the content.
 //
 
 import AppKit

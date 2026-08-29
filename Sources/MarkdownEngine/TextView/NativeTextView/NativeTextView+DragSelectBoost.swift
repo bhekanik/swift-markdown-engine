@@ -23,7 +23,10 @@ extension NativeTextView {
         if remapClickInParagraphSpacing(event: event) { return }
         dragStartMouseScreenLoc = NSEvent.mouseLocation
         let boostTimer = Timer(timeInterval: 1.0 / configuration.dragSelection.ticksPerSecond, repeats: true) { [weak self] _ in
-            self?.performDragBoostTick()
+            // This timer runs in the main run loop installed by mouseDown(with:).
+            MainActor.assumeIsolated {
+                self?.performDragBoostTick()
+            }
         }
         RunLoop.current.add(boostTimer, forMode: .common)
         defer {

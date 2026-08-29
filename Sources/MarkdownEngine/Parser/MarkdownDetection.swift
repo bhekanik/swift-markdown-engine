@@ -5,7 +5,7 @@
 //  Created by Luca Chen on 18.02.26.
 //
 
-// Helper checks for questions like "is the cursor inside code or LaTeX?"
+// Helper checks for questions like "is the cursor inside code?"
 // and "which Markdown part is currently active?".
 import Foundation
 
@@ -26,10 +26,6 @@ enum MarkdownDetection {
         for (index, token) in tokens.enumerated() {
             let start = token.range.location
             let end = NSMaxRange(token.range)
-            if selectionRange.length > 0 && (token.kind == .inlineLatex || token.kind == .blockLatex) && NSIntersectionRange(selectionRange, token.range).length > 0 {
-                indices.insert(index)
-                continue
-            }
             if caretLocation >= start && caretLocation < end {
                 indices.insert(index)
                 continue
@@ -125,7 +121,7 @@ enum MarkdownDetection {
     /// window counts composable: full = fullBefore − windowBefore + windowAfter.
     static func backtickWindowCount(in text: NSString, around range: NSRange) -> Int {
         let length = text.length
-        guard range.location >= 0, NSMaxRange(range) <= length else { return 0 }
+        guard range.isWithin(documentLength: length) else { return 0 }
         var lo = range.location
         while lo > 0, text.character(at: lo - 1) == 0x60 { lo -= 1 }
         var hi = NSMaxRange(range)
@@ -143,28 +139,6 @@ enum MarkdownDetection {
             i += 1
         }
         return count + run / 3
-    }
-
-    // MARK: - LaTeX Detection
-
-    /// Slow: parses tokens each call. The registry matters here: a registered
-    /// extension (e.g. `==$==$`) can claim characters that would otherwise
-    /// pair into a phantom `$…$`, so parsing with `.empty` diverges from the
-    /// styled document.
-    static func isInsideLatex(location: Int, in text: String, registry: ExtensionRegistry = .empty) -> Bool {
-        let tokens = MarkdownTokenizer.parseTokensViaAST(in: text, registry: registry)
-        let latexTokens = tokens.filter { $0.kind == .inlineLatex || $0.kind == .blockLatex }
-        return isInsideLatex(location: location, latexTokens: latexTokens)
-    }
-
-    static func isInsideLatex(location: Int, latexTokens: [MarkdownToken]) -> Bool {
-        guard !latexTokens.isEmpty else { return false }
-        for token in latexTokens {
-            let start = token.range.location
-            let end = start + token.range.length
-            if location >= start && location <= end { return true }
-        }
-        return false
     }
 
 }

@@ -35,7 +35,6 @@ struct MarkdownTextMutationTests {
         coordinator.textView = textView
         coordinator.rebuildTextStorageAndStyle(textView, from: text)
         coordinator.lastSyncedText = text
-        coordinator.lastComputedStorage = text
         coordinator.previousDisplayLength = (text as NSString).length
         return textView
     }

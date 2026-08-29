@@ -116,35 +116,12 @@ struct InlineParserTests {
         #expect(InlineParser.parse("`*x*`") == [.code(range: r(0, 5), content: r(1, 3))])
     }
 
-    // MARK: - Wiki-links & image embeds
-
-    @Test("plain wiki-link")
-    func wikiLink() {
-        #expect(InlineParser.parse("[[Name]]") == [
-            .wikiLink(range: r(0, 8), name: r(2, 4), id: nil, markers: [r(0, 2), r(6, 2)]),
-        ])
-    }
-
-    @Test("wiki-link with id")
-    func wikiLinkWithId() {
-        #expect(InlineParser.parse("[[Name|abc]]") == [
-            .wikiLink(range: r(0, 12), name: r(2, 4), id: r(7, 3), markers: [r(0, 2), r(10, 2)]),
-        ])
-    }
-
-    @Test("image embed")
-    func imageEmbed() {
-        #expect(InlineParser.parse("![[Pic]]") == [
-            .imageEmbed(range: r(0, 8), target: r(3, 3), markers: [r(0, 3), r(6, 2)]),
-        ])
-    }
-
     // MARK: - Links & images
 
     @Test("markdown link, text recursively parsed")
     func markdownLink() {
         #expect(InlineParser.parse("[text](url)") == [
-            .link(range: r(0, 11), textRange: r(1, 4), url: r(7, 3),
+            .link(range: r(0, 11), textRange: r(1, 4), url: r(7, 3), title: nil,
                   markers: [r(0, 1), r(5, 1), r(6, 1), r(10, 1)], children: [.text(r(1, 4))]),
         ])
     }
@@ -156,6 +133,7 @@ struct InlineParserTests {
                 range: r(0, 26),
                 textRange: r(1, 5),
                 url: r(8, 17),
+                title: nil,
                 markers: [r(0, 1), r(6, 1), r(7, 1), r(25, 1)],
                 children: [.code(range: r(1, 5), content: r(2, 3))]
             ),
@@ -169,6 +147,7 @@ struct InlineParserTests {
                 range: r(0, 16),
                 textRange: r(1, 11),
                 url: r(14, 1),
+                title: nil,
                 markers: [r(0, 1), r(12, 1), r(13, 1), r(15, 1)],
                 children: [
                     .code(range: r(1, 3), content: r(2, 1)),
@@ -194,6 +173,7 @@ struct InlineParserTests {
                 range: r(0, 7),
                 textRange: r(1, 2),
                 url: r(5, 1),
+                title: nil,
                 markers: [r(0, 1), r(3, 1), r(4, 1), r(6, 1)],
                 children: [.escape(range: r(1, 2), character: r(2, 1), marker: r(1, 1))]
             ),
@@ -210,7 +190,7 @@ struct InlineParserTests {
     @Test("link URL keeps balanced parentheses (bug 4)")
     func linkWithBalancedParens() {
         #expect(InlineParser.parse("[a](b(c))") == [
-            .link(range: r(0, 9), textRange: r(1, 1), url: r(4, 4),
+            .link(range: r(0, 9), textRange: r(1, 1), url: r(4, 4), title: nil,
                   markers: [r(0, 1), r(2, 1), r(3, 1), r(8, 1)], children: [.text(r(1, 1))]),
         ])
     }
@@ -218,14 +198,41 @@ struct InlineParserTests {
     @Test("image")
     func image() {
         #expect(InlineParser.parse("![alt](u)") == [
-            .image(range: r(0, 9), alt: r(2, 3), url: r(7, 1), markers: [r(0, 2), r(5, 1), r(6, 1), r(8, 1)]),
+            .image(range: r(0, 9), alt: r(2, 3), url: r(7, 1), title: nil, markers: [r(0, 2), r(5, 1), r(6, 1), r(8, 1)]),
         ])
+    }
+
+    @Test("image descriptions admit punctuation escapes and preserve source ranges")
+    func escapedImageDescriptions() throws {
+        let cases: [(source: String, label: String)] = [
+            (#"![escaped\*alt](image.png)"#, "escaped*alt"),
+            (#"![escaped\]alt](image.png)"#, "escaped]alt"),
+            (#"![slash\\](image.png)"#, #"slash\"#),
+        ]
+
+        for entry in cases {
+            let node = try #require(InlineParser.parse(entry.source).first)
+            guard case .image(let range, let alt, _, _, _) = node else {
+                Issue.record("Expected image for \(entry.source)")
+                continue
+            }
+            let ns = entry.source as NSString
+            #expect(ns.substring(with: range) == entry.source)
+            #expect(MarkdownLinkSyntax.unescapedText(in: ns, range: alt) == entry.label)
+        }
+
+        for malformed in [#"![escaped\]alt](image.png"#, #"![escaped\]alt(image.png)"#] {
+            #expect(InlineParser.parse(malformed).allSatisfy {
+                if case .image = $0 { return false }
+                return true
+            })
+        }
     }
 
     @Test("emphasis inside link text")
     func linkContainsEmphasis() {
         #expect(InlineParser.parse("[*x*](u)") == [
-            .link(range: r(0, 8), textRange: r(1, 3), url: r(6, 1),
+            .link(range: r(0, 8), textRange: r(1, 3), url: r(6, 1), title: nil,
                   markers: [r(0, 1), r(4, 1), r(5, 1), r(7, 1)],
                   children: [.emphasis(.italic, range: r(1, 3), markers: [r(1, 1), r(3, 1)], children: [.text(r(2, 1))])]),
         ])
@@ -235,33 +242,242 @@ struct InlineParserTests {
     func emphasisWrapsLink() {
         #expect(InlineParser.parse("*[a](b)*") == [
             .emphasis(.italic, range: r(0, 8), markers: [r(0, 1), r(7, 1)], children: [
-                .link(range: r(1, 6), textRange: r(2, 1), url: r(5, 1),
+                .link(range: r(1, 6), textRange: r(2, 1), url: r(5, 1), title: nil,
                       markers: [r(1, 1), r(3, 1), r(4, 1), r(6, 1)], children: [.text(r(2, 1))]),
             ]),
         ])
     }
 
-    // MARK: - Inline LaTeX
+    @Test("link and image destinations split from quoted titles; angle brackets are markers")
+    func linkAndImageTitles() throws {
+        for source in [
+            #"[text](url "title")"#,
+            #"[text](url 'title')"#,
+            #"[text](url (title))"#,
+        ] {
+            let node = try #require(InlineParser.parse(source).first)
+            guard case .link(_, _, let url, let title, _, _) = node else {
+                Issue.record("Expected link for \(source)")
+                continue
+            }
+            let ns = source as NSString
+            #expect(ns.substring(with: url) == "url")
+            #expect(title.map { ns.substring(with: $0) } == "title")
+        }
 
-    @Test("inline math")
-    func inlineLatex() {
-        #expect(InlineParser.parse("$a+b$") == [
-            .inlineLatex(range: r(0, 5), content: r(1, 3), markers: [r(0, 1), r(4, 1)]),
+        let source = #"![alt](<https://example.com/a.png> "caption")"#
+        let node = try #require(InlineParser.parse(source).first)
+        guard case .image(_, _, let url, let title, let markers) = node else {
+            Issue.record("Expected image")
+            return
+        }
+        let ns = source as NSString
+        #expect(ns.substring(with: url) == "https://example.com/a.png")
+        #expect(title.map { ns.substring(with: $0) } == "caption")
+        #expect(markers.contains { ns.substring(with: $0) == "<" })
+        #expect(markers.contains { ns.substring(with: $0) == ">" })
+
+        #expect(InlineParser.parse("[text]()") == [
+            .link(
+                range: r(0, 8), textRange: r(1, 4), url: r(7, 0), title: nil,
+                markers: [r(0, 1), r(5, 1), r(6, 1), r(7, 1)], children: [.text(r(1, 4))]
+            ),
         ])
     }
 
-    @Test("currency-looking $…$ is not math")
-    func currencyNotLatex() {
-        #expect(InlineParser.parse("$50$") == [.text(r(0, 4))])
+    @Test("link destinations and titles honor CommonMark punctuation escapes")
+    func escapedLinkTargets() throws {
+        let cases: [(source: String, destination: String, title: String?, image: Bool)] = [
+            (#"[angle](<https://example.com/a\>b> "ti\*tle")"#, "https://example.com/a>b", "ti*tle", false),
+            (#"[paren](https://example.com/a\)b 'ti\'tle')"#, "https://example.com/a)b", "ti'tle", false),
+            (#"[official](/bar\* "ti\*tle")"#, "/bar*", "ti*tle", false),
+            (#"![image](<https://example.com/a\>b>)"#, "https://example.com/a>b", nil, true),
+            (#"[slash](path\\)"#, #"path\"#, nil, false),
+        ]
+
+        for entry in cases {
+            let node = try #require(InlineParser.parse(entry.source).first)
+            let ns = entry.source as NSString
+            let range: NSRange
+            let destination: NSRange
+            let title: NSRange?
+            switch node {
+            case .link(let nodeRange, _, let url, let nodeTitle, _, _):
+                #expect(entry.image == false)
+                range = nodeRange
+                destination = url
+                title = nodeTitle
+            case .image(let nodeRange, _, let url, let nodeTitle, _):
+                #expect(entry.image)
+                range = nodeRange
+                destination = url
+                title = nodeTitle
+            default:
+                Issue.record("Expected link or image for \(entry.source)")
+                continue
+            }
+            #expect(ns.substring(with: range) == entry.source)
+            #expect(MarkdownLinkSyntax.unescapedText(in: ns, range: destination)
+                == entry.destination)
+            #expect(title.map { MarkdownLinkSyntax.unescapedText(in: ns, range: $0) }
+                == entry.title)
+        }
+
+        for malformed in [#"[x](<a\>)"#, #"[x](a\)"#, #"[x](<a<b>)"#] {
+            #expect(InlineParser.parse(malformed).allSatisfy { node in
+                if case .link = node { return false }
+                if case .image = node { return false }
+                return true
+            })
+        }
     }
 
-    @Test("a $…$ span that would cross a code span is not math (bug 3)")
-    func dollarAcrossCodeNotLatex() {
-        #expect(InlineParser.parse("$x `c` y$") == [
-            .text(r(0, 3)),
-            .code(range: r(3, 3), content: r(4, 1)),
-            .text(r(6, 3)),
+    @Test("bare destinations do not escape whitespace or ASCII controls")
+    func invalidBareDestinationEscapes() {
+        let invalid = [
+            #"[x](https://example.com/a\ b)"#,
+            #"[x](https://example.com/a\\ b)"#,
+            "[x](https://example.com/a\\\nb)",
+            "[x](https://example.com/a\\\\\nb)",
+            #"![x](https://example.com/a\ b)"#,
+        ] + LinkDestinationTestFixtures.invalidBareControlLinks
+            + LinkDestinationTestFixtures.invalidBareControlImages
+
+        for source in invalid {
+            #expect(InlineParser.parse(source).allSatisfy { node in
+                if case .link = node { return false }
+                if case .image = node { return false }
+                return true
+            }, "Unexpected active target in \(source.debugDescription)")
+        }
+    }
+
+    @Test("full, collapsed, and shortcut reference links preserve their label shape")
+    func referenceLinks() {
+        #expect(InlineParser.parse("[text][ID]", referenceDefinitions: ["id"]) == [
+            .referenceLink(
+                range: r(0, 10), textRange: r(1, 4), label: r(7, 2),
+                markers: [r(0, 1), r(5, 1), r(6, 1), r(9, 1)], children: [.text(r(1, 4))]
+            ),
         ])
+        #expect(InlineParser.parse("[text][]", referenceDefinitions: ["text"]) == [
+            .referenceLink(
+                range: r(0, 8), textRange: r(1, 4), label: nil,
+                markers: [r(0, 1), r(5, 1), r(6, 1), r(7, 1)], children: [.text(r(1, 4))]
+            ),
+        ])
+        #expect(InlineParser.parse("[ID]", referenceDefinitions: ["id"]) == [
+            .referenceLink(
+                range: r(0, 4), textRange: r(1, 2), label: nil,
+                markers: [r(0, 1), r(3, 1)], children: [.text(r(1, 2))]
+            ),
+        ])
+    }
+
+    @Test("explicit reference labels admit escapes without decoding normalization")
+    func escapedReferenceLabels() throws {
+        let source = #"[foo][ref\[]"#
+        let node = try #require(InlineParser.parse(
+            source,
+            referenceDefinitions: [#"ref\["#]
+        ).first)
+        guard case let .referenceLink(_, textRange, label, _, _) = node else {
+            Issue.record("Expected reference link")
+            return
+        }
+        let ns = source as NSString
+        #expect(ns.substring(with: textRange) == "foo")
+        #expect(label.map { ns.substring(with: $0) } == #"ref\["#)
+        #expect(label.map { MarkdownLinkSyntax.normalizedLabel(in: ns, range: $0) } == #"ref\["#)
+
+        for invalid in ["[foo][ref[]", #"[foo][ref\\[]"#] {
+            #expect(InlineParser.parse(
+                invalid,
+                referenceDefinitions: [#"ref\["#]
+            ).allSatisfy {
+                if case .referenceLink = $0 { return false }
+                return true
+            })
+        }
+    }
+
+    @Test("extension spans keep their brackets out of reference association")
+    func extensionBracketsDoNotCloseLinks() {
+        let registry = ExtensionRegistry(extensions: [HighlightExtension()])
+        let opaque = InlineParser.parse(
+            "[foo ==][ref]==",
+            registry: registry,
+            referenceDefinitions: ["ref"]
+        )
+        #expect(opaque.allSatisfy {
+            if case .referenceLink = $0 { return false }
+            return true
+        })
+        #expect(opaque.contains {
+            if case .ext = $0 { return true }
+            return false
+        })
+
+        let contained = InlineParser.parse(
+            "[foo ==bar==][ref]",
+            registry: registry,
+            referenceDefinitions: ["ref"]
+        )
+        #expect(contained.count == 1)
+        guard case .referenceLink(_, _, _, _, let children) = contained[0] else {
+            Issue.record("Expected reference link")
+            return
+        }
+        #expect(children.contains {
+            if case .ext = $0 { return true }
+            return false
+        })
+    }
+
+    @Test("footnote references claim the whole bracket run")
+    func footnoteReference() {
+        #expect(InlineParser.parse("[^note]") == [
+            .footnoteReference(range: r(0, 7), label: r(2, 4), markers: [r(0, 2), r(6, 1)]),
+        ])
+    }
+
+    @Test("hard-break markers claim only internal-line backslashes and trailing spaces")
+    func hardBreakMarkers() {
+        let nodes = InlineParser.parse("a  \nb\\\nc  ")
+        #expect(nodes.contains { $0 == .hardBreak(range: r(1, 3), marker: r(1, 2)) })
+        #expect(nodes.contains { $0 == .hardBreak(range: r(5, 2), marker: r(5, 1)) })
+        #expect(!nodes.contains { node in
+            if case .hardBreak(let range, _) = node { return range.location >= 8 }
+            return false
+        })
+        #expect(InlineParser.parse("`a\\\nb`").allSatisfy {
+            if case .hardBreak = $0 { return false }
+            return true
+        })
+    }
+
+    @Test("autolinks claim valid URI and email brackets but leave HTML and comparisons literal")
+    func autolinks() throws {
+        for source in ["<https://example.com>", "<mailto:someone@example.com>", "<someone@example.com>"] {
+            let node = try #require(InlineParser.parse(source).first)
+            guard case .autolink(let range, let url, let markers) = node else {
+                Issue.record("Expected autolink for \(source)")
+                continue
+            }
+            let length = (source as NSString).length
+            #expect(range == r(0, length))
+            #expect(markers == [r(0, 1), r(length - 1, 1)])
+            #expect((source as NSString).substring(with: url) == String(source.dropFirst().dropLast()))
+        }
+        #expect(InlineParser.parse("a < b") == [.text(r(0, 5))])
+        #expect(InlineParser.parse("<span>") == [.text(r(0, 6))])
+
+        let escaped = #"<https://example.com/\[\>"#
+        guard case .autolink(_, let url, _) = try #require(InlineParser.parse(escaped).first) else {
+            Issue.record("Expected escaped punctuation to remain inside an autolink")
+            return
+        }
+        #expect((escaped as NSString).substring(with: url) == #"https://example.com/\[\"#)
     }
 
     // MARK: - Strikethrough (extension-supplied `~~…~~` span)
@@ -308,31 +524,6 @@ struct InlineParserTests {
                 .emphasis(.italic, range: r(2, 3), markers: [r(2, 1), r(4, 1)], children: [.text(r(3, 1))]),
             ]),
         ])
-    }
-
-    @Test("an extension sharing a built-in trigger char is reachable when the built-in fails")
-    func extensionReachableAfterBuiltInFails() {
-        // `$50$` is rejected by the built-in math heuristic (currency); a
-        // registered `$…$` extension must still get its chance (fall-through).
-        struct DollarSpan: MarkdownExtension {
-            var id: String { "dollar-span" }
-            var inline: InlineSyntax? { InlineSyntax(open: "$", close: "$", parsesContent: false) }
-            func contentAttributes(theme: MarkdownEditorTheme) -> [NSAttributedString.Key: Any] { [:] }
-            func html(childrenHTML: String) -> String { childrenHTML }
-        }
-        let registry = ExtensionRegistry(extensions: [DollarSpan()])
-        let nodes = InlineParser.parse("$50$", registry: registry)
-        guard case .ext(let node) = nodes.first else {
-            Issue.record("expected extension span, got \(nodes)")
-            return
-        }
-        #expect(node.extensionID == "dollar-span")
-        // And the built-in still wins when it matches: real math parses as latex.
-        let mathNodes = InlineParser.parse("$x^2 + y$", registry: registry)
-        guard case .inlineLatex = mathNodes.first else {
-            Issue.record("built-in latex must win over the extension, got \(mathNodes)")
-            return
-        }
     }
 
     @Test("both extensions registered: ~~ and == coexist and nest")

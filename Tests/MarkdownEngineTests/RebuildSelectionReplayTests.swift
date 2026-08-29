@@ -24,8 +24,7 @@ struct RebuildSelectionReplayTests {
     private func makeEditor() -> (NativeTextViewCoordinator, NativeTextView) {
         _ = NSApplication.shared   // selection path reads NSApp.currentEvent
         let coordinator = NativeTextViewCoordinator(
-            text: .constant(""), fontName: "SF Pro Text", fontSize: 14,
-            isWikiLinkActive: .constant(false), onLinkClick: nil, onInlineSelectionChange: nil
+            text: .constant(""), fontName: "SF Pro Text", fontSize: 14
         )
         let textView = NativeTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
         textView.isEditable = true
@@ -66,12 +65,10 @@ struct RebuildSelectionReplayTests {
         let caret = tv.selectedRange().location
         let parsed = coord.parsedDocument(for: tv.string)
         let inCode = MarkdownDetection.isInsideCodeBlock(location: caret, codeTokens: parsed.codeTokens)
-        let inLatex = MarkdownDetection.isInsideLatex(location: caret, latexTokens: parsed.latexTokens)
         let inLink = parsed.tokens.contains {
-            ($0.kind == .wikiLink || $0.kind == .link || $0.kind == .imageEmbed)
-                && NSLocationInRange(caret, $0.range)
+            $0.kind == .link && NSLocationInRange(caret, $0.range)
         }
-        let expectedDisabled = inCode || inLatex || inLink
+        let expectedDisabled = inCode || inLink
 
         #expect(coord.cachedSpellingDisabled == expectedDisabled)   // the replay ran
         #expect(tv.isContinuousSpellCheckingEnabled

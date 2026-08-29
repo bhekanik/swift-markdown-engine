@@ -4,8 +4,7 @@
 //
 //  Created by Luca Chen on 16.03.26.
 //
-//  Re-tokenization, paragraph-scoped restyling, and the inline-replacement
-//  pipeline. The TextDelegate extension decides WHEN and on WHICH ranges to
+//  Re-tokenization and paragraph-scoped restyling. The TextDelegate extension decides WHEN and on WHICH ranges to
 //  restyle; this extension owns the tokenize cache and the actual call into
 //  `TextStylingService`.
 //
@@ -13,11 +12,13 @@
 import AppKit
 
 extension NativeTextViewCoordinator {
-    /// Atomically rebuilds contents + base attrs + Markdown styling from storage-form `text`.
+    /// Atomically rebuilds contents + base attrs + Markdown styling from `text`.
     func rebuildTextStorageAndStyle(
         _ textView: NSTextView,
         from text: String,
-        invalidateLayout: Bool = false
+        invalidateLayout: Bool = false,
+        notifyTextFinder: Bool = true,
+        preservingPendingBindingWrite: Bool = false
     ) {
         // Suppress the re-entrant textViewDidChangeSelection that `textView.string =`
         // and the setAttributedString transfer below fire synchronously (71ms of
@@ -28,19 +29,7 @@ extension NativeTextViewCoordinator {
         // A rebuild means a different document (or a mode flip): drop the caret
         // ink resolved for the old one instead of carrying it into this text.
         resolvedCaretColor = nil
-        // Storage is raw Markdown; only wiki links transform on display.
-        // In raw source mode display IS storage — no transform, no metadata.
-        let services = configuration.services
         let rawMode = configuration.rawSourceMode
-        let displayText: String
-        if rawMode {
-            displayText = text
-            wikiLinkMetadata = [:]
-        } else {
-            let displayState = WikiLinkService.makeDisplayState(from: text) { services.wikiLinks.name(forID: $0) }
-            displayText = displayState.display
-            wikiLinkMetadata = displayState.metadata
-        }
 
         // Claimed BEFORE the assignment: `textView.string =` re-enters
         // textViewDidChangeSelection synchronously, whose updateCodeBlockSelection
@@ -48,12 +37,32 @@ extension NativeTextViewCoordinator {
         // the ensureLayout below rebuilds from scratch anyway. This rebuild's own
         // ensureLayout IS that one-shot per-document layout.
         didEnsureLayoutForCurrentDocument = true
-        if textView.string != displayText {
-            textView.string = displayText
-            parseGeneration &+= 1
+        var displayText = text
+        if textView.string != text {
+            let sourceText = textView.string
+            let sourceController = editorController
+            let sourceRevision = sourceController?.documentRevision
+            if notifyTextFinder {
+                notifyTextFinderClientStringWillChange(in: textView)
+            }
+            if textView.string == sourceText,
+               editorController === sourceController,
+               sourceController?.documentRevision == sourceRevision {
+                textView.string = text
+                parseGeneration &+= 1
+            } else {
+                displayText = textView.string
+            }
         }
-        lastSyncedText = text
-        lastComputedStorage = text
+        // Parsing and styling call configured services. Keep their callbacks
+        // from mutating storage while the ranges below still describe this
+        // rebuild's snapshot; public attachment callbacks run after return.
+        beginMutationTransaction()
+        defer { endMutationTransaction() }
+        synchronizeWithoutBindingWrite(
+            displayText,
+            preservingPendingBindingWrite: preservingPendingBindingWrite
+        )
         previousDisplayLength = (displayText as NSString).length
         let nsDisplay = displayText as NSString
         // Fresh document baseline: drop the incremental parse state and reseed
@@ -71,11 +80,8 @@ extension NativeTextViewCoordinator {
             layoutBridge: layoutBridge,
             configuration: configuration
         )
-        let baseAttrs: [NSAttributedString.Key: Any] = [
-            .font: baseFont,
-            .foregroundColor: configuration.theme.bodyText,
-            .paragraphStyle: paragraph
-        ]
+        let baseAttrs = TextStylingService.makeBaseAttributes(
+            font: baseFont, paragraphStyle: paragraph, configuration: configuration)
         // ── Root cause & fix (2026-07) ────────────────────────────────────────
         // CPU+page-fault instrumentation proved the first per-process open of a large
         // note spent 12.5s of PURE CPU (blocked=2ms), writing 69k attributes to the LIVE
@@ -114,11 +120,6 @@ extension NativeTextViewCoordinator {
                 // range, not just the caret; read-only suppresses it like the caret.
                 selection: textView.isEditable ? textView.selectedRange() : nil,
                 activeTokenIndices: activeTokenIndices,
-                // FIX: apply .wikiLinkID attributes on load/node-switch too. Without this the uuid
-                // survived only in the range-keyed wikiLinkMetadata; once a later writeback shifted a
-                // link's range the metadata key missed and makeStorageState wrote [[Name]] (uuid lost).
-                // wikiLinkMetadata was just refreshed by makeDisplayState above, so ranges match here.
-                wikiLinkIDProvider: { [weak self] range in self?.wikiLinkID(for: range) },
                 precomputedTokens: tokens,
                 classified: parsed.classified,
                 // Same parse the tokens came from; without it the styler ran the
@@ -179,7 +180,6 @@ extension NativeTextViewCoordinator {
                 textView,
                 caretLocation: finalSelection.location,
                 codeTokens: parsed.codeTokens,
-                latexTokens: parsed.latexTokens,
                 allTokens: parsed.tokens
             )
             previousActiveTokenIndices = activeTokenIndices
@@ -195,6 +195,33 @@ extension NativeTextViewCoordinator {
         }
     }
 
+    func applyExtensionChange(
+        _ extensions: [any MarkdownExtension],
+        in textView: NSTextView
+    ) {
+        var updated = configuration
+        updated.extensions = extensions
+        guard updated.extensionRegistry.fingerprint != configuration.extensionRegistry.fingerprint
+        else { return }
+
+        notifyTextFinderClientStringWillChange(in: textView)
+        configuration.extensions = extensions
+        (textView as? NativeTextView)?.configuration.extensions = extensions
+        cachedParsedDocument = nil
+        let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+        if fullRange.length > 0 {
+            restyleParagraphs([fullRange], in: textView)
+        }
+    }
+
+    func notifyTextFinderClientStringWillChange(in textView: NSTextView) {
+        guard editorController?.textView === textView,
+              !isNotifyingTextFinderClientStringChange else { return }
+        isNotifyingTextFinderClientStringChange = true
+        editorController?.textFinderActionResponder?.textFinderClientStringWillChange()
+        isNotifyingTextFinderClientStringChange = false
+    }
+
     func restyleTextView(
         _ textView: NSTextView,
         paragraphCandidates: [NSRange],
@@ -204,6 +231,8 @@ extension NativeTextViewCoordinator {
     ) {
         // Raw mode: no restyling; typing keeps base attrs via the typing shim.
         guard !configuration.rawSourceMode else { return }
+        beginMutationTransaction()
+        defer { endMutationTransaction() }
         let (baseFont, paragraphStyle) = TextStylingService.makeBaseFontAndStyle(
             fontName: fontName,
             fontSize: fontSize,
@@ -223,9 +252,6 @@ extension NativeTextViewCoordinator {
             // selected range here too (read-only suppresses it like the caret).
             selection: textView.isEditable ? textView.selectedRange() : nil,
             activeTokenIndices: activeTokenIndices,
-            wikiLinkIDProvider: { [weak self] range in
-                self?.wikiLinkID(for: range)
-            },
             precomputedTokens: tokens,
             classified: classified,
             precomputedBlocks: blocks,
@@ -256,22 +282,12 @@ extension NativeTextViewCoordinator {
         let tokens = parseState.tokens(for: text, edit: edit, registry: cachedExtensionRegistry)
         let tClassify = DispatchTime.now().uptimeNanoseconds
         var codeTokens: [MarkdownToken] = []
-        var latexTokens: [MarkdownToken] = []
-        var blockLatexTokens: [MarkdownToken] = []
-        var wikiLinkTokens: [MarkdownToken] = []
-        var imageEmbedTokens: [MarkdownToken] = []
         var tableTokens: [MarkdownToken] = []
         var codeBlockTokensWithIndices: [(index: Int, token: MarkdownToken)] = []
-        var inlineLatexIdx: [(index: Int, token: MarkdownToken)] = []
-        var blockLatexIdx: [(index: Int, token: MarkdownToken)] = []
-        var imageEmbedIdx: [(index: Int, token: MarkdownToken)] = []
         var imageLinkIdx: [(index: Int, token: MarkdownToken)] = []
         var tableIdx: [(index: Int, token: MarkdownToken)] = []
 
         codeTokens.reserveCapacity(tokens.count / 2)
-        latexTokens.reserveCapacity(tokens.count / 4)
-        blockLatexTokens.reserveCapacity(tokens.count / 4)
-        wikiLinkTokens.reserveCapacity(tokens.count / 4)
 
         for (index, token) in tokens.enumerated() {
             switch token.kind {
@@ -280,17 +296,6 @@ extension NativeTextViewCoordinator {
                 if token.kind == .codeBlock {
                     codeBlockTokensWithIndices.append((index, token))
                 }
-            case .inlineLatex:
-                latexTokens.append(token)
-                inlineLatexIdx.append((index, token))
-            case .blockLatex:
-                blockLatexTokens.append(token)
-                blockLatexIdx.append((index, token))
-            case .wikiLink:
-                wikiLinkTokens.append(token)
-            case .imageEmbed:
-                imageEmbedTokens.append(token)
-                imageEmbedIdx.append((index, token))
             case .imageLink:
                 imageLinkIdx.append((index, token))
             case .table:
@@ -306,16 +311,10 @@ extension NativeTextViewCoordinator {
             tokens: tokens,
             blocks: parseState.currentBlocks,
             codeTokens: codeTokens,
-            latexTokens: latexTokens,
-            blockLatexTokens: blockLatexTokens,
-            wikiLinkTokens: wikiLinkTokens,
-            imageEmbedTokens: imageEmbedTokens,
             tableTokens: tableTokens,
             codeBlockTokensWithIndices: codeBlockTokensWithIndices,
             classified: MarkdownStyler.ClassifiedStyleTokens(
-                inlineLatex: inlineLatexIdx, blockLatex: blockLatexIdx,
-                imageEmbed: imageEmbedIdx, imageLink: imageLinkIdx,
-                table: tableIdx, code: codeTokens),
+                imageLink: imageLinkIdx, table: tableIdx, code: codeTokens),
             version: parsedDocumentVersion
         )
         cachedParsedText = text
@@ -385,7 +384,7 @@ extension NativeTextViewCoordinator {
             let token = tokens[idx]
             paragraphs.append(text.paragraphRange(for: token.range))
 
-            if token.kind == .codeBlock || token.kind == .blockLatex {
+            if token.kind == .codeBlock {
                 for markerRange in token.markerRanges {
                     paragraphs.append(text.paragraphRange(for: markerRange))
                 }
@@ -396,6 +395,8 @@ extension NativeTextViewCoordinator {
     }
 
     func restyleParagraphs(_ paragraphs: [NSRange], in textView: NSTextView) {
+        beginMutationTransaction()
+        defer { endMutationTransaction() }
         let docText = textView.string      // one O(doc) bridge, reused below
         let parsed = parsedDocument(for: docText)
         let tokens = parsed.tokens
@@ -410,59 +411,4 @@ extension NativeTextViewCoordinator {
                         classified: parsed.classified, blocks: parsed.blocks)
     }
 
-    func applyInlineReplacement(_ request: InlineReplacementRequest, to textView: NSTextView) {
-        lastAppliedInlineReplacementID = request.id
-
-        let currentText = textView.string as NSString
-        let range = request.selection.displayRange
-        guard range.location != NSNotFound,
-              range.location + range.length <= currentText.length else {
-            return
-        }
-
-        // Image embeds and node links share one path: insert DISPLAY form `![[Name]]` / `[[Name]]`
-        // with the opaque suffix on the `.wikiLinkID` side-channel (displayFragmentAndID handles `!`).
-        let replacementInfo = WikiLinkService.displayFragmentAndID(from: request.storageFragment)
-        let replacementDisplay = replacementInfo.display
-        let linkID = replacementInfo.id
-
-        let undoActionName = request.isImageEmbedMode ? "Insert Image Embed" : "Insert Link"
-        textView.breakUndoCoalescing()
-
-        isProgrammaticEdit = true
-        defer { isProgrammaticEdit = false }
-
-        guard textView.shouldChangeText(in: range, replacementString: replacementDisplay) else {
-            return
-        }
-
-        textView.textStorage?.replaceCharacters(in: range, with: replacementDisplay)
-
-        if let linkID, !linkID.isEmpty {
-            let isImage = replacementDisplay.hasPrefix("![[")
-            let openLen = isImage ? 3 : 2
-            let contentLength = max(0, (replacementDisplay as NSString).length - (openLen + 2))
-            if contentLength > 0 {
-                let contentRange = NSRange(location: range.location + openLen, length: contentLength)
-                textView.textStorage?.addAttribute(.wikiLinkID, value: linkID, range: contentRange)
-            }
-        }
-
-        textView.didChangeText()
-        textView.undoManager?.setActionName(undoActionName)
-        textView.breakUndoCoalescing()
-
-        let caretRange = WikiLinkService.caretRangeAfterReplacing(
-            displayRange: range,
-            with: request.storageFragment
-        )
-        let documentLength = (textView.string as NSString).length
-        let clampedCaret = NSRange(location: min(max(caretRange.location, 0), documentLength), length: 0)
-
-        if let bottomTextView = textView as? NativeTextView {
-            bottomTextView.suppressAutoRevealOnce = true
-        }
-        textView.window?.makeFirstResponder(textView)
-        textView.setSelectedRange(clampedCaret)
-    }
 }

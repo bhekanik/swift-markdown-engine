@@ -6,13 +6,13 @@
 //
 
 // Defines the basic Markdown building blocks the editor works with (bold,
-// links, code, LaTeX, etc.), plus shared text attributes.
+// links, code, etc.), plus shared text attributes.
 import AppKit
 import Foundation
 
 extension NSAttributedString.Key {
-    public static let wikiLinkID = NSAttributedString.Key("NodeLinkID")
     public static let taskCheckbox = NSAttributedString.Key("TaskCheckbox")
+    public static let footnoteID = NSAttributedString.Key("FootnoteID")
 }
 
 enum MarkdownTokenKind: Equatable {
@@ -20,15 +20,11 @@ enum MarkdownTokenKind: Equatable {
     case boldItalic
     case bold
     case link
-    case wikiLink
     case heading
     /// One blockquote line; `markerRanges[0]` is the `>` run, nesting = count of `>`.
     case blockquote
     case codeBlock
     case inlineCode
-    case blockLatex
-    case inlineLatex
-    case imageEmbed
     case imageLink
     case table
     /// A CommonMark backslash escape; marker is the `\`, content the escaped literal char.

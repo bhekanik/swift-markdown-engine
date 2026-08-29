@@ -17,8 +17,7 @@ struct PerDocumentUndoTests {
 
     private func makeCoordinator() -> NativeTextViewCoordinator {
         NativeTextViewCoordinator(
-            text: .constant(""), fontName: "SF Pro", fontSize: 16,
-            isWikiLinkActive: .constant(false), onLinkClick: nil, onInlineSelectionChange: nil
+            text: .constant(""), fontName: "SF Pro", fontSize: 16
         )
     }
 

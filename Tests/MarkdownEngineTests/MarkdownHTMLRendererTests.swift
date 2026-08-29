@@ -27,6 +27,59 @@ struct MarkdownHTMLRendererTests {
         #expect(html("a < b & c > d") == "<p>a &lt; b &amp; c &gt; d</p>")
     }
 
+    @Test("escaped punctuation is decoded in link targets and titles")
+    func escapedLinkTargets() {
+        #expect(html(#"[inline](<https://example.com/a\>b> "ti\*tle")"#)
+            == #"<p><a href="https://example.com/a&gt;b" title="ti*tle">inline</a></p>"#)
+        #expect(html(#"[official](/bar\* "ti\*tle")"#)
+            == #"<p><a href="/bar*" title="ti*tle">official</a></p>"#)
+        #expect(html(#"![image](https://example.com/a\)b "cap\*tion")"#)
+            == #"<p><img src="https://example.com/a)b" alt="image" title="cap*tion"></p>"#)
+        #expect(html(#"""
+[reference][id]
+
+[id]: <https://example.com/a\>b> 'ti\'tle'
+"""#)
+            == "<p><a href=\"https://example.com/a&gt;b\" title=\"ti'tle\">reference</a>\n</p>")
+    }
+
+    @Test("escaped image descriptions become semantic alt text")
+    func escapedImageDescriptions() {
+        #expect(html(#"![escaped\*alt](image.png)"#)
+            == #"<p><img src="image.png" alt="escaped*alt"></p>"#)
+        #expect(html(#"![escaped\]alt](image.png)"#)
+            == #"<p><img src="image.png" alt="escaped]alt"></p>"#)
+        #expect(html(#"![slash\\](image.png)"#)
+            == #"<p><img src="image.png" alt="slash\"></p>"#)
+        #expect(html(#"""
+[foo][ref\[] [bar][foo\!]
+
+[ref\[]: /uri
+[foo!]: /wrong
+"""#)
+            == #"""
+<p><a href="/uri">foo</a> [bar][foo!]
+</p>
+"""#)
+    }
+
+    @Test("invalid bare destination escapes do not create links or images")
+    func invalidBareDestinationEscapes() {
+        let cases = [
+            #"[x](https://example.com/a\ b)"#,
+            #"[x](https://example.com/a\\ b)"#,
+            "[x](https://example.com/a\\\nb)",
+            #"![x](https://example.com/a\ b)"#,
+            "[id]: /a\\ b\n\n[x][id]",
+        ] + LinkDestinationTestFixtures.invalidBareControlDocuments
+
+        for source in cases {
+            let rendered = html(source)
+            #expect(!rendered.contains(">x</a>"), "Unexpected active link for \(source.debugDescription)")
+            #expect(!rendered.contains("<img"), "Unexpected active image for \(source.debugDescription)")
+        }
+    }
+
     @Test("fenced code block — language class, no language, html escaping")
     func fencedCode() {
         #expect(html("```swift\nlet x = 1\n```") == "<pre><code class=\"language-swift\">let x = 1</code></pre>")

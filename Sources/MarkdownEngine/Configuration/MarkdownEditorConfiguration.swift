@@ -34,9 +34,6 @@ public struct MarkdownEditorConfiguration: Sendable {
     public var lists: ListStyle
     public var taskCheckbox: TaskCheckboxStyle
     public var headings: HeadingStyle
-    public var imageEmbed: ImageEmbedStyle
-    public var blockLatex: BlockLatexStyle
-    public var inlineLatex: InlineLatexStyle
     public var blockquote: BlockquoteStyle
     public var thematicBreak: ThematicBreakStyle
     public var link: LinkStyle
@@ -49,6 +46,8 @@ public struct MarkdownEditorConfiguration: Sendable {
     /// Centered reading-column width; wide tables break out to full width. nil = full width (default).
     public var readingWidth: CGFloat?
     public var spellChecking: SpellCheckingPolicy
+    /// Who owns undo. ``UndoPolicy/engine`` by default.
+    public var undo: UndoPolicy
     /// How the editor resolves its own height.
     ///
     /// - `.scrolls` (default): the editor scrolls internally within whatever
@@ -65,8 +64,7 @@ public struct MarkdownEditorConfiguration: Sendable {
     ///
     /// - SeeAlso: ``HeightBehavior``
     public var heightBehavior: HeightBehavior
-    /// Present the document as raw Markdown source: no syntax hiding, no
-    /// styling, no wiki-link display transform (`[[Name|UUID]]` shows verbatim).
+    /// Present the document as raw Markdown source: no syntax hiding or styling.
     /// Stays editable, but smart input (list continuation, auto-wrap, ⇧⇥) is off.
     /// Runtime-switchable; a flip rebuilds immediately and drops the document's
     /// undo stack (actions from the other mode would replay at stale ranges).
@@ -85,13 +83,6 @@ public struct MarkdownEditorConfiguration: Sendable {
     /// so this stays the embedder's explicit decision rather than something the
     /// engine infers from a color it happens to see.
     public var cursorFollowsSpanInk: Bool
-    /// Opt-in inline commands (e.g. `@font(size: 18){text}`). Empty by
-    /// default: an unregistered name stays literal text. Order defines match
-    /// precedence among directives; built-in constructs always win first.
-    public var directives: [any MarkdownDirective]
-    /// Marker configuration for ``directives`` (default `@`).
-    public var directiveSettings: DirectiveRegistrySettings
-
     public init(
         theme: MarkdownEditorTheme = .default,
         services: MarkdownEditorServices = .default,
@@ -101,9 +92,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         lists: ListStyle = .default,
         taskCheckbox: TaskCheckboxStyle = .default,
         headings: HeadingStyle = .default,
-        imageEmbed: ImageEmbedStyle = .default,
-        blockLatex: BlockLatexStyle = .default,
-        inlineLatex: InlineLatexStyle = .default,
         blockquote: BlockquoteStyle = .default,
         thematicBreak: ThematicBreakStyle = .default,
         link: LinkStyle = .default,
@@ -115,12 +103,11 @@ public struct MarkdownEditorConfiguration: Sendable {
         textInsets: TextInsets = .default,
         readingWidth: CGFloat? = nil,
         spellChecking: SpellCheckingPolicy = .default,
+        undo: UndoPolicy = .engine,
         heightBehavior: HeightBehavior = .scrolls,
         rawSourceMode: Bool = false,
         extensions: [any MarkdownExtension] = [],
-        cursorFollowsSpanInk: Bool = false,
-        directives: [any MarkdownDirective] = [],
-        directiveSettings: DirectiveRegistrySettings = .default
+        cursorFollowsSpanInk: Bool = false
     ) {
         self.theme = theme
         self.services = services
@@ -130,9 +117,6 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.lists = lists
         self.taskCheckbox = taskCheckbox
         self.headings = headings
-        self.imageEmbed = imageEmbed
-        self.blockLatex = blockLatex
-        self.inlineLatex = inlineLatex
         self.blockquote = blockquote
         self.thematicBreak = thematicBreak
         self.link = link
@@ -144,15 +128,33 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.textInsets = textInsets
         self.readingWidth = readingWidth
         self.spellChecking = spellChecking
+        self.undo = undo
         self.heightBehavior = heightBehavior
         self.rawSourceMode = rawSourceMode
         self.extensions = extensions
         self.cursorFollowsSpanInk = cursorFollowsSpanInk
-        self.directives = directives
-        self.directiveSettings = directiveSettings
     }
 
     public static let `default` = MarkdownEditorConfiguration()
+}
+
+// MARK: - Undo
+
+/// Who owns the editor's undo stack.
+public enum UndoPolicy: String, Sendable, Equatable {
+    /// AppKit undo, one `UndoManager` per `documentId`, vended by the engine.
+    /// ⌘Z undoes typing inside the text view.
+    case engine
+    /// The embedder owns undo. `allowsUndo` is `false`, so the text view
+    /// registers nothing, and `undoManager(for:)` vends
+    /// ``MarkdownEditorController/undoManager`` (nil unless the embedder set
+    /// one). ⌘Z reaches whatever the embedder puts in the responder chain —
+    /// an undo tree, a CRDT history, a server-authoritative log.
+    ///
+    /// External edits should still be applied through
+    /// ``MarkdownEditorController/applyPatch(range:replacement:actionName:registersUndo:)``,
+    /// which brackets them in `disableUndoRegistration()`.
+    case external
 }
 
 // MARK: - Spell checking
@@ -231,13 +233,11 @@ public struct TextInsets: Sendable {
 /// the cursor is not inside the corresponding token.
 ///
 /// The engine's default approach is to keep markers in the text storage but
-/// shrink them to a near-zero font size (`hiddenMarkerFontSize`). This avoids
-/// any range translation between displayed and stored text — cursor movement,
-/// find/replace, selection, and copy/paste all stay trivially correct.
+/// shrink them to a near-zero font size (`hiddenMarkerFontSize`).
 /// The trade-off is a sub-pixel residue at extreme zoom levels.
 public struct MarkerStyle: Sendable {
     /// Font size used for "hidden" inline markers. Effectively invisible at
-    /// normal zoom while keeping displayed-range == stored-range.
+    /// normal zoom.
     public var hiddenMarkerFontSize: CGFloat
     /// Alpha applied to inline-code's secondary marker color.
     public var inlineCodeMarkerAlpha: CGFloat
@@ -480,74 +480,6 @@ public struct HeadingStyle: Sendable {
     public static let `default` = HeadingStyle()
 }
 
-// MARK: - Image embeds (![[...]])
-
-/// Sizing and spacing rules for `![[Name]]` image embeds.
-public struct ImageEmbedStyle: Sendable {
-    /// Minimum allowed display width (points) for an embedded image.
-    public var minimumWidth: CGFloat
-    /// Fallback maximum width if no usable text container width is available.
-    public var fallbackMaxWidth: CGFloat
-    /// Sanity bound — container widths above this are treated as invalid.
-    public var unreasonableMaxWidth: CGFloat
-    /// Vertical paragraph spacing above/below the image paragraph.
-    public var paragraphSpacing: CGFloat
-    /// Gap between the source line and the rendered image (visibleSource mode).
-    public var imageGap: CGFloat
-
-    public init(
-        minimumWidth: CGFloat = 50,
-        fallbackMaxWidth: CGFloat = 650,
-        unreasonableMaxWidth: CGFloat = 1_000_000,
-        paragraphSpacing: CGFloat = 8,
-        imageGap: CGFloat = 8
-    ) {
-        self.minimumWidth = minimumWidth
-        self.fallbackMaxWidth = fallbackMaxWidth
-        self.unreasonableMaxWidth = unreasonableMaxWidth
-        self.paragraphSpacing = paragraphSpacing
-        self.imageGap = imageGap
-    }
-
-    public static let `default` = ImageEmbedStyle()
-}
-
-// MARK: - LaTeX
-
-/// Vertical spacing for block-LaTeX `$$...$$` paragraphs.
-public struct BlockLatexStyle: Sendable {
-    /// Top spacing for $$...$$ block paragraphs.
-    public var paragraphSpacingBefore: CGFloat
-    /// Bottom spacing for $$...$$ block paragraphs.
-    public var paragraphSpacing: CGFloat
-    /// Extra bottom padding added to single-letter formulas to avoid clipping.
-    public var singleLetterPaddingBottom: CGFloat
-
-    public init(
-        paragraphSpacingBefore: CGFloat = 16,
-        paragraphSpacing: CGFloat = 20,
-        singleLetterPaddingBottom: CGFloat = 1.0
-    ) {
-        self.paragraphSpacingBefore = paragraphSpacingBefore
-        self.paragraphSpacing = paragraphSpacing
-        self.singleLetterPaddingBottom = singleLetterPaddingBottom
-    }
-
-    public static let `default` = BlockLatexStyle()
-}
-
-/// Reserved for future inline-LaTeX (`$...$`) tuning. Currently has no
-/// effect; inline LaTeX inherits font size from the surrounding context.
-public struct InlineLatexStyle: Sendable {
-    /// Reserved for future inline-LaTeX tuning — currently the engine inherits
-    /// font size from the surrounding heading context.
-    public var placeholder: Void
-
-    public init() { self.placeholder = () }
-
-    public static let `default` = InlineLatexStyle()
-}
-
 // MARK: - Blockquote
 
 /// Extra line height added to blockquote lines.
@@ -593,10 +525,20 @@ public struct ParagraphStyle: Sendable {
     public var spacingFactor: CGFloat
     /// Extra height (points) added to the default paragraph line height.
     public var lineHeightExtraSpacing: CGFloat
+    /// Letter spacing as a fraction of the font size, applied to body text.
+    /// Negative tightens. `0` (the default) leaves the face's own metrics
+    /// alone, which is what a UI font wants; a display serif set large usually
+    /// wants a little negative tracking.
+    public var trackingEm: CGFloat
 
-    public init(spacingFactor: CGFloat = 0.3, lineHeightExtraSpacing: CGFloat = 2) {
+    public init(
+        spacingFactor: CGFloat = 0.3,
+        lineHeightExtraSpacing: CGFloat = 2,
+        trackingEm: CGFloat = 0
+    ) {
         self.spacingFactor = spacingFactor
         self.lineHeightExtraSpacing = lineHeightExtraSpacing
+        self.trackingEm = trackingEm
     }
 
     public static let `default` = ParagraphStyle()
@@ -709,15 +651,14 @@ extension MarkdownEditorConfiguration {
     /// ## Behavior
     ///
     /// In `.fitsContent` mode:
-    /// - The editor reports `headerHeight + text content height` to SwiftUI.
+    /// - The editor reports its text content height to SwiftUI.
     /// - Typing grows/shrinks the block per keystroke; SwiftUI re-lays-out.
     /// - An empty document shows at least one body line of height.
     /// - Scroll-wheel events pass through to the enclosing scroll view.
     /// - Caret visibility propagates to the enclosing (page-level) scroll
     ///   view so editing at the bottom of a tall block keeps the caret
     ///   on-screen.
-    /// - Async content changes (image/LaTeX finishing layout, font-size
-    ///   change) re-report size via `invalidateIntrinsicContentSize`.
+    /// - Async font-size changes re-report size via `invalidateIntrinsicContentSize`.
     /// - Switching between `.scrolls` and `.fitsContent` at runtime is
     ///   supported; the editor reconfigures immediately.
     ///
@@ -725,18 +666,13 @@ extension MarkdownEditorConfiguration {
     ///
     /// - **Reading column** (`readingWidth`): the centered fixed-width column
     ///   is preserved; height grows to the column's content height.
-    /// - **Scroll-away header**: a static header's band is included in the
-    ///   reported height. The collapse-on-scroll animation is driven by the
-    ///   inner scroll offset, which is always zero in `.fitsContent`, so the
-    ///   collapse never triggers. Combining a collapsing header with
-    ///   `.fitsContent` is allowed but the collapse behavior is not meaningful.
     ///
     /// ## Trade-offs
     ///
     /// `.fitsContent` forces full-document layout so the total height is known.
     /// For small-to-medium documents this is fine; for very large documents it
     /// forgoes TextKit-2 viewport virtualization.
-    public enum HeightBehavior: Sendable {
+    public enum HeightBehavior: Sendable, nonisolated Equatable {
         /// The editor scrolls internally within the height SwiftUI gives it.
         /// This is the historical behavior and the default.
         case scrolls

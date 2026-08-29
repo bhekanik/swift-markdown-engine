@@ -6,7 +6,7 @@
 //
 
 // Keeps the editor in sync while you type, updating formatting, selections,
-// links, and other editing behavior in one place.
+// and other editing behavior in one place.
 import AppKit
 import SwiftUI
 
@@ -15,10 +15,11 @@ import SwiftUI
 ///
 /// The coordinator is created automatically by SwiftUI; embedders never
 /// construct one directly. Behaviors that don't fit in the main file live
-/// in extensions (Autocorrect, CodeBlocks, Find, InlineSelection,
+/// in extensions (Autocorrect, CodeBlocks, Find,
 /// Notifications, Restyling, TextDelegate, WritingTools).
 public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var documentId: String?
+    var controllerlessRemountIdentity: AnyHashable?
     /// Remembered scroll offset (`bounds.origin.y`) per `documentId` — saved on
     /// switch-away, restored on switch-back. Dies with the coordinator, so an
     /// embedder that unmounts the editor supplies the two closures below instead.
@@ -40,12 +41,11 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// its own undo stack that survives switching away and back. Vended through
     /// the `undoManager(for:)` delegate method; pruned alongside `scrollOffsets`.
     var undoManagers: [String: UndoManager] = [:]
-    /// Per-`documentId` content snapshot (storage form) taken on switch-away. On
+    /// Per-`documentId` content snapshot taken on switch-away. On
     /// switch-back a mismatch means the file was rewritten while backgrounded, so
     /// the now-stale undo stack is dropped. Pruned alongside `undoManagers`.
     var undoContentSnapshots: [String: String] = [:]
     @Binding var text: String
-    @Binding var isWikiLinkActive: Bool
     var fontName: String
     var fontSize: CGFloat
     var configuration: MarkdownEditorConfiguration = .default {
@@ -60,30 +60,123 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     }
     /// Memoized `configuration.extensionRegistry` (see didSet).
     var cachedExtensionRegistry: ExtensionRegistry = .empty
-    /// Last `EmbeddedImageProvider.fingerprint()` value we've reflected in
-    /// the textView's attributes. We cache it here because embedders that
-    /// MUTATE the same provider over time (async URL fetches, etc.) would
-    /// otherwise fool the wrapper's "did the embedder hand us a new
-    /// fingerprint" check — re-reading the same object twice always
-    /// returns the current value, regardless of when state changed.
-    var lastImageFingerprint: AnyHashable?
-    var lastWikiFingerprint: AnyHashable?
     private var busObservers: [NSObjectProtocol] = []
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
-    /// Owns the scroll-away header (build, content refresh, collapse/expand,
-    /// teardown). Created on first reconcile with a non-nil header.
-    var headerController: ScrollingHeaderController?
+    /// The view managed through the public AppKit adopt/detach lifecycle.
+    /// SwiftUI owns its separate dismantle path.
+    weak var appKitAdoptedTextView: NSTextView?
     var layoutBridge: LayoutBridge?
     var layoutDelegate: MarkdownLayoutManagerDelegate?
-    var onLinkClick: ((String) -> Void)?
-    var onCaretRectChange: ((CGRect) -> Void)?
+    /// Embedder handle for external patches and the text-view seam. Weak: the
+    /// embedder owns it and outlives the editor.
+    weak var editorController: MarkdownEditorController?
+    /// The requested document while its controller is still driving another view.
+    /// Kept separate so this view can stay isolated yet accept the later handoff.
+    weak var requestedControllerWhileDetached: MarkdownEditorController?
+    var onAttachmentChange: ((NSTextView?) -> Void)?
+    /// Reserved controller whose public attachment callbacks must wait until
+    /// `updateNSView` has synchronized storage, styling, and host callbacks.
+    weak var pendingAttachmentAnnouncement: MarkdownEditorController?
+    var hasPendingAttachmentAnnouncement = false
+    private weak var reportedAttachedTextView: NSTextView?
+    private var didReportAttachment = false
+
+    /// Publish this wrapper's attachment state without conflating it with
+    /// another wrapper using the same controller.
+    func reportAttachment(_ textView: NSTextView?) {
+        if didReportAttachment {
+            if let textView, reportedAttachedTextView === textView { return }
+            if textView == nil, reportedAttachedTextView == nil { return }
+        }
+        didReportAttachment = true
+        reportedAttachedTextView = textView
+        onAttachmentChange?(textView)
+    }
+
+    func resetAttachmentReportForNewObserver() {
+        didReportAttachment = false
+        reportedAttachedTextView = nil
+    }
+
+    func reportPendingAttachment(_ textView: NSTextView) {
+        guard hasPendingAttachmentAnnouncement else { return }
+        hasPendingAttachmentAnnouncement = false
+        guard let controller = pendingAttachmentAnnouncement else {
+            guard editorController == nil, !isDetachedFromDocument else { return }
+            reportAttachment(textView)
+            return
+        }
+        pendingAttachmentAnnouncement = nil
+        guard editorController === controller,
+              controller.textView === textView else { return }
+        controller.notifyEmbedderOfAttachment(textView)
+        guard editorController === controller,
+              controller.textView === textView else {
+            if editorController === controller {
+                editorController = nil
+                requestedControllerWhileDetached = nil
+                isDetachedFromDocument = true
+            }
+            return
+        }
+        reportAttachment(textView)
+    }
+
+    /// Where this VIEW was in each document it has shown, keyed by controller
+    /// identity. A window swapped between documents puts the reader back.
+    var selectionByDocument: [ObjectIdentifier: NSRange] = [:]
+    /// Set while a controller swap is in flight; consumed once the new
+    /// document has been rebuilt and its length is known.
+    var pendingSelectionRestore: ObjectIdentifier?
+    /// True while this view was built for a document another view already had.
+    ///
+    /// It is showing its text on a TextKit stack of its own and speaks for
+    /// nobody: its edits are not the document's edits, so they must not reach
+    /// the embedder's binding or its edit feed. Cleared when the requested
+    /// controller frees or the wrapper selects another available target.
+    var isDetachedFromDocument = false
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
+    private struct DeferredPublicMutation {
+        let mutation: MarkdownTextMutation
+        let callback: ((MarkdownTextMutation) -> Void)?
+    }
+    private var deferredPublicMutations: [DeferredPublicMutation]?
+    private var isFlushingPublicMutations = false
+
+    func beginDeferringPublicMutations() {
+        if deferredPublicMutations == nil {
+            deferredPublicMutations = []
+        }
+    }
+
+    func flushDeferredPublicMutations() {
+        guard !isFlushingPublicMutations, deferredPublicMutations != nil else { return }
+        isFlushingPublicMutations = true
+        var index = 0
+        // A callback may apply another batch. Its storage lands immediately,
+        // but its callback joins the tail so listeners receive every admitted
+        // pre-edit batch mutation before mutations addressed to the new text.
+        while let mutations = deferredPublicMutations, index < mutations.count {
+            let deferred = mutations[index]
+            index += 1
+            deferred.callback?(deferred.mutation)
+        }
+        deferredPublicMutations = nil
+        isFlushingPublicMutations = false
+    }
+
+    func deferPublicMutation(_ mutation: MarkdownTextMutation) -> Bool {
+        guard deferredPublicMutations != nil else { return false }
+        deferredPublicMutations?.append(DeferredPublicMutation(
+            mutation: mutation,
+            callback: onTextMutation
+        ))
+        return true
+    }
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
     /// default menu + current selection range, returns the menu to show.
     var onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)?
-    var onInlineSelectionChange: ((InlineSelectionState?) -> Void)?
-    var onInlinePreviewKey: ((InlinePreviewKey) -> Bool)?
     var onCodeBlockSelectionChange: (([CodeBlockSelection]) -> Void)?
     var didInitialFormatting: Bool = false
     /// One-shot guard so `updateCodeBlockSelection` only forces a full-document layout once per document.
@@ -94,10 +187,226 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// so that re-entrant pass is pure waste (measured 71ms on a 346k note). Mirrors
     /// the `didEnsureLayoutForCurrentDocument` suppression pattern.
     var isRebuildingDocument = false
+    var isNotifyingTextFinderClientStringChange = false
+    /// Batch admission already notified Finder before any requested patch lands.
+    /// Suppress the second notification while applying that admitted batch.
+    private var textFinderInvalidationSuppressionDepth = 0
+    var suppressesTextFinderInvalidation: Bool {
+        textFinderInvalidationSuppressionDepth > 0
+    }
+    func beginSuppressingTextFinderInvalidation() {
+        textFinderInvalidationSuppressionDepth += 1
+    }
+    func endSuppressingTextFinderInvalidation() {
+        textFinderInvalidationSuppressionDepth = max(0, textFinderInvalidationSuppressionDepth - 1)
+    }
+    struct ProgrammaticBatchMutation {
+        let mutation: MarkdownTextMutation
+        let documentLength: Int
+    }
+    var activeProgrammaticBatchMutations: [ProgrammaticBatchMutation]?
+    private var mutationTransactionDepth = 0
+    var rejectsReentrantMutation: Bool {
+        mutationTransactionDepth > 0
+    }
+    func beginMutationTransaction() {
+        mutationTransactionDepth += 1
+    }
+    func endMutationTransaction() {
+        mutationTransactionDepth = max(0, mutationTransactionDepth - 1)
+    }
+    // Consumed at delegate entry, before Finder or service callbacks run, so
+    // reentrant proposals cannot inherit the batch commit's one admission.
+    private var hasAdmittedMutationProposal = false
+    func admitNextMutationProposal() {
+        hasAdmittedMutationProposal = true
+    }
+    func consumeAdmittedMutationProposal() -> Bool {
+        guard hasAdmittedMutationProposal else { return false }
+        hasAdmittedMutationProposal = false
+        return true
+    }
+    func discardAdmittedMutationProposal() {
+        hasAdmittedMutationProposal = false
+    }
+    func recordAndPublishCompletedMutation(
+        _ mutation: MarkdownTextMutation?,
+        mutationDelta: Int,
+        documentLength: Int
+    ) {
+        if let batch = activeProgrammaticBatchMutations {
+            for item in batch {
+                editorController?.recordDocumentMutation(
+                    item.mutation,
+                    mutationDelta: (item.mutation.replacement as NSString).length
+                        - item.mutation.range.length,
+                    documentLength: item.documentLength
+                )
+                publish(item.mutation)
+            }
+            return
+        }
+        editorController?.recordDocumentMutation(
+            mutation,
+            mutationDelta: mutationDelta,
+            documentLength: documentLength
+        )
+        if let mutation {
+            publish(mutation)
+        }
+    }
+    /// Main-queue Binding writes must not outlive a newer edit or rebuild.
+    private var bindingWritebackGeneration: UInt64 = 0
+    private struct PendingBindingWrite {
+        let generation: UInt64
+        let textView: ObjectIdentifier
+        let controller: ObjectIdentifier?
+        let documentId: String?
+        let previousText: String
+        let text: String
+    }
+    private var pendingBindingWrite: PendingBindingWrite?
     var lastSyncedText: String
-    var isProgrammaticEdit: Bool = false
+
+    func updateTextBinding(_ binding: Binding<String>) {
+        _text = binding
+    }
+
+    func scheduleBindingWriteBack(_ newText: String, from textView: NSTextView) {
+        bindingWritebackGeneration &+= 1
+        let generation = bindingWritebackGeneration
+        pendingBindingWrite = PendingBindingWrite(
+            generation: generation,
+            textView: ObjectIdentifier(textView),
+            controller: editorController.map(ObjectIdentifier.init),
+            documentId: documentId,
+            previousText: text,
+            text: newText
+        )
+        DispatchQueue.main.async { [weak self, weak textView] in
+            guard let self, let textView else { return }
+            _ = self.commitPendingBindingWrite(
+                generation: generation,
+                from: textView,
+                bindingText: self.text
+            )
+        }
+    }
+
+    func commitPendingBindingWrite(
+        generation: UInt64? = nil,
+        from textView: NSTextView,
+        bindingText: String
+    ) -> String? {
+        guard let pending = validPendingBindingWrite(
+            generation: generation,
+            from: textView,
+            bindingText: bindingText
+        ) else { return nil }
+        pendingBindingWrite = nil
+        bindingWritebackGeneration &+= 1
+        lastSyncedText = pending.text
+        if bindingText != pending.text {
+            writeBindingBack(pending.text)
+        }
+        return pending.text
+    }
+
+    func pendingBindingWriteAuthority(
+        from textView: NSTextView,
+        bindingText: String
+    ) -> String? {
+        validPendingBindingWrite(from: textView, bindingText: bindingText)?.text
+    }
+
+    func transferPendingBindingWrite(to replacement: NativeTextViewCoordinator) {
+        guard let textView,
+              let pending = validPendingBindingWrite(
+                  from: textView,
+                  bindingText: text
+              ),
+              let replacementTextView = replacement.textView,
+              replacement.documentId == pending.documentId,
+              replacement.text == pending.previousText,
+              replacementTextView.string == pending.previousText else {
+            invalidatePendingBindingWrite()
+            return
+        }
+        let selection = textView.selectedRange()
+        invalidatePendingBindingWrite()
+        replacement.rebuildTextStorageAndStyle(
+            replacementTextView,
+            from: pending.text
+        )
+        replacementTextView.setSelectedRange(
+            selection.clamped(toLength: (pending.text as NSString).length)
+        )
+        replacement.scheduleBindingWriteBack(pending.text, from: replacementTextView)
+    }
+
+    func invalidatePendingBindingWrite() {
+        pendingBindingWrite = nil
+        bindingWritebackGeneration &+= 1
+    }
+
+    private func validPendingBindingWrite(
+        generation: UInt64? = nil,
+        from textView: NSTextView,
+        bindingText: String
+    ) -> PendingBindingWrite? {
+        guard let pending = pendingBindingWrite,
+              generation == nil || generation == pending.generation,
+              pending.generation == bindingWritebackGeneration else { return nil }
+        guard
+              pending.textView == ObjectIdentifier(textView),
+              self.textView === textView,
+              pending.controller == editorController.map(ObjectIdentifier.init),
+              pending.documentId == documentId,
+              textView.string == pending.text,
+              bindingText == pending.previousText || bindingText == pending.text,
+              !isDetachedFromDocument else {
+            pendingBindingWrite = nil
+            bindingWritebackGeneration &+= 1
+            return nil
+        }
+        return pending
+    }
+
+    func synchronizeWithoutBindingWrite(
+        _ newText: String,
+        preservingPendingBindingWrite: Bool = false
+    ) {
+        if preservingPendingBindingWrite { return }
+        invalidatePendingBindingWrite()
+        lastSyncedText = newText
+    }
+    /// A controller takeover can expose newer document storage than the
+    /// embedder's binding. Ignore only that captured stale snapshot until the
+    /// binding advances; a different value remains a supported external edit.
+    var staleBindingAfterControllerTakeover: (
+        controller: ObjectIdentifier,
+        documentId: String,
+        text: String
+    )?
+    /// Finder invalidation is public and synchronous, so a programmatic edit
+    /// can re-enter through a controller patch before its own scope unwinds.
+    private var programmaticEditDepth = 0
+    var isProgrammaticEdit: Bool {
+        get { programmaticEditDepth > 0 }
+        set {
+            if newValue {
+                programmaticEditDepth += 1
+            } else {
+                programmaticEditDepth = max(0, programmaticEditDepth - 1)
+            }
+        }
+    }
     var isWritingToolsActive: Bool = false
     var wtStartDocumentId: String?
+    var wtSourceSnapshot: String?
+    var wtStartDocumentRevision: UInt64?
+    var wtStartDocumentPublishedDelta: Int = 0
+    var wtStartDocumentLength: Int = 0
     weak var wtChildWindow: NSWindow?
     var wtInitialChildOrigin: CGPoint?
     var wtInitialSelectionRange: NSRange?
@@ -106,10 +415,8 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var wtUndoObserverTokens: [NSObjectProtocol] = []
     var wtUndoneDuringSession: Bool = false
     var wtPostUndoSnapshot: String?
-    var lastAppliedInlineReplacementID: UUID?
     var activeTokenIndices: Set<Int> = []
     var previousActiveTokenIndices: Set<Int> = []
-    var wikiLinkMetadata: [WikiLinkService.RangeKey: WikiLinkService.LinkMetadata] = [:]
     var previousBacktickCount: Int = 0
     /// Backtick census baseline captured in shouldChangeTextIn: the pre-edit
     /// window count around the proposed edit, so textDidChange can update the
@@ -138,20 +445,16 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// change, textDidChange). Pure function of (version, selection, suppressed).
     var activeTokenMemo: (version: UInt64, selection: NSRange, suppressed: Bool, result: Set<Int>)?
 
-    /// Display-text length after the previous textDidChange — yields the edit's
+    /// Text length after the previous textDidChange — yields the edit's
     /// length delta without retaining the previous text.
     var previousDisplayLength: Int = -1
-    /// Storage form computed by the previous wiki sync, kept synchronously
-    /// (unlike `lastSyncedText`, which updates via async dispatch and can lag a
-    /// keystroke). This is the splice base for the incremental path.
-    var lastComputedStorage: String = ""
-    /// DEBUG-only sampling counter for verifying splices against full rebuilds.
-    var wikiVerifyCounter: UInt = 0
-
     var pendingEditedRange: NSRange? = nil
     /// Exact pre-edit descriptor paired with `pendingEditedRange`. It is
     /// published only when one accepted proposal produces the change event.
     var pendingTextMutation: MarkdownTextMutation?
+    /// Retains the real delta when several proposals collapse into one change
+    /// event and no single range can reproduce it.
+    var pendingTextMutationStartLength: Int?
     /// Proposed-edit cycles since the last completed textDidChange. Exactly 1
     /// means the hoisted editedRange/lengthDelta describe a single tracked
     /// edit and incremental fast paths may trust them.
@@ -198,6 +501,23 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var userPrefersContinuousSpellChecking: Bool = true
     var userPrefersGrammarChecking: Bool = true
     var userPrefersAutomaticSpellingCorrection: Bool = true
+    var rawSourceInputSettingsSnapshot: RawSourceInputSettings?
+
+    struct RawSourceInputSettings {
+        let automaticQuoteSubstitution: Bool
+        let automaticDashSubstitution: Bool
+        let automaticTextReplacement: Bool
+        let automaticSpellingCorrection: Bool
+        let smartInsertDelete: Bool
+
+        init(textView: NSTextView) {
+            automaticQuoteSubstitution = textView.isAutomaticQuoteSubstitutionEnabled
+            automaticDashSubstitution = textView.isAutomaticDashSubstitutionEnabled
+            automaticTextReplacement = textView.isAutomaticTextReplacementEnabled
+            automaticSpellingCorrection = textView.isAutomaticSpellingCorrectionEnabled
+            smartInsertDelete = textView.smartInsertDeleteEnabled
+        }
+    }
 
     /// Fires after the user toggles a spell/grammar/auto-correction menu item.
     /// Embedders persist the returned policy (e.g. to `UserDefaults`) and feed
@@ -233,10 +553,6 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         /// (full buffer re-extraction + memcmp per keystroke).
         let blocks: [Block]
         let codeTokens: [MarkdownToken]
-        let latexTokens: [MarkdownToken]
-        let blockLatexTokens: [MarkdownToken]
-        let wikiLinkTokens: [MarkdownToken]
-        let imageEmbedTokens: [MarkdownToken]
         let tableTokens: [MarkdownToken]
         /// Code-block tokens with their index into `tokens` (active-token
         /// checks need the original index) — collected in the same single
@@ -252,45 +568,12 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         let version: UInt64
     }
 
-    enum InlineTokenContext {
-        case wikiLink(token: MarkdownToken)
-        case imageEmbed(token: MarkdownToken)
-
-        var token: MarkdownToken {
-            switch self {
-            case .wikiLink(let token), .imageEmbed(let token):
-                return token
-            }
-        }
-
-        var selectionKind: InlineSelectionKind {
-            switch self {
-            case .wikiLink:
-                return .wikiLink
-            case .imageEmbed:
-                return .imageEmbed
-            }
-        }
-    }
-
-    var isImageEmbedActive: Bool = false
-
-    // Inline selection geometry, image-embed activation, and inline-token
-    // detection live in `NativeTextViewCoordinator+InlineSelection.swift`.
-
     init(text: Binding<String>,
          fontName: String,
-         fontSize: CGFloat,
-         isWikiLinkActive: Binding<Bool>,
-         onLinkClick: ((String) -> Void)?,
-         onInlineSelectionChange: ((InlineSelectionState?) -> Void)?) {
+         fontSize: CGFloat) {
         _text = text
         self.fontName = fontName
         self.fontSize = fontSize
-        _isWikiLinkActive = isWikiLinkActive
-        self.onLinkClick = onLinkClick
-        self.onCaretRectChange = nil
-        self.onInlineSelectionChange = onInlineSelectionChange
         self.lastSyncedText = text.wrappedValue
         super.init()
         // Init + didSet share this helper so the observer tracks whichever service is current.
@@ -326,93 +609,126 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         let center = NotificationCenter.default
 
         if let name = bus.applyBoldRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleBoldNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                // OperationQueue.main is the runtime guarantee for this synchronous actor hop.
+                MainActor.assumeIsolated { self?.handleBoldNotification() }
             })
         }
         if let name = bus.applyItalicRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleItalicNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleItalicNotification() }
             })
         }
         if let name = bus.applyHeadingRequest {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleHeadingNotification(notification)
+                guard let level = notification.userInfo?["level"] as? Int else { return }
+                MainActor.assumeIsolated { self?.handleHeadingNotification(level: level) }
             })
         }
         if let name = bus.applyHighlightRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleHighlightNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleHighlightNotification() }
             })
         }
         if let name = bus.applyStrikethroughRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleStrikethroughNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleStrikethroughNotification() }
             })
         }
         if let name = bus.applyInlineCodeRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleInlineCodeNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleInlineCodeNotification() }
             })
         }
         if let name = bus.applyBlockquoteRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleBlockquoteNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleBlockquoteNotification() }
             })
         }
         if let name = bus.applyUnorderedListRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleUnorderedListNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleUnorderedListNotification() }
             })
         }
         if let name = bus.applyOrderedListRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleOrderedListNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleOrderedListNotification() }
             })
         }
         if let name = bus.applyLinkRequest {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleLinkNotification(notification)
+                let url = notification.userInfo?["url"] as? String ?? ""
+                MainActor.assumeIsolated { self?.handleLinkNotification(url: url) }
             })
         }
         if let name = bus.applyCodeBlockRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleCodeBlockNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleCodeBlockNotification() }
             })
         }
         if let name = bus.applyHorizontalRuleRequest {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleHorizontalRuleNotification(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleHorizontalRuleNotification() }
             })
         }
         if let name = bus.applyImageRequest {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleImageNotification(notification)
+                let url = notification.userInfo?["url"] as? String ?? ""
+                MainActor.assumeIsolated { self?.handleImageNotification(url: url) }
             })
         }
         if let name = bus.findScrollToRange {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleFindScrollToRange(notification)
+                guard let info = notification.userInfo,
+                      let currentIndex = info["currentIndex"] as? Int,
+                      let allRanges = info["allRanges"] as? [NSRange] else { return }
+                let range = info["range"] as? NSRange
+                MainActor.assumeIsolated {
+                    self?.handleFindScrollToRange(
+                        range: range,
+                        currentIndex: currentIndex,
+                        allRanges: allRanges
+                    )
+                }
             })
         }
         if let name = bus.findClearHighlights {
-            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleFindClearHighlights(notification)
+            busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleFindClearHighlights() }
             })
         }
         if let name = bus.findQuery {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleFindQuery(notification)
+                guard let query = notification.userInfo?["query"] as? String else { return }
+                let currentIndex = notification.userInfo?["currentIndex"] as? Int ?? 0
+                MainActor.assumeIsolated {
+                    self?.handleFindQuery(query: query, currentIndex: currentIndex)
+                }
             })
         }
         if let name = bus.replaceCurrent {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleReplaceCurrent(notification)
+                guard let info = notification.userInfo,
+                      let query = info["query"] as? String,
+                      let replacement = info["replacement"] as? String else { return }
+                let currentIndex = info["currentIndex"] as? Int ?? 0
+                MainActor.assumeIsolated {
+                    self?.handleReplaceCurrent(
+                        query: query,
+                        replacement: replacement,
+                        currentIndex: currentIndex
+                    )
+                }
             })
         }
         if let name = bus.replaceAll {
             busObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
-                self?.handleReplaceAll(notification)
+                guard let info = notification.userInfo,
+                      let query = info["query"] as? String,
+                      let replacement = info["replacement"] as? String else { return }
+                MainActor.assumeIsolated {
+                    self?.handleReplaceAll(query: query, replacement: replacement)
+                }
             })
         }
     }
@@ -420,42 +736,22 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     // Find-in-document highlight handlers live in
     // `NativeTextViewCoordinator+Find.swift`.
 
-    /// Four passes: a remount needs two (empty buffer, then the real content) and
-    /// the header's hosting view can still resolve its height after that.
+    /// Four passes: a remount needs two (empty buffer, then the real content).
     func armScrollRestore(for documentId: String) {
         pendingScrollRestoreDocumentId = documentId
         pendingScrollRestoreAttempts = 4
     }
 
-    func wikiLinkID(for range: NSRange) -> String? {
-        wikiLinkMetadata[WikiLinkService.RangeKey(range)]?.id
-    }
-
-    func storageRange(forDisplayRange range: NSRange) -> NSRange? {
-        wikiLinkMetadata[WikiLinkService.RangeKey(range)]?.storageRange
-    }
-
-    func storageRange(containingDisplayLocation location: Int) -> NSRange? {
-        for (key, value) in wikiLinkMetadata {
-            let displayRange = NSRange(location: key.location, length: key.length)
-            if NSLocationInRange(location, displayRange) {
-                return value.storageRange
-            }
-        }
-        return nil
-    }
-
     // Methods are split across the following extensions:
     //   - +TextDelegate    — NSTextViewDelegate hot path
     //   - +Restyling       — restyle pipeline + parsedDocument cache
-    //   - +InlineSelection — inline-token detection + image-embed activation
     //   - +CodeBlocks      — copy-button overlay
     //   - +Find            — find-in-document highlights
     //   - +Notifications   — bus + appearance bridge
     //   - +Autocorrect     — spell/grammar/quote toggles
     //   - +WritingTools    — macOS 15+ Writing Tools session
 
-    deinit {
+    isolated deinit {
         NotificationCenter.default.removeObserver(self)
         busObservers.forEach(NotificationCenter.default.removeObserver(_:))
     }

@@ -9,8 +9,7 @@
 // is now produced by the AST-native styler (`MarkdownASTStyler`); this type
 // builds the `StylingContext` and runs the NSImage rendering passes that still
 // consume tokens:
-//   - MarkdownStyler+Latex.swift   (block + inline LaTeX rendering)
-//   - MarkdownStyler+Images.swift  (image embeds / image links)
+//   - MarkdownStyler+Images.swift  (image links)
 //   - MarkdownStyler+Tables.swift  (rendered tables)
 import AppKit
 import Foundation
@@ -25,9 +24,6 @@ extension MarkdownStyler {
     /// reused across keystrokes. Lets the NSImage passes iterate a small,
     /// scope-sliced array instead of walking every document token per pass.
     struct ClassifiedStyleTokens {
-        let inlineLatex: [IndexedToken]
-        let blockLatex: [IndexedToken]
-        let imageEmbed: [IndexedToken]
         let imageLink: [IndexedToken]
         let table: [IndexedToken]
         let code: [MarkdownToken]   // codeBlock + inlineCode, for isInsideCodeBlock checks
@@ -42,9 +38,8 @@ extension MarkdownStyler {
         let layoutBridge: LayoutBridge?
         let baseDefaultLineHeight: CGFloat
         let codeBackgroundColor: NSColor
-        let latexMarkerFont: NSFont
+        let hiddenMarkerFont: NSFont
         let configuration: MarkdownEditorConfiguration
-        let wikiLinkIDProvider: (NSRange) -> String?
         /// Union bounds of the restyle's paragraph scope; nil = whole document
         /// (initial load). Attribute application clips per paragraph anyway,
         /// so the NSImage passes can skip tokens wholly outside these bounds
@@ -58,9 +53,6 @@ extension MarkdownStyler {
 
         // Per-kind indexed arrays: the cached classification, or a one-off
         // classification of `tokens` when a direct caller passed none.
-        var inlineLatexIndexed: [IndexedToken] { classified?.inlineLatex ?? Self.indexed(tokens, .inlineLatex) }
-        var blockLatexIndexed: [IndexedToken] { classified?.blockLatex ?? Self.indexed(tokens, .blockLatex) }
-        var imageEmbedIndexed: [IndexedToken] { classified?.imageEmbed ?? Self.indexed(tokens, .imageEmbed) }
         var imageLinkIndexed: [IndexedToken] { classified?.imageLink ?? Self.indexed(tokens, .imageLink) }
         var tableIndexed: [IndexedToken] { classified?.table ?? Self.indexed(tokens, .table) }
 
@@ -142,8 +134,7 @@ enum MarkdownStyler {
         events.reserveCapacity(ranges.count * 2)
         for (i, styled) in ranges.enumerated() {
             let r = styled.range
-            guard r.location != NSNotFound, r.location >= 0, r.length > 0,
-                  NSMaxRange(r) <= documentLength else { continue }
+            guard r.length > 0, r.isWithin(documentLength: documentLength) else { continue }
             events.append((r.location, true, i))
             events.append((NSMaxRange(r), false, i))
         }
@@ -202,7 +193,6 @@ enum MarkdownStyler {
         caretLocation: Int,
         selection: NSRange? = nil,
         activeTokenIndices: Set<Int>,
-        wikiLinkIDProvider: @escaping (NSRange) -> String? = { _ in nil },
         precomputedTokens: [MarkdownToken]? = nil,
         classified: ClassifiedStyleTokens? = nil,
         precomputedBlocks: [Block]? = nil,
@@ -225,6 +215,9 @@ enum MarkdownStyler {
         )
         let codeBackgroundColor = configuration.services.syntaxHighlighter.backgroundColor()
         let hiddenMarkerSize = configuration.markers.hiddenMarkerFontSize
+        let blocks = precomputedBlocks ?? (tokens.contains { $0.kind == .table }
+            ? BlockParser.parse(text, registry: configuration.extensionRegistry)
+            : nil)
         let ctx = StylingContext(
             nsText: nsText,
             tokens: tokens,
@@ -234,10 +227,9 @@ enum MarkdownStyler {
             layoutBridge: layoutBridge,
             baseDefaultLineHeight: baseDefaultLineHeight,
             codeBackgroundColor: codeBackgroundColor,
-            latexMarkerFont: NSFont(name: fontName, size: hiddenMarkerSize)
+            hiddenMarkerFont: NSFont(name: fontName, size: hiddenMarkerSize)
                 ?? NSFont.systemFont(ofSize: hiddenMarkerSize),
             configuration: configuration,
-            wikiLinkIDProvider: wikiLinkIDProvider,
             scopeBounds: scopeBounds,
             classified: classified
         )
@@ -247,20 +239,22 @@ enum MarkdownStyler {
         let astT0 = DispatchTime.now().uptimeNanoseconds
         result += MarkdownASTStyler.styleAttributes(
             text: text, fontName: fontName, fontSize: fontSize,
-            caretLocation: caretLocation, selection: selection, wikiLinkIDProvider: wikiLinkIDProvider,
-            scopedRanges: scopedRanges, precomputedBlocks: precomputedBlocks,
+            caretLocation: caretLocation, selection: selection,
+            scopedRanges: scopedRanges, precomputedBlocks: blocks,
             configuration: configuration
         )
         let astMs = Double(DispatchTime.now().uptimeNanoseconds - astT0) / 1_000_000
         // NSImage rendering reuses the existing, proven machinery.
         let imgT0 = DispatchTime.now().uptimeNanoseconds
-        result += styleBlockLatex(ctx)
-        result += styleInlineLatex(ctx)
-        result += styleImageEmbeds(ctx)
         result += styleImageLinks(ctx)
         let imgMs = Double(DispatchTime.now().uptimeNanoseconds - imgT0) / 1_000_000
-        result += styleTables(ctx)
-        PerfTrace.note { "  styleAttributes: ast=\(String(format: "%.2f", astMs))ms latex+img4=\(String(format: "%.2f", imgMs))ms styledRanges=\(result.count)" }
+        result += styleTables(
+            ctx,
+            referenceDefinitions: blocks.map {
+                DocumentAST.referenceDefinitionLabels(in: $0, nsText)
+            } ?? []
+        )
+        PerfTrace.note { "  styleAttributes: ast=\(String(format: "%.2f", astMs))ms img2=\(String(format: "%.2f", imgMs))ms styledRanges=\(result.count)" }
         return result
     }
 }
@@ -361,10 +355,10 @@ extension MarkdownStyler {
 
             attrs.append((paraRange, [.paragraphStyle: para]))
             attrs.append((token.range, [
-                .latexImage: image,
-                .latexBounds: NSValue(rect: imageBounds),
-                .latexIsBlock: true,
-                .latexBlockOffsetY: baseLineHeight + imageGap
+                .renderedImage: image,
+                .renderedImageBounds: NSValue(rect: imageBounds),
+                .renderedImageIsBlock: true,
+                .renderedBlockOffsetY: baseLineHeight + imageGap
             ]))
             appendSecondaryMarkers(for: token, to: &attrs, theme: ctx.configuration.theme)
         }
@@ -436,20 +430,20 @@ extension MarkdownStyler {
             let leadingText = ctx.nsText.substring(with: leadingRange)
             attrs.append((leadingRange, [
                 .foregroundColor: NSColor.clear,
-                .font: ctx.latexMarkerFont,
-                .kern: -hiddenRunKern(leadingText, font: ctx.latexMarkerFont)
+                .font: ctx.hiddenMarkerFont,
+                .kern: -hiddenRunKern(leadingText, font: ctx.hiddenMarkerFont)
             ]))
         }
 
         let anchorRange = NSRange(location: anchorLocation, length: 1)
         let anchorChar = ctx.nsText.substring(with: anchorRange)
         var anchorAttrs: [NSAttributedString.Key: Any] = [
-            .latexImage: image,
-            .latexBounds: NSValue(rect: imageBounds),
-            .latexIsBlock: true,
+            .renderedImage: image,
+            .renderedImageBounds: NSValue(rect: imageBounds),
+            .renderedImageIsBlock: true,
             .foregroundColor: NSColor.clear,
-            .font: ctx.latexMarkerFont,
-            .kern: advanceWidth - HeadingHelpers.textWidth(anchorChar, font: ctx.latexMarkerFont)
+            .font: ctx.hiddenMarkerFont,
+            .kern: advanceWidth - HeadingHelpers.textWidth(anchorChar, font: ctx.hiddenMarkerFont)
         ]
         for (key, value) in extraAnchorAttrs { anchorAttrs[key] = value }
         attrs.append((anchorRange, anchorAttrs))
@@ -461,8 +455,8 @@ extension MarkdownStyler {
             let trailingText = ctx.nsText.substring(with: trailingRange)
             attrs.append((trailingRange, [
                 .foregroundColor: NSColor.clear,
-                .font: ctx.latexMarkerFont,
-                .kern: -hiddenRunKern(trailingText, font: ctx.latexMarkerFont)
+                .font: ctx.hiddenMarkerFont,
+                .kern: -hiddenRunKern(trailingText, font: ctx.hiddenMarkerFont)
             ]))
         }
 
@@ -472,8 +466,8 @@ extension MarkdownStyler {
                 : ctx.nsText.substring(with: markerRange)
             attrs.append((markerRange, [
                 .foregroundColor: NSColor.clear,
-                .font: ctx.latexMarkerFont,
-                .kern: -hiddenRunKern(markerText, font: ctx.latexMarkerFont)
+                .font: ctx.hiddenMarkerFont,
+                .kern: -hiddenRunKern(markerText, font: ctx.hiddenMarkerFont)
             ]))
         }
 
@@ -483,8 +477,8 @@ extension MarkdownStyler {
             let preTokenText = ctx.nsText.substring(with: preTokenRange)
             attrs.append((preTokenRange, [
                 .foregroundColor: NSColor.clear,
-                .font: ctx.latexMarkerFont,
-                .kern: -hiddenRunKern(preTokenText, font: ctx.latexMarkerFont)
+                .font: ctx.hiddenMarkerFont,
+                .kern: -hiddenRunKern(preTokenText, font: ctx.hiddenMarkerFont)
             ]))
         }
     }

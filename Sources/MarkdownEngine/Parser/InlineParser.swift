@@ -15,19 +15,16 @@
 //    1. scanCodeSpans   — highest precedence, opaque interior.
 //    2. scanEscapes      — `\x` becomes a claimed span, so the escaped char is
 //                          automatically inert for every pass below.
-//    3. scanLinkFamily   — ![[…]], [[…]], ![…](…), […](…), $…$ (+ registered
-//                          extension spans) in precedence order. URLs allow
-//                          balanced parens. A candidate overlapping a claimed
-//                          span is rejected (kept literal), except for opaque
-//                          spans wholly nested inside a Markdown link's label.
-//                          This keeps `[x](y)` inert inside code while allowing
-//                          valid labels such as [`x`](y).
-//    4. resolveEmphasis  — `*`/`_` delimiter runs over text outside every
+//    3. scanLinkFamily   — inline links, reference links, footnotes,
+//                          autolinks, images, and registered extension spans.
+//                          A candidate overlapping a claimed span is rejected
+//                          except where escapes are inert inside link content.
+//    4. scanHardBreaks   — line-ending marker runs outside claimed spans.
+//    5. resolveEmphasis  — `*`/`_` delimiter runs over text outside every
 //                          claimed span; may wrap claimed spans.
-//    5. buildTree        — containment tree. Emphasis nests already-collected
+//    6. buildTree        — containment tree. Emphasis nests already-collected
 //                          spans; link/extension-span content is re-parsed
-//                          recursively; code/image/wiki/embed/latex/escape are
-//                          opaque leaves.
+//                          recursively; the remaining claims are opaque leaves.
 //
 //  Claimed spans are therefore either disjoint or properly NESTED — a link
 //  label may hold one, nothing else may. That is load-bearing for cost as well
@@ -48,16 +45,20 @@ indirect enum InlineNode: Equatable {
     case code(range: NSRange, content: NSRange)
     /// `*`/`_` emphasis. `markers` is `[openMarker, closeMarker]`.
     case emphasis(EmphasisKind, range: NSRange, markers: [NSRange], children: [InlineNode])
-    /// `[text](url)`. `markers` is `[ "[", "]", "(", ")" ]`; text is recursively parsed.
-    case link(range: NSRange, textRange: NSRange, url: NSRange, markers: [NSRange], children: [InlineNode])
-    /// `![alt](url)`. `markers` is `[ "![", "]", "(", ")" ]`. Alt is opaque.
-    case image(range: NSRange, alt: NSRange, url: NSRange, markers: [NSRange])
-    /// `[[Name|id]]`. `markers` is `[ "[[", "]]" ]`; `id` is nil when no `|`.
-    case wikiLink(range: NSRange, name: NSRange, id: NSRange?, markers: [NSRange])
-    /// `![[target]]`. `markers` is `[ "![[", "]]" ]`.
-    case imageEmbed(range: NSRange, target: NSRange, markers: [NSRange])
-    /// `$math$` — opaque. `markers` is `[ "$", "$" ]`.
-    case inlineLatex(range: NSRange, content: NSRange, markers: [NSRange])
+    /// `[text](url "title")`; text is recursively parsed.
+    case link(range: NSRange, textRange: NSRange, url: NSRange, title: NSRange?, markers: [NSRange], children: [InlineNode])
+    /// `![alt](url "title")`. Alt is opaque.
+    case image(range: NSRange, alt: NSRange, url: NSRange, title: NSRange?, markers: [NSRange])
+    /// `![alt][id]`, `![alt][]`, or shortcut `![alt]`.
+    case referenceImage(range: NSRange, alt: NSRange, label: NSRange?, markers: [NSRange], children: [InlineNode])
+    /// `[text][id]`, `[text][]`, or shortcut `[id]`; text is recursively parsed.
+    case referenceLink(range: NSRange, textRange: NSRange, label: NSRange?, markers: [NSRange], children: [InlineNode])
+    /// `[^id]`; `label` excludes the `[^` and `]` markers.
+    case footnoteReference(range: NSRange, label: NSRange, markers: [NSRange])
+    /// A backslash or two-or-more spaces immediately before an internal line ending.
+    case hardBreak(range: NSRange, marker: NSRange)
+    /// `<absolute-uri>` or `<email@example.com>`.
+    case autolink(range: NSRange, url: NSRange, markers: [NSRange])
     /// Backslash escape `\x`; `marker` is the `\`, `character` the now-literal punctuation.
     case escape(range: NSRange, character: NSRange, marker: NSRange)
     /// A span contributed by a registered `MarkdownExtension`
@@ -87,27 +88,103 @@ enum InlineParser {
     private static let rbracket: unichar = 0x5D
     private static let lparen: unichar = 0x28
     private static let rparen: unichar = 0x29
-    private static let pipe: unichar = 0x7C
     private static let backslash: unichar = 0x5C
-    private static let dollar: unichar = 0x24
+    private static let carriageReturn: unichar = 0x0D
+    private static let langle: unichar = 0x3C
+    private static let rangle: unichar = 0x3E
+    private static let caret: unichar = 0x5E
 
     // MARK: - Entry point
 
-    static func parse(_ text: String, registry: ExtensionRegistry = .empty) -> [InlineNode] {
+    static func parse(
+        _ text: String,
+        registry: ExtensionRegistry = .empty,
+        referenceDefinitions: Set<String> = []
+    ) -> [InlineNode] {
+        parse(
+            text,
+            registry: registry,
+            referenceDefinitions: referenceDefinitions,
+            rawHTMLTerminators: RawHTMLTerminatorCache()
+        )
+    }
+
+    private static func parse(
+        _ text: String,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> [InlineNode] {
         let ns = text as NSString
         let len = ns.length
         guard len > 0 else { return [] }
 
         var claimed = scanCodeSpans(ns, len: len)
         claimed += scanEscapes(ns, len: len, claimed: ClaimedIndex(claimed))
-        claimed += scanLinkFamily(ns, len: len, claimed: ClaimedIndex(claimed), registry: registry)
+        claimed += scanLinkFamily(
+            ns,
+            len: len,
+            claimed: ClaimedIndex(claimed),
+            registry: registry,
+            referenceDefinitions: referenceDefinitions,
+            rawHTMLTerminators: rawHTMLTerminators
+        )
+        claimed += scanHardBreaks(ns, len: len, claimed: ClaimedIndex(claimed))
         let emphasis = resolveEmphasis(ns, len: len, claimed: ClaimedIndex(claimed))
-        return buildTree(region: NSRange(location: 0, length: len), spans: claimed + emphasis, ns: ns, registry: registry)
+        return buildTree(
+            region: NSRange(location: 0, length: len),
+            spans: claimed + emphasis,
+            ns: ns,
+            registry: registry,
+            referenceDefinitions: referenceDefinitions
+        )
+    }
+
+    static func rawHTMLTerminatorSearchCount(in text: String) -> Int {
+        let terminators = RawHTMLTerminatorCache()
+        _ = parse(
+            text,
+            registry: .empty,
+            referenceDefinitions: [],
+            rawHTMLTerminators: terminators
+        )
+        return terminators.searchCount
+    }
+
+    static func angleSpanInspectionCount(in text: String) -> Int {
+        let terminators = RawHTMLTerminatorCache()
+        _ = parse(
+            text,
+            registry: .empty,
+            referenceDefinitions: [],
+            rawHTMLTerminators: terminators
+        )
+        return terminators.angleSpanInspectionCount
+    }
+
+    static func isInlineRawHTML(_ text: String) -> Bool {
+        let ns = text as NSString
+        guard case .rawHTML(let range) = matchInlineRawHTML(
+            ns,
+            ns.length,
+            start: 0,
+            terminators: RawHTMLTerminatorCache()
+        ) else { return false }
+        return range == NSRange(location: 0, length: ns.length)
     }
 
     /// Parse the inline content of `range` within `ns`, returning nodes in absolute document coordinates.
-    static func parse(_ ns: NSString, range: NSRange, registry: ExtensionRegistry = .empty) -> [InlineNode] {
-        offsetNodes(parse(ns.substring(with: range), registry: registry), by: range.location)
+    static func parse(
+        _ ns: NSString,
+        range: NSRange,
+        registry: ExtensionRegistry = .empty,
+        referenceDefinitions: Set<String> = []
+    ) -> [InlineNode] {
+        offsetNodes(parse(
+            ns.substring(with: range),
+            registry: registry,
+            referenceDefinitions: referenceDefinitions
+        ), by: range.location)
     }
 
     // MARK: - Span model
@@ -115,23 +192,47 @@ enum InlineParser {
     private enum Span {
         case code(range: NSRange, content: NSRange)
         case emphasis(kind: EmphasisKind, range: NSRange, open: NSRange, close: NSRange)
-        case link(range: NSRange, textRange: NSRange, url: NSRange, markers: [NSRange])
-        case image(range: NSRange, alt: NSRange, url: NSRange, markers: [NSRange])
-        case wikiLink(range: NSRange, name: NSRange, id: NSRange?, markers: [NSRange])
-        case imageEmbed(range: NSRange, target: NSRange, markers: [NSRange])
-        case inlineLatex(range: NSRange, content: NSRange, markers: [NSRange])
+        case link(range: NSRange, textRange: NSRange, url: NSRange, title: NSRange?, markers: [NSRange])
+        case image(range: NSRange, alt: NSRange, url: NSRange, title: NSRange?, markers: [NSRange])
+        case referenceImage(range: NSRange, alt: NSRange, label: NSRange?, markers: [NSRange])
+        case referenceLink(range: NSRange, textRange: NSRange, label: NSRange?, markers: [NSRange])
+        case footnoteReference(range: NSRange, label: NSRange, markers: [NSRange])
+        case hardBreak(range: NSRange, marker: NSRange)
+        case autolink(range: NSRange, url: NSRange, markers: [NSRange])
+        case rawHTML(range: NSRange)
         case escape(range: NSRange, character: NSRange, marker: NSRange)
         case ext(id: String, range: NSRange, contentRange: NSRange, markers: [NSRange], parsesContent: Bool)
 
         var fullRange: NSRange {
             switch self {
-            case .code(let r, _), .emphasis(_, let r, _, _), .link(let r, _, _, _),
-                 .image(let r, _, _, _), .wikiLink(let r, _, _, _), .imageEmbed(let r, _, _),
-                 .inlineLatex(let r, _, _), .escape(let r, _, _),
+            case .code(let r, _), .emphasis(_, let r, _, _), .link(let r, _, _, _, _),
+                 .image(let r, _, _, _, _), .referenceImage(let r, _, _, _),
+                 .referenceLink(let r, _, _, _),
+                 .footnoteReference(let r, _, _), .hardBreak(let r, _),
+                 .autolink(let r, _, _),
+                 .rawHTML(let r),
+                 .escape(let r, _, _),
                  .ext(_, let r, _, _, _):
                 return r
             }
         }
+    }
+
+    private final class RawHTMLTerminatorCache {
+        // A failed suffix search proves only that openers at or after its start
+        // cannot close. Speculative link-label scans can run ahead and then
+        // resume earlier, so each watermark records where that proof begins.
+        var commentExhaustedFrom = Int.max
+        var processingInstructionExhaustedFrom = Int.max
+        var cdataExhaustedFrom = Int.max
+        var declarationExhaustedFrom = Int.max
+        var singleQuotedAttributeExhaustedFrom = Int.max
+        var doubleQuotedAttributeExhaustedFrom = Int.max
+        // Autolinks cannot cross a line ending. IndexSet keeps one compressed
+        // no-closer interval per affected line while allowing out-of-order probes.
+        var autolinkNoCloserLocations = IndexSet()
+        var searchCount = 0
+        var angleSpanInspectionCount = 0
     }
 
     /// The already-claimed ranges, in a form the later passes can consult in
@@ -164,8 +265,13 @@ enum InlineParser {
         }
 
         mutating func contains(_ idx: Int) -> Bool {
+            containingRange(at: idx) != nil
+        }
+
+        mutating func containingRange(at idx: Int) -> NSRange? {
             advance(to: idx)
-            return cursor < ranges.count && NSLocationInRange(idx, ranges[cursor])
+            guard cursor < ranges.count, NSLocationInRange(idx, ranges[cursor]) else { return nil }
+            return ranges[cursor]
         }
 
         mutating func overlaps(_ range: NSRange) -> Bool {
@@ -255,25 +361,55 @@ enum InlineParser {
         return spans
     }
 
-    // MARK: - 3. Link family / inline LaTeX / extension spans
+    // MARK: - 3. Link family / extension spans
 
-    private static func scanLinkFamily(_ ns: NSString, len: Int, claimed: ClaimedIndex, registry: ExtensionRegistry) -> [Span] {
+    private static func scanLinkFamily(
+        _ ns: NSString,
+        len: Int,
+        claimed: ClaimedIndex,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> [Span] {
         var claimed = claimed
-        // A candidate overlapping a claimed span is rejected, except for spans
-        // wholly nested inside a Markdown link's label (#118). Only that case
-        // needs the full overlap list; everything else short-circuits on the
-        // first one.
+        // A candidate overlapping a claimed span is rejected unless that escape
+        // is meaningful inside the candidate. Those cases need the full overlap
+        // list; everything else short-circuits on the first one.
         func hasDisallowedClaimedOverlap(_ span: Span) -> Bool {
-            guard case .link(_, let textRange, _, _) = span else {
-                return claimed.overlaps(span.fullRange)
+            let allowedRanges: [NSRange]
+            switch span {
+            case .link(_, let textRange, let url, let title, _):
+                allowedRanges = [textRange, url] + (title.map { [$0] } ?? [])
+            case .image(_, let alt, let url, let title, _):
+                allowedRanges = [alt, url] + (title.map { [$0] } ?? [])
+            case .referenceImage(_, let alt, let label, _):
+                allowedRanges = [alt] + (label.map { [$0] } ?? [])
+            case .referenceLink(_, let textRange, let label, _):
+                allowedRanges = [textRange] + (label.map { [$0] } ?? [])
+            case .autolink, .rawHTML:
+                // Backslashes have no escape semantics inside opaque angle spans.
+                allowedRanges = [span.fullRange]
+            default:
+                allowedRanges = []
             }
-            return claimed.overlapping(span.fullRange).contains { !rangeContains(textRange, $0) }
+            guard !allowedRanges.isEmpty else { return claimed.overlaps(span.fullRange) }
+            return claimed.overlapping(span.fullRange).contains { claimedRange in
+                !allowedRanges.contains { rangeContains($0, claimedRange) }
+            }
         }
         var spans: [Span] = []
         var i = 0
         while i < len {
             if claimed.contains(i) { i += 1; continue }
-            if let span = matchClaimedSpan(ns, len, at: i, registry: registry),
+            if let span = matchClaimedSpan(
+                ns,
+                len,
+                at: i,
+                claimed: claimed,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions,
+                rawHTMLTerminators: rawHTMLTerminators
+            ),
                !hasDisallowedClaimedOverlap(span) {
                 spans.append(span)
                 i = NSMaxRange(span.fullRange)
@@ -284,40 +420,25 @@ enum InlineParser {
         return spans
     }
 
-    private static func matchClaimedSpan(_ ns: NSString, _ len: Int, at i: Int, registry: ExtensionRegistry) -> Span? {
-        if let span = matchBuiltIn(ns, len, at: i) { return span }
-        // Directives (`@font(size: 18){…}`) match after every built-in and
-        // BEFORE the extension loop below, on the same terms as extension
-        // spans: registered names only, and a rejection leaves the candidate
-        // literal. The ordering is deliberate — a directive is a named
-        // construct with a boundary rule, so it can't be ambiguous with an
-        // extension's delimiters unless an extension opens with the directive
-        // marker, in which case the directive wins. They project into the AST
-        // as extension-shaped nodes under a reserved id namespace, so marker
-        // shrink, caret reveal, token projection, and rich copy all apply
-        // unchanged.
-        //
-        // A directive candidate overlapping an ALREADY-CLAIMED span is
-        // rejected outright, so a code span or a backslash escape in the body
-        // keeps the whole directive literal — see the known limitation in
-        // `DirectiveScanner`.
-        //
-        // The emptiness test is HOISTED here rather than left to the identical
-        // guard inside `match`. This runs per unclaimed character, and `match`
-        // is too large to inline: the call, the indirect return buffer for a
-        // ~200-byte `DirectiveMatch?` and an outlined ARC helper all execute
-        // before the callee's own guard is reached. Measured on a release
-        // build, that cost a document registering NO directives 12-19% of its
-        // parse stage for a feature it never turned on.
-        if !registry.directives.isEmpty,
-           let match = DirectiveScanner.match(ns, len: len, at: i, registry: registry.directives) {
-            return .ext(id: match.nodeID, range: match.range, contentRange: match.contentRange,
-                        markers: match.markers, parsesContent: match.parsesContent)
-        }
-        // Extensions match after every built-in, in registration order. A
-        // built-in trigger that matched-and-FAILED (e.g. `$50$` rejected by
-        // the math heuristic) falls through here, so an extension sharing a
-        // built-in's first character is still reachable.
+    private static func matchClaimedSpan(
+        _ ns: NSString,
+        _ len: Int,
+        at i: Int,
+        claimed: ClaimedIndex,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> Span? {
+        if let span = matchBuiltIn(
+            ns,
+            len,
+            at: i,
+            claimed: claimed,
+            registry: registry,
+            referenceDefinitions: referenceDefinitions,
+            rawHTMLTerminators: rawHTMLTerminators
+        ) { return span }
+        // Extensions match after every built-in, in registration order.
         let c = ns.character(at: i)
         for entry in registry.entries where entry.open.first == c {
             if let span = matchExtensionSpan(ns, len, start: i, entry: entry) { return span }
@@ -328,15 +449,43 @@ enum InlineParser {
     /// The built-in constructs, tried exclusively in fixed precedence order —
     /// the first branch whose trigger matches decides (nil = stays literal
     /// for built-ins), exactly the pre-extension behavior.
-    private static func matchBuiltIn(_ ns: NSString, _ len: Int, at i: Int) -> Span? {
+    private static func matchBuiltIn(
+        _ ns: NSString,
+        _ len: Int,
+        at i: Int,
+        claimed: ClaimedIndex,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> Span? {
         let c = ns.character(at: i)
         let c1 = peek(ns, i + 1, len)
-        let c2 = peek(ns, i + 2, len)
-        if c == bang, c1 == lbracket, c2 == lbracket { return matchImageEmbed(ns, len, start: i) }
-        if c == lbracket, c1 == lbracket { return matchWikiLink(ns, len, start: i) }
-        if c == bang, c1 == lbracket { return matchImage(ns, len, start: i) }
-        if c == lbracket { return matchLink(ns, len, start: i) }
-        if c == dollar, c1 != dollar { return matchInlineLatex(ns, len, start: i) }
+        if c == bang, c1 == lbracket {
+            return matchImage(
+                ns,
+                len,
+                start: i,
+                claimed: claimed,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions,
+                rawHTMLTerminators: rawHTMLTerminators
+            )
+        }
+        if c == lbracket, c1 == caret { return matchFootnoteReference(ns, len, start: i) }
+        if c == lbracket {
+            return matchLink(
+                ns,
+                len,
+                start: i,
+                claimed: claimed,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions,
+                rawHTMLTerminators: rawHTMLTerminators
+            )
+        }
+        if c == langle {
+            return matchAngleSpan(ns, len, start: i, terminators: rawHTMLTerminators)
+        }
         return nil
     }
 
@@ -386,202 +535,620 @@ enum InlineParser {
         (idx >= 0 && idx < len) ? ns.character(at: idx) : nil
     }
 
-    /// `![[ target ]]`
-    private static func matchImageEmbed(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        let contentStart = i + 3
-        guard let close = closeDoubleBracket(ns, len, from: contentStart) else { return nil }
-        return .imageEmbed(
-            range: NSRange(location: i, length: (close + 2) - i),
-            target: NSRange(location: contentStart, length: close - contentStart),
-            markers: [NSRange(location: i, length: 3), NSRange(location: close, length: 2)]
-        )
+    private static func isASCIIAlpha(_ character: unichar) -> Bool {
+        (0x41...0x5A).contains(character) || (0x61...0x7A).contains(character)
     }
 
-    /// `[[ name (| id)? ]]`
-    private static func matchWikiLink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        let contentStart = i + 2
-        var k = contentStart
-        var pipeIdx = -1
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == pipe, pipeIdx == -1 { pipeIdx = k }
-            if ch == rbracket {
-                guard peek(ns, k + 1, len) == rbracket else { return nil }
-                let range = NSRange(location: i, length: (k + 2) - i)
-                let markers = [NSRange(location: i, length: 2), NSRange(location: k, length: 2)]
-                if pipeIdx >= 0 {
-                    return .wikiLink(range: range,
-                                     name: NSRange(location: contentStart, length: pipeIdx - contentStart),
-                                     id: NSRange(location: pipeIdx + 1, length: k - (pipeIdx + 1)),
-                                     markers: markers)
-                }
-                return .wikiLink(range: range,
-                                 name: NSRange(location: contentStart, length: k - contentStart),
-                                 id: nil, markers: markers)
-            }
-            k += 1
-        }
-        return nil
-    }
-
-    /// `![ alt ]( url )`
-    private static func matchImage(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+    /// `![ alt ]( url )`, `![ alt ][ label ]`, or shortcut `![ alt ]`.
+    private static func matchImage(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        claimed: ClaimedIndex,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> Span? {
         let altStart = i + 2
-        guard let closeBracket = findChar(ns, len, from: altStart, char: rbracket),
-              peek(ns, closeBracket + 1, len) == lparen,
-              let closeParen = balancedParen(ns, len, from: closeBracket + 2) else { return nil }
-        let urlStart = closeBracket + 2
-        guard closeParen > urlStart else { return nil }
-        return .image(
-            range: NSRange(location: i, length: (closeParen + 1) - i),
-            alt: NSRange(location: altStart, length: closeBracket - altStart),
-            url: NSRange(location: urlStart, length: closeParen - urlStart),
-            markers: [
-                NSRange(location: i, length: 2),
-                NSRange(location: closeBracket, length: 1),
-                NSRange(location: closeBracket + 1, length: 1),
-                NSRange(location: closeParen, length: 1),
-            ]
+        guard let closeBracket = closingLinkTextBracket(
+            in: ns,
+            from: altStart,
+            end: len,
+            claimed: claimed,
+            registry: registry,
+            rawHTMLTerminators: rawHTMLTerminators
+        ) else {
+            return nil
+        }
+        let alt = NSRange(location: altStart, length: closeBracket - altStart)
+
+        if peek(ns, closeBracket + 1, len) == lparen,
+           let parsed = MarkdownLinkSyntax.inlineTarget(in: ns, from: closeBracket + 2, length: len) {
+            let closeParen = parsed.closeParen
+            return .image(
+                range: NSRange(location: i, length: (closeParen + 1) - i),
+                alt: alt,
+                url: parsed.target.destination,
+                title: parsed.target.title,
+                markers: [
+                    NSRange(location: i, length: 2),
+                    NSRange(location: closeBracket, length: 1),
+                    NSRange(location: closeBracket + 1, length: 1),
+                    NSRange(location: closeParen, length: 1),
+                ] + parsed.target.markers
+            )
+        }
+
+        if peek(ns, closeBracket + 1, len) == lbracket,
+           let labelClose = MarkdownLinkSyntax.closingReferenceLabel(
+               in: ns,
+               from: closeBracket + 2,
+               end: len
+           ) {
+            let explicitLabel = NSRange(
+                location: closeBracket + 2,
+                length: labelClose - closeBracket - 2
+            )
+            let definitionLabel = explicitLabel.length == 0 ? alt : explicitLabel
+            guard referenceDefinitions.contains(
+                MarkdownLinkSyntax.normalizedLabel(in: ns, range: definitionLabel)
+            ) else { return nil }
+            return .referenceImage(
+                range: NSRange(location: i, length: labelClose + 1 - i),
+                alt: alt,
+                label: explicitLabel.length == 0 ? nil : explicitLabel,
+                markers: [
+                    NSRange(location: i, length: 2),
+                    NSRange(location: closeBracket, length: 1),
+                    NSRange(location: closeBracket + 1, length: 1),
+                    NSRange(location: labelClose, length: 1),
+                ]
+            )
+        }
+
+        guard referenceDefinitions.contains(
+            MarkdownLinkSyntax.normalizedLabel(in: ns, range: alt)
+        ) else { return nil }
+        return .referenceImage(
+            range: NSRange(location: i, length: closeBracket + 1 - i),
+            alt: alt,
+            label: nil,
+            markers: [NSRange(location: i, length: 2), NSRange(location: closeBracket, length: 1)]
         )
     }
 
-    /// `[ text ]( url )`
-    private static func matchLink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+    /// `[ text ]( url )`, `[ text ][ label ]`, or shortcut `[ label ]`.
+    private static func matchLink(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        claimed: ClaimedIndex,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> Span? {
         let textStart = i + 1
-        guard let closeBracket = findChar(ns, len, from: textStart, char: rbracket),
-              closeBracket > textStart,
-              peek(ns, closeBracket + 1, len) == lparen,
-              let closeParen = balancedParen(ns, len, from: closeBracket + 2) else { return nil }
-        let urlStart = closeBracket + 2
-        guard closeParen > urlStart else { return nil }
-        return .link(
-            range: NSRange(location: i, length: (closeParen + 1) - i),
-            textRange: NSRange(location: textStart, length: closeBracket - textStart),
-            url: NSRange(location: urlStart, length: closeParen - urlStart),
-            markers: [
-                NSRange(location: i, length: 1),
-                NSRange(location: closeBracket, length: 1),
-                NSRange(location: closeBracket + 1, length: 1),
-                NSRange(location: closeParen, length: 1),
-            ]
+        guard let closeBracket = closingLinkTextBracket(
+            in: ns,
+            from: textStart,
+            end: len,
+            claimed: claimed,
+            registry: registry,
+            rawHTMLTerminators: rawHTMLTerminators
+        ),
+              closeBracket > textStart else { return nil }
+        let textRange = NSRange(location: textStart, length: closeBracket - textStart)
+
+        if peek(ns, closeBracket + 1, len) == lparen,
+           let parsed = MarkdownLinkSyntax.inlineTarget(in: ns, from: closeBracket + 2, length: len) {
+            let closeParen = parsed.closeParen
+            guard !containsLink(in: textRange, source: ns, referenceDefinitions: referenceDefinitions) else {
+                return nil
+            }
+            return .link(
+                range: NSRange(location: i, length: (closeParen + 1) - i),
+                textRange: textRange,
+                url: parsed.target.destination,
+                title: parsed.target.title,
+                markers: [
+                    NSRange(location: i, length: 1),
+                    NSRange(location: closeBracket, length: 1),
+                    NSRange(location: closeBracket + 1, length: 1),
+                    NSRange(location: closeParen, length: 1),
+                ] + parsed.target.markers
+            )
+        }
+
+        if peek(ns, closeBracket + 1, len) == lbracket,
+           let labelClose = MarkdownLinkSyntax.closingReferenceLabel(
+               in: ns,
+               from: closeBracket + 2,
+               end: len
+           ) {
+            let label = NSRange(location: closeBracket + 2, length: labelClose - closeBracket - 2)
+            let definitionLabel = label.length == 0 ? textRange : label
+            guard referenceDefinitions.contains(
+                MarkdownLinkSyntax.normalizedLabel(in: ns, range: definitionLabel)
+            ), !containsLink(
+                in: textRange,
+                source: ns,
+                referenceDefinitions: referenceDefinitions
+            ) else { return nil }
+            return .referenceLink(
+                range: NSRange(location: i, length: labelClose + 1 - i),
+                textRange: textRange,
+                label: label.length == 0 ? nil : label,
+                markers: [
+                    NSRange(location: i, length: 1),
+                    NSRange(location: closeBracket, length: 1),
+                    NSRange(location: closeBracket + 1, length: 1),
+                    NSRange(location: labelClose, length: 1),
+                ]
+            )
+        }
+
+        guard referenceDefinitions.contains(
+            MarkdownLinkSyntax.normalizedLabel(in: ns, range: textRange)
+        ), !containsLink(
+            in: textRange,
+            source: ns,
+            referenceDefinitions: referenceDefinitions
+        ) else { return nil }
+        return .referenceLink(
+            range: NSRange(location: i, length: closeBracket + 1 - i),
+            textRange: textRange,
+            label: nil,
+            markers: [NSRange(location: i, length: 1), NSRange(location: closeBracket, length: 1)]
         )
     }
 
-    /// `$ math $` — single dollars, content has no `$`, passes the math heuristic.
-    private static func matchInlineLatex(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        if i > 0, ns.character(at: i - 1) == dollar { return nil }
-        let contentStart = i + 1
-        var k = contentStart
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == dollar {
-                guard k > contentStart, peek(ns, k + 1, len) != dollar else { return nil }
-                let content = NSRange(location: contentStart, length: k - contentStart)
-                guard isInlineMathContent(ns.substring(with: content)) else { return nil }
-                return .inlineLatex(
-                    range: NSRange(location: i, length: (k + 1) - i),
-                    content: content,
-                    markers: [NSRange(location: i, length: 1), NSRange(location: k, length: 1)]
-                )
+    private static func closingLinkTextBracket(
+        in ns: NSString,
+        from start: Int,
+        end: Int,
+        claimed: ClaimedIndex,
+        registry: ExtensionRegistry,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> Int? {
+        var claimed = claimed
+        var depth = 0
+        var i = start
+        scan: while i < end {
+            if let owner = claimed.containingRange(at: i) {
+                i = NSMaxRange(owner)
+                continue
             }
-            k += 1
+            let character = ns.character(at: i)
+            if character == newline || character == carriageReturn { return nil }
+            if !isEscaped(i, ns) {
+                for entry in registry.entries where entry.open.first == character {
+                    if let span = matchExtensionSpan(ns, end, start: i, entry: entry) {
+                        i = NSMaxRange(span.fullRange)
+                        continue scan
+                    }
+                }
+                if character == langle,
+                   let angleSpan = matchAngleSpan(
+                        ns,
+                        end,
+                        start: i,
+                        terminators: rawHTMLTerminators
+                    ) {
+                    i = NSMaxRange(angleSpan.fullRange)
+                    continue
+                } else if character == lbracket {
+                    depth += 1
+                } else if character == rbracket {
+                    if depth == 0 { return i }
+                    depth -= 1
+                }
+            }
+            i += 1
         }
         return nil
     }
 
-    private static func closeDoubleBracket(_ ns: NSString, _ len: Int, from: Int) -> Int? {
-        var k = from
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == rbracket { return peek(ns, k + 1, len) == rbracket ? k : nil }
-            k += 1
+    private static func containsLink(
+        in range: NSRange,
+        source: NSString,
+        referenceDefinitions: Set<String>
+    ) -> Bool {
+        containsLink(parse(
+            source.substring(with: range),
+            referenceDefinitions: referenceDefinitions
+        ))
+    }
+
+    private static func containsLink(_ nodes: [InlineNode]) -> Bool {
+        nodes.contains { node in
+            switch node {
+            case .link, .referenceLink, .autolink:
+                return true
+            case .emphasis(_, _, _, let children):
+                return containsLink(children)
+            case .ext(let node):
+                return containsLink(node.children)
+            default:
+                return false
+            }
+        }
+    }
+
+    static func plainText(_ nodes: [InlineNode], source: NSString) -> String {
+        nodes.map { node in
+            switch node {
+            case .text(let range):
+                return source.substring(with: range)
+            case .code(_, let content):
+                return source.substring(with: content)
+            case .emphasis(_, _, _, let children),
+                 .link(_, _, _, _, _, let children),
+                 .referenceLink(_, _, _, _, let children),
+                 .referenceImage(_, _, _, _, let children):
+                return plainText(children, source: source)
+            case .image(_, let alt, _, _, _):
+                return MarkdownLinkSyntax.unescapedText(in: source, range: alt)
+            case .footnoteReference(_, let label, _),
+                 .autolink(_, let label, _):
+                return source.substring(with: label)
+            case .hardBreak:
+                return "\n"
+            case .escape(_, let character, _):
+                return source.substring(with: character)
+            case .ext(let node):
+                return node.children.isEmpty
+                    ? source.substring(with: node.contentRange)
+                    : plainText(node.children, source: source)
+            }
+        }.joined()
+    }
+
+    private static func matchFootnoteReference(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+        let labelStart = i + 2
+        guard let close = findChar(ns, len, from: labelStart, char: rbracket),
+              close > labelStart else { return nil }
+        return .footnoteReference(
+            range: NSRange(location: i, length: close + 1 - i),
+            label: NSRange(location: labelStart, length: close - labelStart),
+            markers: [NSRange(location: i, length: 2), NSRange(location: close, length: 1)]
+        )
+    }
+
+    private static let uriAutolink = try! NSRegularExpression(
+        pattern: #"^[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\x00-\x20<>]*$"#
+    )
+    private static let emailAutolink = try! NSRegularExpression(
+        pattern: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"#
+    )
+    private static func matchAngleSpan(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Span? {
+        let next = peek(ns, i + 1, len)
+        if next == bang || next == 0x3F || next == 0x2F {
+            return matchInlineRawHTML(ns, len, start: i, terminators: terminators)
+        }
+        return matchInlineRawHTML(ns, len, start: i, terminators: terminators)
+            ?? matchAutolink(ns, len, start: i, terminators: terminators)
+    }
+
+    private static func matchInlineRawHTML(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Span? {
+        if matches(ns, len, at: i, chars: [langle, bang, 0x2D, 0x2D]) {
+            if matches(ns, len, at: i, chars: [langle, bang, 0x2D, 0x2D, rangle]) {
+                return .rawHTML(range: NSRange(location: i, length: 5))
+            }
+            if matches(ns, len, at: i, chars: [langle, bang, 0x2D, 0x2D, 0x2D, rangle]) {
+                return .rawHTML(range: NSRange(location: i, length: 6))
+            }
+            guard i < terminators.commentExhaustedFrom else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: "-->",
+                range: NSRange(location: i + 4, length: len - i - 4)
+            )
+            guard close.location != NSNotFound else {
+                terminators.commentExhaustedFrom = min(terminators.commentExhaustedFrom, i)
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
+        }
+        if matches(ns, len, at: i, chars: [langle, 0x3F]) {
+            guard i < terminators.processingInstructionExhaustedFrom else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: "?>",
+                range: NSRange(location: i + 2, length: len - i - 2)
+            )
+            guard close.location != NSNotFound else {
+                terminators.processingInstructionExhaustedFrom = min(
+                    terminators.processingInstructionExhaustedFrom,
+                    i
+                )
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
+        }
+        if matches(ns, len, at: i, chars: [langle, bang, lbracket, 0x43, 0x44, 0x41, 0x54, 0x41, lbracket]) {
+            guard i < terminators.cdataExhaustedFrom else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: "]]>",
+                range: NSRange(location: i + 9, length: len - i - 9)
+            )
+            guard close.location != NSNotFound else {
+                terminators.cdataExhaustedFrom = min(terminators.cdataExhaustedFrom, i)
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
+        }
+        if matches(ns, len, at: i, chars: [langle, bang]),
+           let first = peek(ns, i + 2, len), isASCIIAlpha(first) {
+            guard i < terminators.declarationExhaustedFrom else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: ">",
+                range: NSRange(location: i + 3, length: len - i - 3)
+            )
+            guard close.location != NSNotFound else {
+                terminators.declarationExhaustedFrom = min(
+                    terminators.declarationExhaustedFrom,
+                    i
+                )
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
+        }
+        guard let end = rawHTMLTagEnd(ns, len, start: i, terminators: terminators) else {
+            return nil
+        }
+        return .rawHTML(range: NSRange(location: i, length: end - i))
+    }
+
+    private static func rawHTMLTagEnd(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Int? {
+        var cursor = i + 1
+        let closing = peek(ns, cursor, len) == 0x2F
+        if closing { cursor += 1 }
+        guard let first = peek(ns, cursor, len), isASCIIAlpha(first) else { return nil }
+        cursor += 1
+        while cursor < len, isRawHTMLTagNameCharacter(ns.character(at: cursor)) {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+
+        if closing {
+            _ = consumeRawHTMLWhitespace(ns, len, cursor: &cursor, terminators: terminators)
+            guard peek(ns, cursor, len) == rangle else { return nil }
+            return cursor + 1
+        }
+
+        while cursor < len {
+            let hadWhitespace = consumeRawHTMLWhitespace(
+                ns,
+                len,
+                cursor: &cursor,
+                terminators: terminators
+            )
+            guard let character = peek(ns, cursor, len) else { return nil }
+            if character == rangle { return cursor + 1 }
+            if character == 0x2F, peek(ns, cursor + 1, len) == rangle { return cursor + 2 }
+            guard hadWhitespace, isRawHTMLAttributeNameStart(character) else { return nil }
+
+            cursor += 1
+            while cursor < len, isRawHTMLAttributeNameCharacter(ns.character(at: cursor)) {
+                terminators.angleSpanInspectionCount += 1
+                cursor += 1
+            }
+            let endOfName = cursor
+            _ = consumeRawHTMLWhitespace(ns, len, cursor: &cursor, terminators: terminators)
+            guard peek(ns, cursor, len) == 0x3D else {
+                cursor = endOfName
+                continue
+            }
+            cursor += 1
+            _ = consumeRawHTMLWhitespace(ns, len, cursor: &cursor, terminators: terminators)
+            guard consumeRawHTMLAttributeValue(
+                ns,
+                len,
+                cursor: &cursor,
+                terminators: terminators
+            ) else { return nil }
         }
         return nil
+    }
+
+    private static func consumeRawHTMLWhitespace(
+        _ ns: NSString,
+        _ len: Int,
+        cursor: inout Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Bool {
+        let start = cursor
+        while cursor < len {
+            let character = ns.character(at: cursor)
+            guard character == 0x20 || character == 0x09 else { break }
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        if cursor < len, ns.character(at: cursor) == carriageReturn {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+            if cursor < len, ns.character(at: cursor) == newline {
+                terminators.angleSpanInspectionCount += 1
+                cursor += 1
+            }
+        } else if cursor < len, ns.character(at: cursor) == newline {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        while cursor < len {
+            let character = ns.character(at: cursor)
+            guard character == 0x20 || character == 0x09 else { break }
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        return cursor > start
+    }
+
+    private static func consumeRawHTMLAttributeValue(
+        _ ns: NSString,
+        _ len: Int,
+        cursor: inout Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Bool {
+        guard let first = peek(ns, cursor, len) else { return false }
+        if first == 0x22 || first == 0x27 {
+            let quoteOffset = cursor
+            let isDoubleQuoted = first == 0x22
+            if isDoubleQuoted,
+               quoteOffset >= terminators.doubleQuotedAttributeExhaustedFrom { return false }
+            if !isDoubleQuoted,
+               quoteOffset >= terminators.singleQuotedAttributeExhaustedFrom { return false }
+            cursor += 1
+            while cursor < len, ns.character(at: cursor) != first {
+                terminators.angleSpanInspectionCount += 1
+                cursor += 1
+            }
+            guard cursor < len else {
+                if isDoubleQuoted {
+                    terminators.doubleQuotedAttributeExhaustedFrom = min(
+                        terminators.doubleQuotedAttributeExhaustedFrom,
+                        quoteOffset
+                    )
+                } else {
+                    terminators.singleQuotedAttributeExhaustedFrom = min(
+                        terminators.singleQuotedAttributeExhaustedFrom,
+                        quoteOffset
+                    )
+                }
+                return false
+            }
+            cursor += 1
+            return true
+        }
+
+        let start = cursor
+        while cursor < len, isRawHTMLUnquotedAttributeValueCharacter(ns.character(at: cursor)) {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        return cursor > start
+    }
+
+    private static func isRawHTMLTagNameCharacter(_ character: unichar) -> Bool {
+        isASCIIAlpha(character) || (0x30...0x39).contains(character) || character == 0x2D
+    }
+
+    private static func isRawHTMLAttributeNameStart(_ character: unichar) -> Bool {
+        isASCIIAlpha(character) || character == 0x5F || character == 0x3A
+    }
+
+    private static func isRawHTMLAttributeNameCharacter(_ character: unichar) -> Bool {
+        isRawHTMLAttributeNameStart(character)
+            || (0x30...0x39).contains(character)
+            || character == 0x2E
+            || character == 0x2D
+    }
+
+    private static func isRawHTMLUnquotedAttributeValueCharacter(_ character: unichar) -> Bool {
+        character > 0x20
+            && character != 0x22
+            && character != 0x27
+            && character != 0x3D
+            && character != langle
+            && character != rangle
+            && character != backtick
+    }
+
+    private static func matchAutolink(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Span? {
+        guard !terminators.autolinkNoCloserLocations.contains(i) else { return nil }
+        var close = i + 1
+        while close < len,
+              ns.character(at: close) != rangle,
+              ns.character(at: close) != newline,
+              ns.character(at: close) != carriageReturn {
+            terminators.angleSpanInspectionCount += 1
+            // A nested opener cannot belong to this autolink, but may begin
+            // a valid one when the outer scan reaches it.
+            if ns.character(at: close) == langle { return nil }
+            close += 1
+        }
+        guard close < len, ns.character(at: close) == rangle else {
+            terminators.autolinkNoCloserLocations.insert(integersIn: i..<close)
+            return nil
+        }
+        let url = NSRange(location: i + 1, length: close - i - 1)
+        guard url.length > 0 else { return nil }
+        let value = ns.substring(with: url)
+        let whole = NSRange(location: 0, length: (value as NSString).length)
+        guard uriAutolink.firstMatch(in: value, range: whole)?.range == whole
+                || emailAutolink.firstMatch(in: value, range: whole)?.range == whole else { return nil }
+        return .autolink(
+            range: NSRange(location: i, length: close + 1 - i),
+            url: url,
+            markers: [NSRange(location: i, length: 1), NSRange(location: close, length: 1)]
+        )
     }
 
     private static func findChar(_ ns: NSString, _ len: Int, from: Int, char: unichar) -> Int? {
         var k = from
         while k < len {
             let ch = ns.character(at: k)
-            if ch == char { return k }
-            if ch == newline { return nil }
+            if ch == char, !isEscaped(k, ns) { return k }
+            if ch == newline || ch == carriageReturn { return nil }
             k += 1
         }
         return nil
     }
 
-    private static func balancedParen(_ ns: NSString, _ len: Int, from: Int) -> Int? {
-        var depth = 1
-        var k = from
-        while k < len {
-            let ch = ns.character(at: k)
-            if ch == newline { return nil }
-            if ch == lparen { depth += 1 }
-            else if ch == rparen { depth -= 1; if depth == 0 { return k } }
-            k += 1
-        }
-        return nil
-    }
+    // MARK: - 4. Hard line breaks
 
-    /// Rejects currency-looking and trivially short non-mathy `$…$` so prose isn't misread as math.
-    private static func isInlineMathContent(_ content: String) -> Bool {
-        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        if isCurrencyLike(trimmed) { return false }
-        let mathyMatches = mathyCharCount(trimmed)
-        if mathyMatches == 0 {
-            return trimmed.count <= 3 && isAllAsciiLetters(trimmed)
-        }
-        let tokenCount = trimmed.split(whereSeparator: { $0.isWhitespace }).count
-        if mathyMatches >= 3 { return tokenCount <= 120 }
-        if mathyMatches == 2 { return tokenCount <= 40 }
-        return tokenCount <= 6
-    }
-
-    /// A plain signed/thousands-grouped/decimal number (`50`, `1,000.50`, `-5`), regex-free, so currency isn't math.
-    private static func isCurrencyLike(_ s: String) -> Bool {
-        let u = Array(s.utf16)
-        let n = u.count
-        func digit(_ x: Int) -> Bool { x >= 0 && x < n && u[x] >= 0x30 && u[x] <= 0x39 }
+    private static func scanHardBreaks(_ ns: NSString, len: Int, claimed: ClaimedIndex) -> [Span] {
+        var claimed = claimed
+        var spans: [Span] = []
         var i = 0
-        if i < n, u[i] == 0x2B || u[i] == 0x2D { i += 1 }   // + / -
-        guard digit(i) else { return false }
-        var sawDigit = false
-        while i < n {
-            if digit(i) { sawDigit = true; i += 1 }
-            else if u[i] == 0x2C, digit(i + 1), digit(i + 2), digit(i + 3), !digit(i + 4) {
-                i += 4   // a strict `,DDD` thousands group
-            } else { break }
+        while i < len {
+            let c = ns.character(at: i)
+            guard c == newline || c == carriageReturn else { i += 1; continue }
+            let next = c == carriageReturn && i + 1 < len && ns.character(at: i + 1) == newline ? i + 2 : i + 1
+            guard next < len else { i = next; continue }
+
+            var marker: NSRange?
+            if i > 0, ns.character(at: i - 1) == backslash, !isEscaped(i - 1, ns) {
+                marker = NSRange(location: i - 1, length: 1)
+            } else {
+                var start = i
+                while start > 0, ns.character(at: start - 1) == 0x20 { start -= 1 }
+                if i - start >= 2 { marker = NSRange(location: start, length: i - start) }
+            }
+            if let marker, !claimed.overlaps(marker) {
+                spans.append(.hardBreak(
+                    range: NSRange(location: marker.location, length: next - marker.location),
+                    marker: marker
+                ))
+            }
+            i = next
         }
-        guard sawDigit else { return false }
-        if i < n, u[i] == 0x2E {            // optional `.DDD+`
-            i += 1
-            guard digit(i) else { return false }
-            while digit(i) { i += 1 }
-        }
-        return i == n
+        return spans
     }
 
-    /// Count of "mathy" characters `\ ^ _ { } = + - * / < >`.
-    private static func mathyCharCount(_ s: String) -> Int {
-        let mathy: Set<unichar> = [0x5C, 0x5E, 0x5F, 0x7B, 0x7D, 0x3D, 0x2B, 0x2D, 0x2A, 0x2F, 0x3C, 0x3E]
-        var count = 0
-        for u in s.utf16 where mathy.contains(u) { count += 1 }
-        return count
-    }
-
-    /// True when `s` is one or more ASCII letters only.
-    private static func isAllAsciiLetters(_ s: String) -> Bool {
-        let u = Array(s.utf16)
-        guard !u.isEmpty else { return false }
-        for x in u where !((x >= 0x41 && x <= 0x5A) || (x >= 0x61 && x <= 0x7A)) { return false }
-        return true
-    }
-
-    // MARK: - 4. Emphasis (delimiter runs)
+    // MARK: - 5. Emphasis (delimiter runs)
 
     private struct DelimRun {
         let char: unichar
@@ -687,9 +1254,15 @@ enum InlineParser {
         }
     }
 
-    // MARK: - 5. Containment tree
+    // MARK: - 6. Containment tree
 
-    private static func buildTree(region: NSRange, spans: [Span], ns: NSString, registry: ExtensionRegistry) -> [InlineNode] {
+    private static func buildTree(
+        region: NSRange,
+        spans: [Span],
+        ns: NSString,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
+    ) -> [InlineNode] {
         // Spans are non-overlapping or properly nested (each pass claims only
         // inside regions no earlier pass took), so ordering by start ascending
         // and length descending puts every span immediately after the one that
@@ -702,13 +1275,25 @@ enum InlineParser {
                 return x.location == y.location ? x.length > y.length : x.location < y.location
             }
         var cursor = 0
-        return buildTree(region: region, ordered: ordered, cursor: &cursor, ns: ns, registry: registry)
+        return buildTree(
+            region: region,
+            ordered: ordered,
+            cursor: &cursor,
+            ns: ns,
+            registry: registry,
+            referenceDefinitions: referenceDefinitions
+        )
     }
 
     /// Consumes spans from `cursor` for as long as they fall inside `region`,
     /// leaving `cursor` on the first span that doesn't.
     private static func buildTree(
-        region: NSRange, ordered: [Span], cursor: inout Int, ns: NSString, registry: ExtensionRegistry
+        region: NSRange,
+        ordered: [Span],
+        cursor: inout Int,
+        ns: NSString,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
     ) -> [InlineNode] {
         var result: [InlineNode] = []
         var textStart = region.location
@@ -729,24 +1314,48 @@ enum InlineParser {
                 let content = NSRange(location: NSMaxRange(open), length: close.location - NSMaxRange(open))
                 result.append(.emphasis(kind, range: range, markers: [open, close],
                                         children: buildTree(region: content, ordered: ordered,
-                                                            cursor: &cursor, ns: ns, registry: registry)))
-            case .link(let range, let textRange, let url, let markers):
-                result.append(.link(range: range, textRange: textRange, url: url, markers: markers,
-                                     children: reparse(textRange, ns: ns, registry: registry)))
-            case .image(let range, let alt, let url, let markers):
-                result.append(.image(range: range, alt: alt, url: url, markers: markers))
-            case .wikiLink(let range, let name, let id, let markers):
-                result.append(.wikiLink(range: range, name: name, id: id, markers: markers))
-            case .imageEmbed(let range, let target, let markers):
-                result.append(.imageEmbed(range: range, target: target, markers: markers))
-            case .inlineLatex(let range, let content, let markers):
-                result.append(.inlineLatex(range: range, content: content, markers: markers))
+                                                            cursor: &cursor, ns: ns, registry: registry,
+                                                            referenceDefinitions: referenceDefinitions)))
+            case .link(let range, let textRange, let url, let title, let markers):
+                result.append(.link(range: range, textRange: textRange, url: url, title: title, markers: markers,
+                                     children: reparse(textRange, ns: ns, registry: registry,
+                                                       referenceDefinitions: referenceDefinitions)))
+            case .image(let range, let alt, let url, let title, let markers):
+                result.append(.image(range: range, alt: alt, url: url, title: title, markers: markers))
+            case .referenceImage(let range, let alt, let label, let markers):
+                result.append(.referenceImage(
+                    range: range,
+                    alt: alt,
+                    label: label,
+                    markers: markers,
+                    children: reparse(
+                        alt,
+                        ns: ns,
+                        registry: registry,
+                        referenceDefinitions: referenceDefinitions
+                    )
+                ))
+            case .referenceLink(let range, let textRange, let label, let markers):
+                result.append(.referenceLink(range: range, textRange: textRange, label: label, markers: markers,
+                                             children: reparse(textRange, ns: ns, registry: registry,
+                                                               referenceDefinitions: referenceDefinitions)))
+            case .footnoteReference(let range, let label, let markers):
+                result.append(.footnoteReference(range: range, label: label, markers: markers))
+            case .hardBreak(let range, let marker):
+                result.append(.hardBreak(range: range, marker: marker))
+            case .autolink(let range, let url, let markers):
+                result.append(.autolink(range: range, url: url, markers: markers))
+            case .rawHTML(let range):
+                result.append(.text(range))
             case .escape(let range, let character, let marker):
                 result.append(.escape(range: range, character: character, marker: marker))
             case .ext(let id, let range, let contentRange, let markers, let parsesContent):
                 result.append(.ext(ExtensionInlineNode(
                     extensionID: id, range: range, contentRange: contentRange, markers: markers,
-                    children: parsesContent ? reparse(contentRange, ns: ns, registry: registry) : []
+                    children: parsesContent
+                        ? reparse(contentRange, ns: ns, registry: registry,
+                                  referenceDefinitions: referenceDefinitions)
+                        : []
                 )))
             }
             // Every span but emphasis is opaque, so nothing should remain
@@ -762,8 +1371,17 @@ enum InlineParser {
     }
 
     /// Recursively parse a sub-range's content, offset back to absolute coordinates.
-    private static func reparse(_ range: NSRange, ns: NSString, registry: ExtensionRegistry) -> [InlineNode] {
-        offsetNodes(parse(ns.substring(with: range), registry: registry), by: range.location)
+    private static func reparse(
+        _ range: NSRange,
+        ns: NSString,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
+    ) -> [InlineNode] {
+        offsetNodes(parse(
+            ns.substring(with: range),
+            registry: registry,
+            referenceDefinitions: referenceDefinitions
+        ), by: range.location)
     }
 
     // MARK: - Helpers
@@ -778,11 +1396,17 @@ enum InlineParser {
         case .text(let r): return .text(s(r))
         case .code(let r, let c): return .code(range: s(r), content: s(c))
         case .emphasis(let k, let r, let m, let ch): return .emphasis(k, range: s(r), markers: m.map(s), children: offsetNodes(ch, by: d))
-        case .link(let r, let tr, let u, let m, let ch): return .link(range: s(r), textRange: s(tr), url: s(u), markers: m.map(s), children: offsetNodes(ch, by: d))
-        case .image(let r, let a, let u, let m): return .image(range: s(r), alt: s(a), url: s(u), markers: m.map(s))
-        case .wikiLink(let r, let n, let id, let m): return .wikiLink(range: s(r), name: s(n), id: id.map(s), markers: m.map(s))
-        case .imageEmbed(let r, let t, let m): return .imageEmbed(range: s(r), target: s(t), markers: m.map(s))
-        case .inlineLatex(let r, let c, let m): return .inlineLatex(range: s(r), content: s(c), markers: m.map(s))
+        case .link(let r, let tr, let u, let t, let m, let ch): return .link(range: s(r), textRange: s(tr), url: s(u), title: t.map(s), markers: m.map(s), children: offsetNodes(ch, by: d))
+        case .image(let r, let a, let u, let t, let m): return .image(range: s(r), alt: s(a), url: s(u), title: t.map(s), markers: m.map(s))
+        case .referenceImage(let r, let a, let l, let m, let ch):
+            return .referenceImage(
+                range: s(r), alt: s(a), label: l.map(s), markers: m.map(s),
+                children: offsetNodes(ch, by: d)
+            )
+        case .referenceLink(let r, let tr, let l, let m, let ch): return .referenceLink(range: s(r), textRange: s(tr), label: l.map(s), markers: m.map(s), children: offsetNodes(ch, by: d))
+        case .footnoteReference(let r, let l, let m): return .footnoteReference(range: s(r), label: s(l), markers: m.map(s))
+        case .hardBreak(let r, let m): return .hardBreak(range: s(r), marker: s(m))
+        case .autolink(let r, let u, let m): return .autolink(range: s(r), url: s(u), markers: m.map(s))
         case .escape(let r, let c, let m): return .escape(range: s(r), character: s(c), marker: s(m))
         case .ext(let n): return .ext(ExtensionInlineNode(
             extensionID: n.extensionID, range: s(n.range), contentRange: s(n.contentRange),

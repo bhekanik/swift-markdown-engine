@@ -16,16 +16,14 @@ import AppKit
 
 enum MarkdownPasteboardWriter {
     /// Private flavor carrying the exact raw markdown of the selection. When one
-    /// of our own editors pastes, it prefers this over the derived HTML so wiki
-    /// links (`[[Name|UUID]]`), code, and every other construct round-trip
+    /// of our own editors pastes, it prefers this over the derived HTML so code
+    /// and every other construct round-trip
     /// byte-exact instead of being re-derived from the lossy HTML flavor.
     static let markdownType = NSPasteboard.PasteboardType("dev.markdownengine.raw-markdown")
 
     @MainActor
     static func write(markdown: String, to pasteboard: NSPasteboard,
-                      extensions: [any MarkdownExtension] = [],
-                      directives: [any MarkdownDirective] = [],
-                      directiveSettings: DirectiveRegistrySettings = .default) {
+                      extensions: [any MarkdownExtension] = []) {
         pasteboard.clearContents()
 
         // Always keep the raw markdown available as plain text.
@@ -36,8 +34,7 @@ enum MarkdownPasteboardWriter {
         pasteboard.setString(markdown, forType: Self.markdownType)
 
         // Render the selection to clean HTML.
-        let htmlBody = MarkdownHTMLRenderer.html(from: markdown, extensions: extensions,
-                                                 directives: directives, directiveSettings: directiveSettings)
+        let htmlBody = MarkdownHTMLRenderer.html(from: markdown, extensions: extensions)
         // Rich targets (web archive + RTF) show task items as plain bullets
         // (user's call); the .html flavor keeps the GFM checkbox markup so
         // markdown apps (Obsidian etc.) restore `- [ ]` on paste.

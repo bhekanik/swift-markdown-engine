@@ -5,7 +5,7 @@
 //  Created by Luca Chen on 12.04.26.
 //
 //  TextKit 2 replacement for CodeBlockLayoutManager.
-//  Draws code-block backgrounds, LaTeX images, and task checkboxes
+//  Draws code-block backgrounds, rendered images, and task checkboxes
 //  via NSTextLayoutFragment instead of NSLayoutManager glyph overrides.
 
 import AppKit
@@ -13,11 +13,11 @@ import CoreText
 
 // MARK: - Custom attribute keys for rendering overlays
 
-extension NSAttributedString.Key {
-    static let latexImage = NSAttributedString.Key("LatexRenderedImage")
-    static let latexBounds = NSAttributedString.Key("LatexImageBounds")
-    static let latexIsBlock = NSAttributedString.Key("LatexIsBlock")
-    static let latexBlockOffsetY = NSAttributedString.Key("LatexBlockOffsetY")
+nonisolated extension NSAttributedString.Key {
+    static let renderedImage = NSAttributedString.Key("MarkdownRenderedImage")
+    static let renderedImageBounds = NSAttributedString.Key("MarkdownRenderedImageBounds")
+    static let renderedImageIsBlock = NSAttributedString.Key("MarkdownRenderedImageIsBlock")
+    static let renderedBlockOffsetY = NSAttributedString.Key("MarkdownRenderedBlockOffsetY")
     static let thematicBreak = NSAttributedString.Key("ThematicBreak")
     /// String — the mark to draw CENTERED in place of the full-width rule on a
     /// line that already carries `.thematicBreak`. Absent means the rule. The
@@ -43,7 +43,7 @@ extension NSAttributedString.Key {
     static let scrollableBlockFullRange = NSAttributedString.Key("ScrollableBlockFullRange")
 }
 
-public extension NSAttributedString.Key {
+public nonisolated extension NSAttributedString.Key {
     /// NSColor — a background painted across the whole LINE BOX (the line
     /// fragment's typographic bounds) instead of the glyph box AppKit's
     /// `.backgroundColor` covers. Use it for marker-style fills: a span that
@@ -57,7 +57,15 @@ public extension NSAttributedString.Key {
     static let markdownBlockBackground = NSAttributedString.Key("MarkdownBlockBackground")
 }
 
-final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
+nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
+
+    override nonisolated init(textElement: NSTextElement, range rangeInElement: NSTextRange?) {
+        super.init(textElement: textElement, range: rangeInElement)
+    }
+
+    required nonisolated init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
 
     /// Horizontal space (points) each blockquote nesting level occupies —
     /// shared so the styler's text indent and the painted bars line up.
@@ -77,7 +85,13 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     /// Extend rendering bounds for code-block backgrounds (full container width)
     /// and block images drawn below text via paragraphSpacing.
-    override var renderingSurfaceBounds: CGRect {
+    nonisolated override var renderingSurfaceBounds: CGRect {
+        // The class is nonisolated because NSTextLayoutFragment is, so each
+        // main-actor read below is hopped individually. This states the whole
+        // contract once and fails loudly if it is ever broken: TextKit 2
+        // creates, measures and draws fragments only from the layout manager's
+        // own main-thread callbacks.
+        MainActor.preconditionIsolated("TextKit 2 measures fragments on the main thread")
         var bounds = super.renderingSurfaceBounds
         // Task checkboxes too: the box draws left of the first glyph (marker
         // slot), outside the default text surface — TextKit would clip it.
@@ -101,15 +115,16 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     // MARK: - Drawing
 
-    override func draw(at point: CGPoint, in context: CGContext) {
+    nonisolated override func draw(at point: CGPoint, in context: CGContext) {
+        MainActor.preconditionIsolated("TextKit 2 draws fragments on the main thread")
         // 1. Code-block backgrounds (behind text)
         drawCodeBlockBackground(at: point, in: context)
 
         // 1b. Line-box fills (`==highlight==` and friends), behind text
         drawBlockBackgrounds(at: point, in: context)
 
-        // 2. LaTeX images (behind text — hidden markers are invisible anyway)
-        drawLatexImages(at: point, in: context)
+        // 2. Rendered images (behind text — hidden markers are invisible anyway)
+        drawRenderedImages(at: point, in: context)
 
         // 3. Normal text
         super.draw(at: point, in: context)
@@ -142,6 +157,15 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     private var textStorage: NSTextStorage? {
         (textLayoutManager?.textContentManager as? NSTextContentStorage)?.textStorage
+    }
+
+    private var configurationSnapshot: MarkdownEditorConfiguration {
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        return MainActor.assumeIsolated { textView?.configuration ?? .default }
+    }
+
+    private static var taskCheckboxKey: NSAttributedString.Key {
+        MainActor.assumeIsolated { .taskCheckbox }
     }
 
     /// Returns the drawing position for a character at `docIndex` (document-level NSRange location).
@@ -221,7 +245,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     private var hasTaskCheckbox: Bool {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return false }
         var found = false
-        ts.enumerateAttribute(.taskCheckbox, in: range, options: []) { value, _, stop in
+        ts.enumerateAttribute(Self.taskCheckboxKey, in: range, options: []) { value, _, stop in
             if value is Bool {
                 found = true
                 stop.pointee = true
@@ -246,8 +270,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             effectiveHeight -= lastLF.typographicBounds.height
         }
 
-        let scale = textLayoutManager?.textContainer?.textView?.window?.backingScaleFactor
-            ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        let textView = textLayoutManager?.textContainer?.textView
+        let scale = MainActor.assumeIsolated {
+            textView?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        }
         let rawY = point.y
         let rawMaxY = point.y + effectiveHeight
         let snappedY = floor(rawY * scale) / scale
@@ -318,10 +344,12 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     }
 
     private func isCodeBlockBackgroundColor(_ color: NSColor) -> Bool {
-        let highlighter = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.services.syntaxHighlighter
-            ?? PlainTextSyntaxHighlighter()
-        let currentBg = highlighter.backgroundColor()
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        let currentBg = MainActor.assumeIsolated {
+            let highlighter = textView?.configuration.services.syntaxHighlighter
+                ?? PlainTextSyntaxHighlighter()
+            return highlighter.backgroundColor()
+        }
         guard let colorRGB = color.usingColorSpace(.deviceRGB),
               let currentBgRGB = currentBg.usingColorSpace(.deviceRGB) else { return false }
         let tolerance: CGFloat = 0.03
@@ -387,10 +415,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         }
     }
 
-    // MARK: - LaTeX / Block Image Helpers
+    // MARK: - Block Image Helpers
 
     /// Compute the draw rect for a block image at `attrRange` using `point` as
-    /// the draw origin.  Shared by `drawLatexImages` and `blockImageRects` so
+    /// the draw origin. Shared by `drawRenderedImages` and `blockImageRects` so
     /// bounds and rendering stay in sync.
     private func blockImageDrawRect(
         attrRange: NSRange,
@@ -433,17 +461,17 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     private func blockImageRects(at point: CGPoint) -> [CGRect] {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return [] }
         var rects: [CGRect] = []
-        ts.enumerateAttribute(.latexImage, in: range, options: []) { value, attrRange, _ in
+        ts.enumerateAttribute(.renderedImage, in: range, options: []) { value, attrRange, _ in
             guard value is NSImage else { return }
-            let isBlock = ts.attribute(.latexIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
+            let isBlock = ts.attribute(.renderedImageIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
             guard isBlock else { return }
             // Skip overlay blocks; surface bounds must stay within container.
             if ts.attribute(.scrollableBlockNaturalWidth, at: attrRange.location, effectiveRange: nil) != nil {
                 return
             }
-            let boundsVal = ts.attribute(.latexBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
+            let boundsVal = ts.attribute(.renderedImageBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
             let imageBounds = boundsVal?.rectValue ?? .zero
-            let blockOffsetY = ts.attribute(.latexBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
+            let blockOffsetY = ts.attribute(.renderedBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
             if let rect = blockImageDrawRect(attrRange: attrRange, imageBounds: imageBounds, blockOffsetY: blockOffsetY, point: point) {
                 rects.append(rect)
             }
@@ -451,9 +479,9 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         return rects
     }
 
-    // MARK: - LaTeX Images
+    // MARK: - Rendered Images
 
-    private func drawLatexImages(at point: CGPoint, in context: CGContext) {
+    private func drawRenderedImages(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
 
         NSGraphicsContext.saveGraphicsState()
@@ -461,7 +489,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        ts.enumerateAttribute(.latexImage, in: range, options: []) { [weak self] value, attrRange, _ in
+        ts.enumerateAttribute(.renderedImage, in: range, options: []) { [weak self] value, attrRange, _ in
             guard let self, let image = value as? NSImage else { return }
 
             // Skip overlay-rendered blocks; WideTableOverlay owns the visual.
@@ -469,10 +497,10 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
                 return
             }
 
-            let boundsVal = ts.attribute(.latexBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
+            let boundsVal = ts.attribute(.renderedImageBounds, at: attrRange.location, effectiveRange: nil) as? NSValue
             let imageBounds = boundsVal?.rectValue ?? CGRect(origin: .zero, size: image.size)
-            let isBlock = ts.attribute(.latexIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
-            let blockOffsetY = ts.attribute(.latexBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
+            let isBlock = ts.attribute(.renderedImageIsBlock, at: attrRange.location, effectiveRange: nil) as? Bool ?? false
+            let blockOffsetY = ts.attribute(.renderedBlockOffsetY, at: attrRange.location, effectiveRange: nil) as? CGFloat
 
             guard let pos = drawPosition(forDocumentCharAt: attrRange.location, point: point) else { return }
 
@@ -527,9 +555,14 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
         let containerWidth = textLayoutManager?.textContainer?.size.width ?? layoutFragmentFrame.width
         let textView = textLayoutManager?.textContainer?.textView
-        let font = (textView as? NativeTextView)?.baseFont
-            ?? textView?.font
-            ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let fontIdentity = MainActor.assumeIsolated {
+            let font = (textView as? NativeTextView)?.baseFont
+                ?? textView?.font
+                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (name: font.fontName, size: font.pointSize)
+        }
+        let font = NSFont(name: fontIdentity.name, size: fontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fontIdentity.size)
         let containerX = point.x - layoutFragmentFrame.origin.x
 
         // Walk each line fragment in this layout fragment and decorate those
@@ -610,8 +643,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         let decorations = thematicBreakDecorations(at: point)
         guard !decorations.isEmpty else { return }
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -648,8 +680,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         }
         guard anyLevel else { return }
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
         let indentPerLevel = Self.blockquoteIndentPerLevel
         let barWidth = Self.blockquoteBarWidth
 
@@ -690,18 +721,23 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// advance so a `•` of a different width still sits where `-`/`*`/`+` was.
     private func drawBulletMarkers(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
-        let selectionRanges: [NSRange] = {
-            guard let tv = textLayoutManager?.textContainer?.textView else { return [] }
-            return tv.selectedRanges.map { $0.rangeValue }.filter { $0.length > 0 }
-        }()
+        let textView = textLayoutManager?.textContainer?.textView
+        let selectionRanges = MainActor.assumeIsolated {
+            textView?.selectedRanges.map { $0.rangeValue }.filter { $0.length > 0 } ?? []
+        }
+        let fallbackFontIdentity = MainActor.assumeIsolated {
+            let font = textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (name: font.fontName, size: font.pointSize)
+        }
+        let fallbackFont = NSFont(name: fallbackFontIdentity.name, size: fallbackFontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fallbackFontIdentity.size)
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
         let storageString = ts.string as NSString
 
         ts.enumerateAttribute(.bulletMarker, in: range, options: []) { [weak self] value, attrRange, _ in
@@ -709,7 +745,7 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             guard let pos = self.drawPosition(forDocumentCharAt: attrRange.location, point: point) else { return }
 
             let font = (ts.attribute(.font, at: attrRange.location, effectiveRange: nil) as? NSFont)
-                ?? (self.textLayoutManager?.textContainer?.textView?.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize))
+                ?? fallbackFont
             // A `.bulletMarker` range means the styler painted the raw char
             // `.clear`, so something must ALWAYS be drawn over the slot. Outside
             // a selection that's the rendered `•`; while the marker sits inside
@@ -743,24 +779,28 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     /// every item below an insertion read one lower than it renders.
     private func drawOrderedMarkers(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
+        // The view's base font, NOT the run's: the source marker carries the
+        // near-zero hidden-marker font that keeps it invisible under a
+        // selection, and drawing the number at 0.1pt would hide it too.
+        let textView = textLayoutManager?.textContainer?.textView
+        let fontIdentity = MainActor.assumeIsolated {
+            let font = (textView as? NativeTextView)?.baseFont
+                ?? textView?.font
+                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (name: font.fontName, size: font.pointSize)
+        }
+        let font = NSFont(name: fontIdentity.name, size: fontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fontIdentity.size)
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
 
-        let theme = (textLayoutManager?.textContainer?.textView as? NativeTextView)?
-            .configuration.theme ?? .default
+        let theme = configurationSnapshot.theme
 
         ts.enumerateAttribute(.orderedMarker, in: range, options: []) { [weak self] value, attrRange, _ in
             guard let self, let number = value as? String else { return }
             guard let pos = self.drawPosition(forDocumentCharAt: attrRange.location, point: point) else { return }
-            // The view's base font, NOT the run's: the source marker carries the
-            // near-zero hidden-marker font that keeps it invisible under a
-            // selection, and drawing the number at 0.1pt would hide it too.
-            let textView = self.textLayoutManager?.textContainer?.textView
-            let font = (textView as? NativeTextView)?.baseFont
-                ?? textView?.font
-                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
             let glyph = number as NSString
             let glyphAttrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: theme.bodyText]
             let topY = pos.baselineY - font.ascender
@@ -772,13 +812,31 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     private func drawTaskCheckboxes(at point: CGPoint, in context: CGContext) {
         guard let ts = textStorage, let range = fragmentNSRange, range.length > 0 else { return }
+        // Use baseFont, NOT NSTextView.font — its getter returns the first
+        // char's font (0.1pt in a heading-first doc → 1px boxes).
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        let fontIdentity = MainActor.assumeIsolated {
+            let font = textView?.baseFont ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            return (
+                name: font.fontName,
+                size: font.pointSize,
+                checkboxSize: TaskCheckboxGeometry.size(for: font)
+            )
+        }
+        let font = NSFont(name: fontIdentity.name, size: fontIdentity.size)
+            ?? NSFont.systemFont(ofSize: fontIdentity.size)
+        let size = fontIdentity.checkboxSize
+        let scale = MainActor.assumeIsolated {
+            textView?.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        }
+        let fallbackStyle = MainActor.assumeIsolated { TaskCheckboxStyle.default }
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
         let nsContext = NSGraphicsContext(cgContext: context, flipped: true)
         NSGraphicsContext.current = nsContext
 
-        ts.enumerateAttribute(.taskCheckbox, in: range, options: []) { [weak self] value, attrRange, _ in
+        ts.enumerateAttribute(Self.taskCheckboxKey, in: range, options: []) { [weak self] value, attrRange, _ in
             guard let self, value != nil else { return }
             // A `.taskCheckbox` range means the styler cleared the raw `- [ ]`
             // (and collapsed the box's advance), so the box must ALWAYS be
@@ -793,19 +851,14 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
             // Box collapsed to 0.1pt, so pos.x sits at the content edge; the
             // square is right-aligned to it (shared with the click hit-test).
-            // Use baseFont, NOT NSTextView.font — its getter returns the first
-            // char's font (0.1pt in a heading-first doc → 1px boxes).
-            let font = (textLayoutManager?.textContainer?.textView as? NativeTextView)?.baseFont
-                ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
             let ascent = max(0, font.ascender)
             let descent = max(0, -font.descender)
-            let size = TaskCheckboxGeometry.size(for: font)
-            let boxX = TaskCheckboxGeometry.boxX(contentX: pos.x, size: size)
+            let boxX = MainActor.assumeIsolated {
+                TaskCheckboxGeometry.boxX(contentX: pos.x, size: size)
+            }
             let centerY = pos.baselineY + (descent - ascent) / 2
             let boxY = centerY - size / 2
 
-            let scale = textLayoutManager?.textContainer?.textView?.window?.backingScaleFactor
-                ?? NSScreen.main?.backingScaleFactor ?? 2.0
             func alignToPixel(_ value: CGFloat) -> CGFloat {
                 (value * scale).rounded(.toNearestOrAwayFromZero) / scale
             }
@@ -814,13 +867,12 @@ final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
             let iconInset = max(0.0, size * 0.01)
             let iconRect = boxRect.insetBy(dx: iconInset, dy: iconInset)
-            let configuration = (textLayoutManager?.textContainer?.textView as? NativeTextView)?.configuration
-                ?? .default
+            let configuration = configurationSnapshot
             let style = configuration.taskCheckbox
             let symbolName = isChecked ? style.checkedSymbolName : style.uncheckedSymbolName
             let fallbackName = isChecked
-                ? TaskCheckboxStyle.default.checkedSymbolName
-                : TaskCheckboxStyle.default.uncheckedSymbolName
+                ? fallbackStyle.checkedSymbolName
+                : fallbackStyle.uncheckedSymbolName
             if let baseSymbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
                 ?? NSImage(systemSymbolName: fallbackName, accessibilityDescription: nil) {
                 let sizeConfig = NSImage.SymbolConfiguration(pointSize: iconRect.height, weight: .regular)

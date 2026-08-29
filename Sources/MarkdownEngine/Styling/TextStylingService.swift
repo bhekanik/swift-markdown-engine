@@ -16,11 +16,29 @@ struct TextStylingService {
         paragraphStyle: NSParagraphStyle,
         theme: MarkdownEditorTheme = .default
     ) -> [NSAttributedString.Key: Any] {
-        [
+        makeBaseAttributes(font: font, paragraphStyle: paragraphStyle,
+                           configuration: MarkdownEditorConfiguration(theme: theme))
+    }
+
+    /// The attributes every character starts with, before any styled range is
+    /// painted over it. The one definition, so the load path, the per-keystroke
+    /// restyle, the typing attributes and the headless renderer cannot drift.
+    static func makeBaseAttributes(
+        font: NSFont,
+        paragraphStyle: NSParagraphStyle,
+        configuration: MarkdownEditorConfiguration
+    ) -> [NSAttributedString.Key: Any] {
+        var attributes: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: theme.bodyText,
+            .foregroundColor: configuration.theme.bodyText,
             .paragraphStyle: paragraphStyle
         ]
+        // Omitted rather than set to 0: an explicit `.kern` of 0 still forces
+        // AppKit down the kerned-run path, and the marker-hiding kern is
+        // applied per run over whatever this leaves.
+        let tracking = configuration.paragraph.trackingEm
+        if tracking != 0 { attributes[.kern] = font.pointSize * tracking }
+        return attributes
     }
 
     static func makeBaseFontAndStyle(
@@ -54,7 +72,6 @@ struct TextStylingService {
         caretLocation: Int,
         selection: NSRange? = nil,
         activeTokenIndices: Set<Int>,
-        wikiLinkIDProvider: @escaping (NSRange) -> String?,
         precomputedTokens: [MarkdownToken]? = nil,
         classified: MarkdownStyler.ClassifiedStyleTokens? = nil,
         precomputedBlocks: [Block]? = nil,
@@ -82,7 +99,6 @@ struct TextStylingService {
             caretLocation: caretLocation,
             selection: selection,
             activeTokenIndices: activeTokenIndices,
-            wikiLinkIDProvider: wikiLinkIDProvider,
             precomputedTokens: precomputedTokens,
             classified: classified,
             precomputedBlocks: precomputedBlocks,
@@ -110,11 +126,8 @@ struct TextStylingService {
         applyStyledRanges(
             styledRanges,
             paragraphs: paragraphs,
-            baseAttributes: [
-                .font: baseFont,
-                .foregroundColor: configuration.theme.bodyText,
-                .paragraphStyle: paragraphStyle
-            ],
+            baseAttributes: makeBaseAttributes(
+                font: baseFont, paragraphStyle: paragraphStyle, configuration: configuration),
             to: textView.textStorage
         )
         textView.textStorage?.endEditing()

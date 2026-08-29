@@ -49,7 +49,7 @@ struct PrecomputedBlocksTests {
         let text = """
         # Heading **bold** and *italic*
 
-        A paragraph with `inline code`, a [link](https://example.com), a [[Wiki Link]]
+        A paragraph with `inline code` and a [link](https://example.com)
         and an https://autolink.example.com in it.
 
         > quoted **text**
@@ -65,10 +65,6 @@ struct PrecomputedBlocksTests {
         | a | b |
         |---|---|
         | 1 | 2 |
-
-        $$
-        x^2
-        $$
 
         ---
 

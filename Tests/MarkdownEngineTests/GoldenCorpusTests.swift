@@ -16,7 +16,7 @@ import Foundation
 import Testing
 @testable import MarkdownEngine
 
-struct GoldenEntry {
+nonisolated struct GoldenEntry {
     let name: String
     let markdown: String
     let baselineHTML: String
@@ -25,7 +25,7 @@ struct GoldenEntry {
 @Suite("Golden corpus — HTML per construct")
 struct GoldenCorpusTests {
 
-    static let corpus: [GoldenEntry] = [
+    nonisolated static let corpus: [GoldenEntry] = [
         GoldenEntry(
             name: "heading",
             markdown: #"""
@@ -135,24 +135,6 @@ Siehe [Anthropic](https://anthropic.com) hier.
 """#
         ),
         GoldenEntry(
-            name: "wiki-link",
-            markdown: #"""
-Verweis auf [[Mein Node|ABC-123]] fertig.
-"""#,
-            baselineHTML: #"""
-<p>Verweis auf Mein Node fertig.</p>
-"""#
-        ),
-        GoldenEntry(
-            name: "image-embed",
-            markdown: #"""
-![[bild.png|ABC|300]]
-"""#,
-            baselineHTML: #"""
-<p><img src="bild.png|ABC|300" alt="bild.png|ABC|300"></p>
-"""#
-        ),
-        GoldenEntry(
             name: "strikethrough",
             markdown: #"""
 Alt ~~gestrichen~~ neu.
@@ -229,28 +211,6 @@ a ===kein Highlight=== b
 """#
         ),
         GoldenEntry(
-            name: "inline-latex",
-            markdown: #"""
-Formel $x^2 + y$ im Text.
-"""#,
-            baselineHTML: #"""
-<p>Formel $x^2 + y$ im Text.</p>
-"""#
-        ),
-        GoldenEntry(
-            name: "block-latex",
-            markdown: #"""
-$$
-E = mc^2
-$$
-"""#,
-            baselineHTML: #"""
-<pre>$$
-E = mc^2
-$$</pre>
-"""#
-        ),
-        GoldenEntry(
             name: "table",
             markdown: #"""
 | A | B |
@@ -259,7 +219,7 @@ $$</pre>
 | 3 | 4 |
 """#,
             baselineHTML: #"""
-<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>==x==</td></tr><tr><td>3</td><td>4</td></tr></tbody></table>
+<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td><mark>x</mark></td></tr><tr><td>3</td><td>4</td></tr></tbody></table>
 """#
         ),
         GoldenEntry(
@@ -321,7 +281,7 @@ raw ==nicht== markiert
     private static let extensionFixtures: Set<String> = [
         "highlight", "highlight-wraps-emphasis", "emphasis-wraps-highlight",
         "highlight-in-heading", "highlight-in-list", "highlight-adjacent-code",
-        "strikethrough", "mixed-document",
+        "strikethrough", "table", "mixed-document",
     ]
 
     @Test("with both extensions the output matches the pre-seam baseline",

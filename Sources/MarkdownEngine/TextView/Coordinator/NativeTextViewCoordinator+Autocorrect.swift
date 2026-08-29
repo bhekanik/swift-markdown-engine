@@ -6,18 +6,59 @@
 //
 //  Toggles AppKit's auto-correct, spell-check, grammar-check and quote
 //  substitution off when the caret enters tokens where those features are
-//  unwanted (code blocks, LaTeX, links). The decision is cached so it only
+//  unwanted (code blocks and links). The decision is cached so it only
 //  fires when the state actually changes.
 //
 
 import AppKit
 
 extension NativeTextViewCoordinator {
+    func enterRawSourceMode(_ textView: NSTextView) {
+        if rawSourceInputSettingsSnapshot == nil {
+            rawSourceInputSettingsSnapshot = RawSourceInputSettings(textView: textView)
+        }
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.smartInsertDeleteEnabled = false
+    }
+
+    func leaveRawSourceMode(_ textView: NSTextView) {
+        restoreRawSourceInputSettings(textView)
+        recomputeAutocorrectSettings(for: textView)
+        rawSourceInputSettingsSnapshot = nil
+    }
+
+    func restoreRawSourceInputSettings(_ textView: NSTextView) {
+        guard let settings = rawSourceInputSettingsSnapshot else { return }
+        textView.isAutomaticQuoteSubstitutionEnabled = settings.automaticQuoteSubstitution
+        textView.isAutomaticDashSubstitutionEnabled = settings.automaticDashSubstitution
+        textView.isAutomaticTextReplacementEnabled = settings.automaticTextReplacement
+        textView.isAutomaticSpellingCorrectionEnabled = settings.automaticSpellingCorrection
+        textView.smartInsertDeleteEnabled = settings.smartInsertDelete
+        cachedSpellingDisabled = nil
+    }
+
+    func finishLeavingRawSourceMode(_ textView: NSTextView) {
+        recomputeAutocorrectSettings(for: textView)
+        rawSourceInputSettingsSnapshot = nil
+    }
+
+    private func recomputeAutocorrectSettings(for textView: NSTextView) {
+        let parsed = parsedDocument(for: textView.string)
+        updateAutocorrectSettings(
+            textView,
+            caretLocation: textView.selectedRange().location,
+            codeTokens: parsed.codeTokens,
+            allTokens: parsed.tokens
+        )
+    }
+
     func updateAutocorrectSettings(
         _ textView: NSTextView,
         caretLocation: Int,
         codeTokens: [MarkdownToken]? = nil,
-        latexTokens: [MarkdownToken]? = nil,
         allTokens: [MarkdownToken]? = nil
     ) {
         // Prefer precomputed tokens to avoid the expensive textView.string bridge on long docs.
@@ -27,43 +68,43 @@ extension NativeTextViewCoordinator {
         } else {
             inCode = MarkdownDetection.isInsideCodeBlock(location: caretLocation, in: textView.string, registry: configuration.extensionRegistry)
         }
-        let inLatex: Bool
-        if let latexTokens = latexTokens {
-            inLatex = MarkdownDetection.isInsideLatex(location: caretLocation, latexTokens: latexTokens)
-        } else {
-            inLatex = MarkdownDetection.isInsideLatex(location: caretLocation, in: textView.string, registry: configuration.extensionRegistry)
-        }
         let inSpellcheckSuppressedToken: Bool
         if let allTokens = allTokens {
             inSpellcheckSuppressedToken = allTokens.contains { token in
-                (token.kind == .wikiLink || token.kind == .link || token.kind == .imageEmbed)
+                token.kind == .link
                     && NSLocationInRange(caretLocation, token.range)
             }
         } else {
             inSpellcheckSuppressedToken = isInsideSpellcheckSuppressedToken(location: caretLocation, in: textView.string)
         }
-        let shouldDisableSpelling = inCode || inLatex || inSpellcheckSuppressedToken
+        let shouldDisableSpelling = inCode || inSpellcheckSuppressedToken
 
         if cachedSpellingDisabled == shouldDisableSpelling {
             return
         }
         cachedSpellingDisabled = shouldDisableSpelling
 
-        // Inside a suppress zone (code/LaTeX/link), force everything off.
+        // Inside a suppress zone (code/link), force everything off.
         // Outside, restore to the user's preference — captured via the toggle
         // overrides in `NativeTextView+SpellingToggles.swift` — so a manual
         // "off" survives caret movement through suppress zones.
+        let restoredSettings = rawSourceInputSettingsSnapshot
         textView.isAutomaticSpellingCorrectionEnabled = shouldDisableSpelling
             ? false
-            : userPrefersAutomaticSpellingCorrection
+            : restoredSettings?.automaticSpellingCorrection
+                ?? userPrefersAutomaticSpellingCorrection
         textView.isContinuousSpellCheckingEnabled = shouldDisableSpelling
             ? false
             : userPrefersContinuousSpellChecking
         textView.isGrammarCheckingEnabled = shouldDisableSpelling
             ? false
             : userPrefersGrammarChecking
-        textView.isAutomaticQuoteSubstitutionEnabled = !shouldDisableSpelling
-        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticQuoteSubstitutionEnabled = shouldDisableSpelling
+            ? false
+            : restoredSettings?.automaticQuoteSubstitution ?? true
+        textView.isAutomaticDashSubstitutionEnabled = shouldDisableSpelling
+            ? false
+            : restoredSettings?.automaticDashSubstitution ?? false
     }
 
     func isInsideCode(range: NSRange, in text: String) -> Bool {
@@ -71,18 +112,10 @@ extension NativeTextViewCoordinator {
         return MarkdownDetection.isInsideCodeBlock(range: range, codeTokens: parsed.codeTokens)
     }
 
-    func isInsideLatex(location: Int, in text: String) -> Bool {
-        let parsed = parsedDocument(for: text)
-        if MarkdownDetection.isInsideLatex(location: location, latexTokens: parsed.latexTokens) {
-            return true
-        }
-        return MarkdownDetection.isInsideLatex(location: location, latexTokens: parsed.blockLatexTokens)
-    }
-
     func isInsideSpellcheckSuppressedToken(location: Int, in text: String) -> Bool {
         let parsed = parsedDocument(for: text)
         return parsed.tokens.contains { token in
-            guard token.kind == .wikiLink || token.kind == .link || token.kind == .imageEmbed || token.kind == .table else {
+            guard token.kind == .link || token.kind == .table else {
                 return false
             }
             return NSLocationInRange(location, token.range)
@@ -92,7 +125,7 @@ extension NativeTextViewCoordinator {
     func isInsideSpellcheckSuppressedToken(range: NSRange, in text: String) -> Bool {
         let parsed = parsedDocument(for: text)
         return parsed.tokens.contains { token in
-            guard token.kind == .wikiLink || token.kind == .link || token.kind == .imageEmbed || token.kind == .table else {
+            guard token.kind == .link || token.kind == .table else {
                 return false
             }
             return NSIntersectionRange(token.range, range).length > 0

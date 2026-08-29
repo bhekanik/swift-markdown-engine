@@ -3,7 +3,7 @@
 //  MarkdownEngine
 //
 //  The live tokenization pipeline. For each block from `BlockParser`:
-//  block-level tokens (heading, blockquote, table, block LaTeX, code) come from
+//  block-level tokens (heading, blockquote, table, code) come from
 //  `BlockLevelTokenizer` (hand scanners, no regex), while ALL inline tokens come
 //  from the AST (`InlineParser` → `InlineASTAdapter`). Results are offset back
 //  into document coordinates. Fenced-code blocks emit only their code-block
@@ -24,8 +24,8 @@ extension MarkdownTokenizer {
     private static let tokensLock = NSLock()
     private static var cachedTokenChars: [unichar]?
     private static var cachedTokens: [MarkdownToken]?
-    /// Registry fingerprint the memo was computed under — a different set of
-    /// registered extensions yields different tokens for identical text.
+    /// Grammar fingerprint for extensions plus reference definitions. Either
+    /// can change tokens for otherwise identical block text.
     private static var cachedTokenFingerprint: String = ""
 
     /// The live tokenizer: block-level tokens + inline AST tokens; fenced code emits only its code-block token.
@@ -40,26 +40,31 @@ extension MarkdownTokenizer {
         if newLen > 0 { ns.getCharacters(&newChars, range: NSRange(location: 0, length: newLen)) }
 
         let blocks = BlockParser.parse(text, utf16Chars: newChars, registry: registry)
+        let referenceDefinitions = DocumentAST.referenceDefinitionLabels(in: blocks, ns)
+        let tokenFingerprint = cacheFingerprint(
+            registry: registry,
+            referenceDefinitions: referenceDefinitions
+        )
 
         tokensLock.lock()
-        let prevChars = cachedTokenFingerprint == registry.fingerprint ? cachedTokenChars : nil
-        let prevTokens = cachedTokenFingerprint == registry.fingerprint ? cachedTokens : nil
+        let prevChars = cachedTokenFingerprint == tokenFingerprint ? cachedTokenChars : nil
+        let prevTokens = cachedTokenFingerprint == tokenFingerprint ? cachedTokens : nil
         tokensLock.unlock()
 
         let result: [MarkdownToken]
         if let prevChars, let prevTokens {
             if let diff = BlockParser.scanDiff(old: prevChars, new: newChars) {
-                result = incrementalTokens(oldChars: prevChars, prevTokens: prevTokens, newChars: newChars, blocks: blocks, ns: ns, diff: diff, registry: registry)?.tokens
-                    ?? fullTokens(blocks: blocks, ns: ns, registry: registry)
+                result = incrementalTokens(oldChars: prevChars, prevTokens: prevTokens, newChars: newChars, blocks: blocks, ns: ns, diff: diff, registry: registry, referenceDefinitions: referenceDefinitions)?.tokens
+                    ?? fullTokens(blocks: blocks, ns: ns, registry: registry, referenceDefinitions: referenceDefinitions)
             } else {
                 result = prevTokens   // identical text
             }
         } else {
-            result = fullTokens(blocks: blocks, ns: ns, registry: registry)
+            result = fullTokens(blocks: blocks, ns: ns, registry: registry, referenceDefinitions: referenceDefinitions)
         }
 
         tokensLock.lock()
-        cachedTokenChars = newChars; cachedTokens = result; cachedTokenFingerprint = registry.fingerprint
+        cachedTokenChars = newChars; cachedTokens = result; cachedTokenFingerprint = tokenFingerprint
         tokensLock.unlock()
         return result
     }
@@ -73,11 +78,22 @@ extension MarkdownTokenizer {
         tokensLock.unlock()
     }
 
-    static func fullTokens(blocks: [Block], ns: NSString, registry: ExtensionRegistry = .empty) -> [MarkdownToken] {
+    static func fullTokens(
+        blocks: [Block],
+        ns: NSString,
+        registry: ExtensionRegistry = .empty,
+        referenceDefinitions: Set<String>? = nil
+    ) -> [MarkdownToken] {
+        let definitions = referenceDefinitions ?? DocumentAST.referenceDefinitionLabels(in: blocks, ns)
         var result: [MarkdownToken] = []
         for block in blocks {
             let delta = block.range.location
-            let relTokens = cachedBlockTokens(kind: block.kind, sub: ns.substring(with: block.range), registry: registry)
+            let relTokens = cachedBlockTokens(
+                kind: block.kind,
+                sub: ns.substring(with: block.range),
+                registry: registry,
+                referenceDefinitions: definitions
+            )
             result.append(contentsOf: relTokens.map { $0.shifted(by: delta) })
         }
         return result
@@ -85,16 +101,17 @@ extension MarkdownTokenizer {
 
     /// Reuse prefix/suffix tokens (suffix shifted) and re-tokenize only touched blocks,
     /// against a precomputed change region; nil to fall back to full.
-    static func incrementalTokens(oldChars o: [unichar], prevTokens: [MarkdownToken], newChars n: [unichar], blocks: [Block], ns: NSString, diff: BufferDiff, registry: ExtensionRegistry = .empty) -> (tokens: [MarkdownToken], retok: Int)? {
+    static func incrementalTokens(oldChars o: [unichar], prevTokens: [MarkdownToken], newChars n: [unichar], blocks: [Block], ns: NSString, diff: BufferDiff, registry: ExtensionRegistry = .empty, referenceDefinitions: Set<String>? = nil) -> (tokens: [MarkdownToken], retok: Int)? {
         let oldLen = o.count, newLen = n.count
         guard oldLen > 0, newLen > 0, !blocks.isEmpty else { return nil }
+        let definitions = referenceDefinitions ?? DocumentAST.referenceDefinitionLabels(in: blocks, ns)
 
         let delta = diff.delta
         let changeStart = diff.changeStart, changeEndNew = diff.changeEndNew
         guard changeStart >= 0, diff.changeEndOld <= oldLen, changeEndNew <= newLen,
               changeStart <= diff.changeEndOld, changeStart <= changeEndNew else { return nil }
 
-        // A fence/block-LaTeX/extension delimiter can pair with a distant partner and ripple far → full tokenization.
+        // A fence or extension delimiter can pair with a distant partner and ripple far → full tokenization.
         let fences = registry.blockEntries.map(\.fenceChars)
         if BlockParser.hasBlockDelimiter(o, changeStart, diff.changeEndOld, fences: fences)
             || BlockParser.hasBlockDelimiter(n, changeStart, changeEndNew, fences: fences) { return nil }
@@ -107,7 +124,7 @@ extension MarkdownTokenizer {
             let m = (lo + hi) / 2
             if NSMaxRange(blocks[m].range) >= changeStart { hi = m } else { lo = m + 1 }
         }
-        var first = lo
+        let first = lo
         lo = 0; hi = blocks.count - 1
         while lo < hi {                       // last block starting <= changeEndNew
             let m = (lo + hi + 1) / 2
@@ -144,7 +161,12 @@ extension MarkdownTokenizer {
         for t in prevTokens where NSMaxRange(t.range) <= regionStart { result.append(t) }   // prefix, unchanged
         for i in lo...hi {                                                                   // changed window, retokenized
             let off = blocks[i].range.location
-            let rel = cachedBlockTokens(kind: blocks[i].kind, sub: ns.substring(with: blocks[i].range), registry: registry)
+            let rel = cachedBlockTokens(
+                kind: blocks[i].kind,
+                sub: ns.substring(with: blocks[i].range),
+                registry: registry,
+                referenceDefinitions: definitions
+            )
             result.append(contentsOf: rel.map { $0.shifted(by: off) })
         }
         for t in prevTokens where t.range.location >= regionEndOld { result.append(t.shifted(by: delta)) }  // suffix, shifted
@@ -152,10 +174,18 @@ extension MarkdownTokenizer {
     }
 
     /// Cached block-relative tokens for `sub` (computed on miss); a pure memo over
-    /// the token logic. The key carries the registry fingerprint — the same text
-    /// tokenizes differently under a different extension set.
-    static func cachedBlockTokens(kind: BlockKind, sub: String, registry: ExtensionRegistry = .empty) -> [MarkdownToken] {
-        let key = registry.fingerprint.isEmpty ? sub : registry.fingerprint + "\u{1F}" + sub
+    /// the token logic. The key includes extensions and reference definitions,
+    /// both of which can change how identical block text tokenizes.
+    static func cachedBlockTokens(
+        kind: BlockKind,
+        sub: String,
+        registry: ExtensionRegistry = .empty,
+        referenceDefinitions: Set<String> = []
+    ) -> [MarkdownToken] {
+        let key = cacheFingerprint(
+            registry: registry,
+            referenceDefinitions: referenceDefinitions
+        ) + cacheComponent(String(reflecting: kind)) + cacheComponent(sub)
         blockTokenLock.lock()
         if let cached = blockTokenCache[key] {
             blockTokenLock.unlock()
@@ -165,19 +195,28 @@ extension MarkdownTokenizer {
 
         let blockLevel = BlockLevelTokenizer.tokens(for: kind, in: sub as NSString, registry: registry)
         // Fenced code is opaque — no inline markup inside it. Extension blocks
-        // parse inlines over their CONTENT only (the fence lines are syntax —
-        // a `$x$` in the info string must not become a latex token).
+        // parse inlines over their CONTENT only; the fence lines are syntax.
         let inline: [MarkdownToken]
-        if kind == .fencedCode {
+        if kind == .fencedCode || kind == .frontmatter || kind == .linkDefinition
+            || kind == .footnoteDefinition {
             inline = []
         } else if case .ext = kind, let block = blockLevel.first {
             let ns = sub as NSString
             let content = block.contentRange
             inline = content.length > 0
-                ? InlineASTAdapter.tokens(from: InlineParser.parse(ns, range: content, registry: registry))
+                ? InlineASTAdapter.tokens(from: InlineParser.parse(
+                    ns,
+                    range: content,
+                    registry: registry,
+                    referenceDefinitions: referenceDefinitions
+                ))
                 : []
         } else {
-            inline = InlineASTAdapter.tokens(from: InlineParser.parse(sub, registry: registry))
+            inline = InlineASTAdapter.tokens(from: InlineParser.parse(
+                sub,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            ))
         }
         let computed = blockLevel + inline
 
@@ -191,6 +230,22 @@ extension MarkdownTokenizer {
         }
         blockTokenLock.unlock()
         return computed
+    }
+
+    static func cacheFingerprint(
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
+    ) -> String {
+        var hasher = Hasher()
+        hasher.combine(registry.fingerprint)
+        for definition in referenceDefinitions.sorted() {
+            hasher.combine(definition)
+        }
+        return String(hasher.finalize())
+    }
+
+    private static func cacheComponent(_ value: String) -> String {
+        "\(value.utf16.count):\(value)"
     }
 }
 

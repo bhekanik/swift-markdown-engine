@@ -37,10 +37,7 @@ struct FormattingActionTests {
         let coordinator = NativeTextViewCoordinator(
             text: .constant(""),
             fontName: "SF Pro Text",
-            fontSize: 14,
-            isWikiLinkActive: .constant(false),
-            onLinkClick: nil,
-            onInlineSelectionChange: nil
+            fontSize: 14
         )
         coordinator.textView = textView
         coordinator.configuration = config

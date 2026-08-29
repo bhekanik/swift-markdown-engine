@@ -6,17 +6,6 @@
 //
 //  Right-click menu with toggleable Markdown formatting actions.
 //
-//  Two rules here, both learned from silent data loss (25.07.26):
-//
-//  1. Never publish the binding. `didChangeText()` already enqueues the STORAGE
-//     form; a handler enqueueing `self.text = tv.string` lands second on the
-//     same queue and wins — and `tv.string` is the DISPLAY form, where every
-//     `|UUID` has been moved out of the text into metadata.
-//  2. Never rewrite retained text. Rebuilding a span from `tv.string` and
-//     writing it back destroys `.wikiLinkID` on anything inside it, which is the
-//     only copy of a link's UUID once its metadata range shifts. Use
-//     `replacePreservingAttributes` or edit only the characters that change.
-//
 
 import Cocoa
 import SwiftUI
@@ -35,7 +24,7 @@ extension NativeTextViewWrapper.Coordinator {
         // with a title fallback.
         if let fontIndex = menu.items.firstIndex(where: { item in
             if item.title == "Font" { return true }
-            return item.submenu?.items.contains { $0.action == Selector("orderFrontFontPanel:") } ?? false
+            return item.submenu?.items.contains { $0.action == #selector(NSFontManager.orderFrontFontPanel(_:)) } ?? false
         }) {
             menu.removeItem(at: fontIndex)
         }
@@ -145,7 +134,7 @@ extension NativeTextViewWrapper.Coordinator {
         // Defensive: a caller that miscomputes the offset would corrupt the
         // document rather than merely lose styling, so fall back to the plain
         // replacement instead of trapping on a bad range.
-        if NSMaxRange(target) <= replacement.length {
+        if target.isWithin(documentLength: replacement.length) {
             replacement.replaceCharacters(in: target, with: carried)
         }
         storage.replaceCharacters(in: range, with: replacement)
@@ -204,8 +193,8 @@ extension NativeTextViewWrapper.Coordinator {
         // merge the line with the next one (mirrors applyList's suffix handling).
         let suffix = originalLine.hasSuffix("\n") ? "\n" : ""
         let newLine = prefix + content + suffix
-        // `content` is a verbatim slice of the line — locate it so its styling,
-        // and any wiki link inside it, survives the rewrite.
+        // `content` is a verbatim slice of the line — locate it so its styling
+        // survives the rewrite.
         let contentRange = (originalLine as NSString).range(of: content)
         let retained = contentRange.location == NSNotFound
             ? NSRange(location: lineRange.location, length: 0)
@@ -239,7 +228,7 @@ extension NativeTextViewWrapper.Coordinator {
         let suffix = originalLine.hasSuffix("\n") ? "\n" : ""
         let replacement = newLine + suffix
         // See applyHeading: `content` survives verbatim, so its attributes must
-        // travel with it or a wiki link on this line loses its UUID.
+        // travel with it.
         let contentRange = (originalLine as NSString).range(of: content)
         let retained = contentRange.location == NSNotFound
             ? NSRange(location: startLine.location, length: 0)
@@ -376,8 +365,7 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     /// Toggles the `> ` prefix by editing only the prefix, leaving every
-    /// attribute on the rest of the line untouched. It used to replace the whole
-    /// line to add two characters, which is how it stripped wiki-link UUIDs.
+    /// attribute on the rest of the line untouched.
     @objc func didMarkdownBlockquote(_ sender: Any?) {
         guard let tv = textView else { return }
         let nsText = tv.string as NSString
@@ -404,9 +392,13 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownLink(_ sender: Any?) {
+        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
+        didMarkdownLink(url: url)
+    }
+
+    func didMarkdownLink(url: String) {
         guard let tv = textView else { return }
         let range = tv.selectedRange()
-        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
 
         if range.length > 0 {
             let nsText = tv.string as NSString
@@ -461,9 +453,13 @@ extension NativeTextViewWrapper.Coordinator {
     }
 
     @objc func didMarkdownImage(_ sender: Any?) {
+        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
+        didMarkdownImage(url: url)
+    }
+
+    func didMarkdownImage(url: String) {
         guard let tv = textView else { return }
         let range = tv.selectedRange()
-        let url = (sender as? NSNotification)?.userInfo?["url"] as? String ?? ""
         let insertion = "![](\(url))"
         if tv.shouldChangeText(in: range, replacementString: insertion) {
             tv.replaceCharacters(in: range, with: insertion)
@@ -514,7 +510,7 @@ extension NativeTextViewWrapper.Coordinator {
         let trailing = String(original[coreEnd...])
         let newText = leading + marker + core + marker + trailing
         // Only the markers are new; `core` is the user's text and keeps its
-        // attributes, including a wiki link's UUID if the selection spans one.
+        // attributes.
         let coreOldRange = NSRange(location: range.location + (leading as NSString).length,
                                    length: (core as NSString).length)
         guard replacePreservingAttributes(

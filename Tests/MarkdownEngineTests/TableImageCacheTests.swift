@@ -27,9 +27,8 @@ struct TableImageCacheTests {
             layoutBridge: nil,
             baseDefaultLineHeight: 18,
             codeBackgroundColor: .windowBackgroundColor,
-            latexMarkerFont: font,
-            configuration: configuration,
-            wikiLinkIDProvider: { _ in nil }
+            hiddenMarkerFont: font,
+            configuration: configuration
         )
     }
 
@@ -65,6 +64,41 @@ struct TableImageCacheTests {
         #expect(first.rendered)
         #expect(!second.rendered)
         #expect(first.image === second.image)
+    }
+
+    @Test func referenceResolutionUsesADistinctCacheEntry() throws {
+        let source = "| Link |\n|---|\n| [label][id] |"
+        let parsed = try #require(MarkdownStyler.parseTableSource(source))
+        let ctx = makeContext(for: source)
+        let aqua = try #require(NSAppearance(named: .aqua))
+
+        _ = MarkdownStyler.tableImage(
+            for: source,
+            parsed: parsed,
+            ctx: ctx,
+            appearance: aqua,
+            availableWidth: 2000
+        )
+        let resolved = MarkdownStyler.tableImage(
+            for: source,
+            parsed: parsed,
+            ctx: ctx,
+            appearance: aqua,
+            availableWidth: 2000,
+            referenceDefinitions: ["id"]
+        )
+        let cachedResolved = MarkdownStyler.tableImage(
+            for: source,
+            parsed: parsed,
+            ctx: ctx,
+            appearance: aqua,
+            availableWidth: 2000,
+            referenceDefinitions: ["id"]
+        )
+
+        #expect(resolved.rendered)
+        #expect(!cachedResolved.rendered)
+        #expect(resolved.image === cachedResolved.image)
     }
 
     @Test func appearanceChangeRendersFresh() throws {

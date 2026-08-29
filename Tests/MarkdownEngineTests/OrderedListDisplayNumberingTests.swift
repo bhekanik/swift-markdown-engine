@@ -56,8 +56,7 @@ struct OrderedListDisplayNumberingTests {
     private func makeEditor(_ text: String) -> (NativeTextViewCoordinator, NativeTextView) {
         _ = NSApplication.shared
         let coordinator = NativeTextViewCoordinator(
-            text: .constant(text), fontName: "SF Pro", fontSize: 16,
-            isWikiLinkActive: .constant(false), onLinkClick: nil, onInlineSelectionChange: nil
+            text: .constant(text), fontName: "SF Pro", fontSize: 16
         )
         let tv = NativeTextView(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
         tv.isEditable = true
@@ -65,7 +64,6 @@ struct OrderedListDisplayNumberingTests {
         coordinator.textView = tv
         coordinator.rebuildTextStorageAndStyle(tv, from: text)
         coordinator.lastSyncedText = text
-        coordinator.lastComputedStorage = text
         coordinator.previousDisplayLength = (text as NSString).length
         return (coordinator, tv)
     }
@@ -114,7 +112,7 @@ struct OrderedListDisplayNumberingTests {
         #expect(overlays(style("- outer\n  1. a\n  2. b")).isEmpty)
         #expect(overlays(style("- outer\n\t1. a\n\t2. b")).isEmpty)
         #expect(overlays(style("  1. alpha")).isEmpty)
-        #expect(overlays(style("1. top\n  1. nested\n  2. nested")).isEmpty)
+        #expect(overlays(style("1. top\n   1. nested\n   2. nested")).isEmpty)
     }
 
     /// A hole of blank lines between two scoped blocks is loose-list spacing,
