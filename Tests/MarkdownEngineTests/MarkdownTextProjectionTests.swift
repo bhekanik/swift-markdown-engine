@@ -136,4 +136,141 @@ struct MarkdownTextProjectionTests {
         #expect(projection.sourceRange(for: NSRange(location: NSNotFound, length: 0)) == nil)
         #expect(projection.visibleRange(for: NSRange(location: 0, length: Int.max)) == nil)
     }
+
+    @Test("indexed mappings match the linear reference at every boundary")
+    func indexedMappingsMatchLinearReference() {
+        let source = "---\ntitle: Hidden\n---\nA **cafe\u{301}** [link](https://secret.example) 👩🏽‍💻\n"
+        let projection = project(source)
+
+        for start in 0...projection.sourceUTF16Length {
+            for end in start...projection.sourceUTF16Length {
+                let range = NSRange(location: start, length: end - start)
+                #expect(projection.visibleRange(for: range) == linearVisibleRange(
+                    for: range,
+                    in: projection
+                ))
+            }
+        }
+        for start in 0...projection.visibleUTF16Length {
+            for end in start...projection.visibleUTF16Length {
+                let range = NSRange(location: start, length: end - start)
+                #expect(projection.sourceRange(for: range) == linearSourceRange(
+                    for: range,
+                    in: projection
+                ))
+            }
+        }
+    }
+
+    @Test("ten thousand link mappings stay below the release regression ceiling")
+    func largeLinkMappingsStaySublinear() {
+        var source = ""
+        var sourceRanges: [NSRange] = []
+        var visibleRanges: [NSRange] = []
+        sourceRanges.reserveCapacity(10_000)
+        visibleRanges.reserveCapacity(10_000)
+        var sourceOffset = 0
+        var visibleOffset = 0
+        for index in 0..<10_000 {
+            let label = "word\(index)"
+            let chunk = "[\(label)](https://secret.example/\(index))"
+            sourceRanges.append(NSRange(location: sourceOffset + 1, length: label.utf16.count))
+            visibleRanges.append(NSRange(location: visibleOffset, length: label.utf16.count))
+            source += chunk
+            sourceOffset += chunk.utf16.count
+            visibleOffset += label.utf16.count
+            if index < 9_999 {
+                source += " "
+                sourceOffset += 1
+                visibleOffset += 1
+            }
+        }
+        let projection = project(source)
+        var checksum = 0
+        let start = ContinuousClock.now
+        for index in 0..<10_000 {
+            checksum &+= projection.visibleRange(for: sourceRanges[index])?.location ?? 0
+            checksum &+= projection.sourceRange(for: visibleRanges[index])?.location ?? 0
+        }
+        let elapsed = start.duration(to: .now)
+        print("10k bidirectional projection mappings: \(elapsed)")
+        #expect(checksum > 0)
+#if !DEBUG
+        #expect(elapsed < .seconds(2), "10k bidirectional mappings took \(elapsed)")
+#endif
+    }
+
+    private func linearSourceRange(
+        for visibleRange: NSRange,
+        in projection: MarkdownTextProjection
+    ) -> NSRange? {
+        if visibleRange.length == 0 {
+            for span in projection.spans {
+                if visibleRange.location < NSMaxRange(span.visibleRange) {
+                    let delta = max(visibleRange.location, span.visibleRange.location)
+                        - span.visibleRange.location
+                    let source = span.sourceRange.length == span.visibleRange.length
+                        ? span.sourceRange.location + delta
+                        : span.sourceRange.location
+                    return NSRange(location: source, length: 0)
+                }
+            }
+            return NSRange(location: projection.sourceUTF16Length, length: 0)
+        }
+        let end = NSMaxRange(visibleRange)
+        guard let first = projection.spans.first(where: {
+            NSLocationInRange(visibleRange.location, $0.visibleRange)
+        }), let last = projection.spans.last(where: {
+            NSLocationInRange(end - 1, $0.visibleRange)
+        }) else { return nil }
+        let startDelta = visibleRange.location - first.visibleRange.location
+        let endDelta = end - last.visibleRange.location
+        let sourceStart = first.sourceRange.length == first.visibleRange.length
+            ? first.sourceRange.location + startDelta
+            : first.sourceRange.location
+        let sourceEnd = last.sourceRange.length == last.visibleRange.length
+            ? last.sourceRange.location + endDelta
+            : NSMaxRange(last.sourceRange)
+        return NSRange(location: sourceStart, length: sourceEnd - sourceStart)
+    }
+
+    private func linearVisibleRange(
+        for sourceRange: NSRange,
+        in projection: MarkdownTextProjection
+    ) -> NSRange? {
+        if sourceRange.length == 0 {
+            for span in projection.spans {
+                if sourceRange.location < NSMaxRange(span.sourceRange) {
+                    let delta = max(sourceRange.location, span.sourceRange.location)
+                        - span.sourceRange.location
+                    let visible = span.sourceRange.length == span.visibleRange.length
+                        ? span.visibleRange.location + delta
+                        : span.visibleRange.location
+                    return NSRange(location: visible, length: 0)
+                }
+            }
+            return NSRange(location: projection.visibleUTF16Length, length: 0)
+        }
+        let intersecting = projection.spans.filter {
+            NSIntersectionRange($0.sourceRange, sourceRange).length > 0
+        }
+        guard let first = intersecting.first, let last = intersecting.last else {
+            return linearVisibleRange(
+                for: NSRange(location: sourceRange.location, length: 0),
+                in: projection
+            )
+        }
+        let sourceEnd = NSMaxRange(sourceRange)
+        let startDelta = max(sourceRange.location, first.sourceRange.location)
+            - first.sourceRange.location
+        let endDelta = min(sourceEnd, NSMaxRange(last.sourceRange))
+            - last.sourceRange.location
+        let visibleStart = first.sourceRange.length == first.visibleRange.length
+            ? first.visibleRange.location + startDelta
+            : first.visibleRange.location
+        let visibleEnd = last.sourceRange.length == last.visibleRange.length
+            ? last.visibleRange.location + endDelta
+            : NSMaxRange(last.visibleRange)
+        return NSRange(location: visibleStart, length: visibleEnd - visibleStart)
+    }
 }

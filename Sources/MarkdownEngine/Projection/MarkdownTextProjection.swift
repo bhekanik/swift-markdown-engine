@@ -54,12 +54,8 @@ public struct MarkdownTextProjection: Sendable, Equatable {
             return NSRange(location: sourceLocation(forVisibleBoundary: visibleRange.location), length: 0)
         }
         let visibleEnd = NSMaxRange(visibleRange)
-        guard let first = spans.first(where: {
-            NSLocationInRange(visibleRange.location, $0.visibleRange)
-        }),
-        let last = spans.last(where: {
-            NSLocationInRange(visibleEnd - 1, $0.visibleRange)
-        }) else { return nil }
+        guard let first = span(containingVisibleOffset: visibleRange.location),
+              let last = span(containingVisibleOffset: visibleEnd - 1) else { return nil }
 
         let start = Self.sourceOffset(
             forVisibleOffset: visibleRange.location,
@@ -82,12 +78,17 @@ public struct MarkdownTextProjection: Sendable, Equatable {
             return NSRange(location: visibleLocation(forSourceBoundary: sourceRange.location), length: 0)
         }
         let sourceEnd = NSMaxRange(sourceRange)
-        let intersecting = spans.filter {
-            NSIntersectionRange($0.sourceRange, sourceRange).length > 0
-        }
-        guard let first = intersecting.first, let last = intersecting.last else {
+        let firstIndex = firstSpanEnding(afterSourceOffset: sourceRange.location)
+        let lastIndex = lastSpanStarting(beforeSourceOffset: sourceEnd)
+        guard firstIndex < spans.count,
+              lastIndex >= firstIndex,
+              spans[firstIndex].sourceRange.location < sourceEnd,
+              NSMaxRange(spans[lastIndex].sourceRange) > sourceRange.location
+        else {
             return NSRange(location: visibleLocation(forSourceBoundary: sourceRange.location), length: 0)
         }
+        let first = spans[firstIndex]
+        let last = spans[lastIndex]
 
         let start = Self.visibleOffset(
             forSourceOffset: max(sourceRange.location, first.sourceRange.location),
@@ -124,35 +125,60 @@ public struct MarkdownTextProjection: Sendable, Equatable {
     }
 
     private func sourceLocation(forVisibleBoundary offset: Int) -> Int {
-        for span in spans {
-            if offset < NSMaxRange(span.visibleRange) {
-                return Self.sourceOffset(
-                    forVisibleOffset: max(offset, span.visibleRange.location),
-                    in: span,
-                    endBoundary: false
-                )
-            }
-            if offset == span.visibleRange.location {
-                return span.sourceRange.location
-            }
-        }
-        return sourceUTF16Length
+        let index = firstSpanEnding(afterVisibleOffset: offset)
+        guard index < spans.count else { return sourceUTF16Length }
+        let span = spans[index]
+        return Self.sourceOffset(
+            forVisibleOffset: max(offset, span.visibleRange.location),
+            in: span,
+            endBoundary: false
+        )
     }
 
     private func visibleLocation(forSourceBoundary offset: Int) -> Int {
-        for span in spans {
-            if offset < NSMaxRange(span.sourceRange) {
-                return Self.visibleOffset(
-                    forSourceOffset: max(offset, span.sourceRange.location),
-                    in: span,
-                    endBoundary: false
-                )
-            }
-            if offset == span.sourceRange.location {
-                return span.visibleRange.location
+        let index = firstSpanEnding(afterSourceOffset: offset)
+        guard index < spans.count else { return visibleUTF16Length }
+        let span = spans[index]
+        return Self.visibleOffset(
+            forSourceOffset: max(offset, span.sourceRange.location),
+            in: span,
+            endBoundary: false
+        )
+    }
+
+    private func span(containingVisibleOffset offset: Int) -> MarkdownTextProjectionSpan? {
+        let index = firstSpanEnding(afterVisibleOffset: offset)
+        guard index < spans.count,
+              spans[index].visibleRange.location <= offset else { return nil }
+        return spans[index]
+    }
+
+    private func firstSpanEnding(afterVisibleOffset offset: Int) -> Int {
+        lowerBound { NSMaxRange($0.visibleRange) > offset }
+    }
+
+    private func firstSpanEnding(afterSourceOffset offset: Int) -> Int {
+        lowerBound { NSMaxRange($0.sourceRange) > offset }
+    }
+
+    private func lastSpanStarting(beforeSourceOffset offset: Int) -> Int {
+        lowerBound { $0.sourceRange.location >= offset } - 1
+    }
+
+    private func lowerBound(
+        where predicate: (MarkdownTextProjectionSpan) -> Bool
+    ) -> Int {
+        var lower = 0
+        var upper = spans.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if predicate(spans[middle]) {
+                upper = middle
+            } else {
+                lower = middle + 1
             }
         }
-        return visibleUTF16Length
+        return lower
     }
 
     private static func sourceOffset(
