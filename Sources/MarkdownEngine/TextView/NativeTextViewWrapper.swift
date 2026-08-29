@@ -452,6 +452,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         guard let textView = nsView.nativeTextView else {
             return
         }
+        context.coordinator.updateTextBinding($text)
         if context.coordinator.controllerlessRemountIdentity != controllerlessRemountIdentity {
             context.coordinator.invalidatePendingBindingWrite()
             context.coordinator.controllerlessRemountIdentity = controllerlessRemountIdentity
@@ -943,8 +944,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         if let correctedInexactBindingText {
             context.coordinator.scheduleBindingWriteBack(
                 correctedInexactBindingText,
-                from: textView,
-                replacing: text
+                from: textView
             )
         }
         ControllerlessRemountRegistry.register(

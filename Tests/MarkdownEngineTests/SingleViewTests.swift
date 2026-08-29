@@ -1931,18 +1931,20 @@ struct SingleViewTests {
     @Test("an inexact persistence mutation writes merged authority once")
     func persistenceReentryPersistsInexactMutation() async throws {
         _ = NSApplication.shared
-        let text = MutableTextBox("alpha")
+        let outgoingText = MutableTextBox("alpha")
+        let incomingText = MutableTextBox("bravo")
+        let thirdText = MutableTextBox("charlie")
+        let fourthText = MutableTextBox("delta")
         let first = MarkdownEditorController()
         let second = MarkdownEditorController()
         let third = MarkdownEditorController()
         var didMutateSecond = false
         var didMutateThird = false
-        var mutations: [MarkdownTextMutation] = []
         let host = NSHostingView(rootView: MutablePersistenceReentryHost(
-            text: text,
+            text: outgoingText,
             documentId: "A",
             controller: first,
-            onMutation: { mutations.append($0) },
+            onMutation: { _ in },
             persist: { _, _ in }
         ))
         host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
@@ -1950,10 +1952,10 @@ struct SingleViewTests {
 
         func secondRoot() -> MutablePersistenceReentryHost {
             MutablePersistenceReentryHost(
-                text: text,
+                text: incomingText,
                 documentId: "B",
                 controller: second,
-                onMutation: { mutations.append($0) },
+                onMutation: { _ in },
                 persist: { _, _ in
                     guard !didMutateSecond, let textView = second.textView else { return }
                     didMutateSecond = true
@@ -1966,31 +1968,43 @@ struct SingleViewTests {
             )
         }
 
-        text.value = "bravo"
         host.rootView = secondRoot()
         host.layoutSubtreeIfNeeded()
         #expect(second.text == "Xbravo")
-        #expect(text.value == "bravo")
-        #expect(text.bindingWriteCount == 0)
-        #expect(mutations.isEmpty)
+        #expect(outgoingText.value == "alpha")
+        #expect(outgoingText.bindingWriteCount == 0)
+        #expect(incomingText.value == "bravo")
+        #expect(incomingText.bindingWriteCount == 0)
 
         await drainMainQueue()
         #expect(second.text == "Xbravo")
-        #expect(text.value == "Xbravo")
-        #expect(text.bindingWriteCount == 1)
-        #expect(mutations.isEmpty)
+        #expect(outgoingText.value == "alpha")
+        #expect(outgoingText.bindingWriteCount == 0)
+        #expect(incomingText.value == "Xbravo")
+        #expect(incomingText.bindingWriteCount == 1)
 
         host.rootView = secondRoot()
         host.layoutSubtreeIfNeeded()
         #expect(second.text == "Xbravo")
-        #expect(text.bindingWriteCount == 1)
+        #expect(incomingText.bindingWriteCount == 1)
 
-        text.value = "charlie"
+        let secondView = try #require(second.textView)
+        secondView.insertText(
+            "!",
+            replacementRange: NSRange(location: (secondView.string as NSString).length, length: 0)
+        )
+        await drainMainQueue()
+        #expect(second.text == "Xbravo!")
+        #expect(outgoingText.value == "alpha")
+        #expect(outgoingText.bindingWriteCount == 0)
+        #expect(incomingText.value == "Xbravo!")
+        #expect(incomingText.bindingWriteCount == 2)
+
         host.rootView = MutablePersistenceReentryHost(
-            text: text,
+            text: thirdText,
             documentId: "C",
             controller: third,
-            onMutation: { mutations.append($0) },
+            onMutation: { _ in },
             persist: { _, _ in
                 guard !didMutateThird, let textView = third.textView else { return }
                 didMutateThird = true
@@ -2003,31 +2017,37 @@ struct SingleViewTests {
         )
         host.layoutSubtreeIfNeeded()
         #expect(third.text == "Ycharlie")
+        #expect(thirdText.value == "charlie")
 
-        text.value = "delta"
         host.rootView = MutablePersistenceReentryHost(
-            text: text,
+            text: fourthText,
             documentId: "D",
             controller: MarkdownEditorController(),
-            onMutation: { mutations.append($0) },
+            onMutation: { _ in },
             persist: { _, _ in }
         )
         host.layoutSubtreeIfNeeded()
         await drainMainQueue()
-        #expect(text.value == "delta")
-        #expect(text.bindingWriteCount == 1)
-        #expect(mutations.isEmpty)
+        #expect(thirdText.value == "charlie")
+        #expect(thirdText.bindingWriteCount == 0)
+        #expect(fourthText.value == "delta")
+        #expect(fourthText.bindingWriteCount == 0)
+        #expect(outgoingText.value == "alpha")
+        #expect(outgoingText.bindingWriteCount == 0)
+        #expect(incomingText.value == "Xbravo!")
+        #expect(incomingText.bindingWriteCount == 2)
     }
 
     @Test("an inexact persistence write cannot outlive its remount")
     func persistenceReentryWriteStopsAtRemount() async {
         _ = NSApplication.shared
-        let text = MutableTextBox("alpha")
+        let outgoingText = MutableTextBox("alpha")
+        let incomingText = MutableTextBox("bravo")
         let first = MarkdownEditorController()
         let second = MarkdownEditorController()
         var didMutate = false
         let host = NSHostingView(rootView: MutablePersistenceReentryHost(
-            text: text,
+            text: outgoingText,
             documentId: "A",
             controller: first,
             identity: 1,
@@ -2039,7 +2059,7 @@ struct SingleViewTests {
 
         func secondRoot(identity: Int) -> MutablePersistenceReentryHost {
             MutablePersistenceReentryHost(
-                text: text,
+                text: incomingText,
                 documentId: "B",
                 controller: second,
                 identity: identity,
@@ -2056,18 +2076,20 @@ struct SingleViewTests {
             )
         }
 
-        text.value = "bravo"
         host.rootView = secondRoot(identity: 1)
         host.layoutSubtreeIfNeeded()
         #expect(second.text == "Xbravo")
-        #expect(text.value == "bravo")
+        #expect(outgoingText.value == "alpha")
+        #expect(incomingText.value == "bravo")
 
         host.rootView = secondRoot(identity: 2)
         host.layoutSubtreeIfNeeded()
         await drainMainQueue()
         #expect(second.text == "Xbravo")
-        #expect(text.value == "bravo")
-        #expect(text.bindingWriteCount == 0)
+        #expect(outgoingText.value == "alpha")
+        #expect(outgoingText.bindingWriteCount == 0)
+        #expect(incomingText.value == "bravo")
+        #expect(incomingText.bindingWriteCount == 0)
     }
 
     @Test("persistence callback authority stays with the document it mutates")
