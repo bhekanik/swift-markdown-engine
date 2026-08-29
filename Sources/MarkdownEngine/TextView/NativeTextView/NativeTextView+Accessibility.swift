@@ -33,6 +33,10 @@ extension NativeTextView {
         markdownAccessibility.text.visibleUTF16Length
     }
 
+    override func accessibilityValue() -> String? {
+        markdownAccessibility.text.string
+    }
+
     override func accessibilityString(for range: NSRange) -> String? {
         let visible = markdownAccessibility.text.string
         guard Self.isValidAccessibilityRange(range, length: (visible as NSString).length),
@@ -107,8 +111,57 @@ extension NativeTextView {
         accessibilityString(for: accessibilitySelectedTextRange())
     }
 
+    override func accessibilitySelectedTextRanges() -> [NSValue]? {
+        selectedRanges.compactMap {
+            markdownAccessibility.text.visibleRange(for: $0.rangeValue).map(NSValue.init(range:))
+        }
+    }
+
+    override func setAccessibilitySelectedTextRanges(_ ranges: [NSValue]?) {
+        guard let ranges else { return }
+        let sourceRanges = ranges.compactMap {
+            markdownAccessibility.text.sourceRange(for: $0.rangeValue).map(NSValue.init(range:))
+        }
+        guard sourceRanges.count == ranges.count else { return }
+        selectedRanges = sourceRanges
+    }
+
+    override func accessibilityInsertionPointLineNumber() -> Int {
+        accessibilityLine(for: accessibilitySelectedTextRange().location)
+    }
+
+    override func accessibilityRTF(for range: NSRange) -> Data? {
+        accessibilityAttributedString(for: range)?.rtf(
+            from: NSRange(location: 0, length: range.length),
+            documentAttributes: [:]
+        )
+    }
+
+    override func accessibilityStyleRange(for index: Int) -> NSRange {
+        guard index >= 0, index < markdownAccessibility.text.visibleUTF16Length,
+              let sourceBoundary = markdownAccessibility.text.sourceRange(
+                for: NSRange(location: index, length: 0)
+              ) else { return NSRange(location: NSNotFound, length: 0) }
+        let sourceRange = super.accessibilityStyleRange(for: sourceBoundary.location)
+        return markdownAccessibility.text.visibleRange(for: sourceRange)
+            ?? NSRange(location: NSNotFound, length: 0)
+    }
+
     override func accessibilityVisibleCharacterRange() -> NSRange {
-        NSRange(location: 0, length: markdownAccessibility.text.visibleUTF16Length)
+        guard let textLayoutManager,
+              let viewport = textLayoutManager.textViewportLayoutController.viewportRange
+        else { return NSRange(location: 0, length: 0) }
+        let sourceStart = textLayoutManager.offset(
+            from: textLayoutManager.documentRange.location,
+            to: viewport.location
+        )
+        let sourceLength = textLayoutManager.offset(
+            from: viewport.location,
+            to: viewport.endLocation
+        )
+        return markdownAccessibility.text.visibleRange(
+            for: NSRange(location: sourceStart, length: sourceLength)
+        ) ?? NSRange(location: 0, length: 0)
     }
 
     override func accessibilityRange(forLine line: Int) -> NSRange {

@@ -11,6 +11,29 @@ import Testing
 @MainActor
 @Suite("Visible Markdown accessibility", .serialized)
 struct AccessibilityTests {
+    private nonisolated final class LockedCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        func increment() {
+            lock.lock()
+            value += 1
+            lock.unlock()
+        }
+
+        func read() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    private struct MountedEditor {
+        let window: NSWindow
+        let controller: MarkdownEditorController
+        let textView: NativeTextView
+    }
+
     private func view(
         text: String,
         configuration: MarkdownEditorConfiguration = .default
@@ -39,6 +62,32 @@ struct AccessibilityTests {
         return textView
     }
 
+    private func mountedView(text: String) throws -> MountedEditor {
+        let controller = MarkdownEditorController()
+        let host = NSHostingView(rootView: NativeTextViewWrapper(
+            text: .constant(text),
+            controller: controller,
+            fontName: "Helvetica",
+            fontSize: 16
+        ))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 320),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = host
+        window.layoutIfNeeded()
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        let textView = try #require(controller.textView as? NativeTextView)
+        return MountedEditor(
+            window: window,
+            controller: controller,
+            textView: textView
+        )
+    }
+
     @Test("visible text and selection hide Markdown syntax")
     func visibleTextAndSelection() throws {
         let source = "# Alpha [bravo](https://secret.example) 👩🏽‍💻\n"
@@ -65,6 +114,72 @@ struct AccessibilityTests {
 
         let emoji = (visible as NSString).range(of: "👩🏽‍💻")
         #expect(textView.accessibilityRange(for: emoji.location) == emoji)
+    }
+
+    @Test("all inherited text surfaces use visible text and coordinates")
+    func inheritedTextSurfacesUseProjection() throws {
+        let source = "---\ntitle: Hidden\n---\n# Alpha [bravo](https://secret.example)\n"
+        let visible = "Alpha bravo\n"
+        let textView = view(text: source)
+        let sourceBravo = (source as NSString).range(of: "bravo")
+        let visibleBravo = (visible as NSString).range(of: "bravo")
+        textView.selectedRanges = [NSValue(range: sourceBravo)]
+
+        #expect(textView.accessibilityValue() == visible)
+        #expect(textView.accessibilitySelectedTextRanges() == [NSValue(range: visibleBravo)])
+        #expect(textView.accessibilityInsertionPointLineNumber() == 0)
+
+        let rtf = try #require(textView.accessibilityRTF(
+            for: NSRange(location: 0, length: 5)
+        ))
+        let decoded = try NSAttributedString(
+            data: rtf,
+            options: [.documentType: NSAttributedString.DocumentType.rtf],
+            documentAttributes: nil
+        )
+        #expect(decoded.string == "Alpha")
+
+        let styleRange = textView.accessibilityStyleRange(for: visibleBravo.location)
+        #expect(styleRange.location != NSNotFound)
+        #expect(NSMaxRange(styleRange) <= (visible as NSString).length)
+
+        textView.setAccessibilitySelectedTextRanges([NSValue(
+            range: (visible as NSString).range(of: "Alpha")
+        )])
+        #expect(textView.selectedRange() == (source as NSString).range(of: "Alpha"))
+    }
+
+    @Test("visible character range follows the TextKit 2 viewport")
+    func visibleCharacterRangeTracksViewport() throws {
+        let text = (0..<1_200)
+            .map { "Line \($0): alpha bravo charlie delta" }
+            .joined(separator: "\n") + "\n"
+        let mounted = try mountedView(text: text)
+        defer { mounted.window.contentView = nil }
+        let compatibilitySwitches = LockedCounter()
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSTextView.willSwitchToNSLayoutManagerNotification,
+            object: mounted.textView,
+            queue: nil
+        ) { _ in compatibilitySwitches.increment() }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let fullLength = (text as NSString).length
+        let top = mounted.textView.accessibilityVisibleCharacterRange()
+        #expect(top.location == 0)
+        #expect(top.length > 0 && top.length < fullLength / 4)
+
+        let middleSource = (text as NSString).range(of: "Line 600:")
+        #expect(mounted.controller.scroll(range: middleSource, position: .center))
+        let middle = mounted.textView.accessibilityVisibleCharacterRange()
+        #expect(middle.location > top.location)
+        #expect(middle.length > 0 && middle.length < fullLength / 4)
+
+        #expect(mounted.controller.scroll(range: NSRange(location: fullLength, length: 0)))
+        let bottom = mounted.textView.accessibilityVisibleCharacterRange()
+        #expect(bottom.location > middle.location)
+        #expect(NSMaxRange(bottom) == fullLength)
+        #expect(compatibilitySwitches.read() == 0)
     }
 
     @Test("attributed text carries heading, list, link, image and footnote semantics")
