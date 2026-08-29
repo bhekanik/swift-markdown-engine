@@ -537,6 +537,17 @@ struct CommonMarkReferenceConformanceTests {
         let malformedTags = Array(repeating: #"<x a=""#, count: 4_000).joined()
         #expect(InlineParser.angleSpanInspectionCount(in: malformedTags)
             < (malformedTags as NSString).length * 8)
+
+        let speculativeAutolinks = Array(
+            repeating: "[<https://good.test> x <unterminated\n",
+            count: 4_000
+        ).joined()
+        #expect(InlineParser.angleSpanInspectionCount(in: speculativeAutolinks)
+            < (speculativeAutolinks as NSString).length * 8)
+
+        let sharedAutolinkCloser = String(repeating: "<", count: 8_000) + ">"
+        #expect(InlineParser.angleSpanInspectionCount(in: sharedAutolinkCloser)
+            < (sharedAutolinkCloser as NSString).length * 4)
     }
 
     @Test("inline raw tag grammar accepts only CommonMark tag forms")
@@ -556,6 +567,91 @@ struct CommonMarkReferenceConformanceTests {
         ]
         for source in invalid {
             #expect(!InlineParser.isInlineRawHTML(source))
+        }
+    }
+
+    @Test("speculative reference scans cannot poison earlier angle spans")
+    func speculativeAngleCacheValidity() throws {
+        let autolink = "[<https://good.test> x <unterminated\n"
+        let autolinkVisible = "[https://good.test x <unterminated\n"
+        #expect(MarkdownHTMLRenderer.html(from: autolink).contains(
+            "<a href=\"https://good.test\">https://good.test</a>"
+        ))
+        #expect(MarkdownTextProjection.make(markdown: autolink).string == autolinkVisible)
+        let autolinkAccessibility = MarkdownAccessibilityProjection.make(markdown: autolink)
+        #expect(autolinkAccessibility.text.string == autolinkVisible)
+        #expect(autolinkAccessibility.spans.contains {
+            $0.role == .link(destination: "https://good.test")
+        })
+        let autolinkStyle = MarkdownRendering.attributedString(
+            for: autolink,
+            fontName: NSFont.systemFont(ofSize: 16).fontName,
+            fontSize: 16
+        )
+        #expect((autolinkStyle.attribute(.link, at: 2, effectiveRange: nil) as? URL)?
+            .absoluteString == "https://good.test")
+
+        let nestedAutolink = "<x<https://good.test>"
+        #expect(MarkdownHTMLRenderer.html(from: nestedAutolink).contains(
+            "&lt;x<a href=\"https://good.test\">https://good.test</a>"
+        ))
+        #expect(MarkdownTextProjection.make(markdown: nestedAutolink).string
+            == "<xhttps://good.test")
+        #expect(MarkdownAccessibilityProjection.make(markdown: nestedAutolink).spans.contains {
+            $0.role == .link(destination: "https://good.test")
+        })
+        let nestedStyle = MarkdownRendering.attributedString(
+            for: nestedAutolink,
+            fontName: NSFont.systemFont(ofSize: 16).fontName,
+            fontSize: 16
+        )
+        #expect((nestedStyle.attribute(.link, at: 3, effectiveRange: nil) as? URL)?
+            .absoluteString == "https://good.test")
+
+        let rawCases = [
+            (#"<!-- \* -->"#, "<!--unterminated"),
+            (#"<?pi \* ?>"#, "<?unterminated"),
+            (#"<![CDATA[ \* ]]>"#, "<![CDATA[unterminated"),
+            (#"<!A \*>"#, "<!Aunterminated"),
+            (#"<x a="\*">"#, #"<y a="unterminated"#),
+            (#"<x a='\*'>"#, #"<y a='unterminated"#),
+        ]
+        for (valid, malformed) in rawCases {
+            #expect(MarkdownTextProjection.make(markdown: valid).string == valid)
+            let controlStyle = MarkdownRendering.attributedString(
+                for: valid,
+                fontName: NSFont.systemFont(ofSize: 16).fontName,
+                fontSize: 16
+            )
+            let controlBackslash = (valid as NSString).range(of: #"\"#).location
+            let controlFont = try #require(controlStyle.attribute(
+                .font,
+                at: controlBackslash,
+                effectiveRange: nil
+            ) as? NSFont)
+            #expect(controlFont.pointSize == 16)
+
+            let source = "[\(valid) x \(malformed)\n"
+            #expect(MarkdownTextProjection.make(markdown: source).string == source)
+            #expect(MarkdownAccessibilityProjection.make(markdown: source).text.string == source)
+            #expect(MarkdownHTMLRenderer.html(from: source).contains("\\*"))
+            #expect(!InlineParser.parse(source).contains(where: {
+                if case .escape = $0 { return true }
+                return false
+            }))
+
+            let styled = MarkdownRendering.attributedString(
+                for: source,
+                fontName: NSFont.systemFont(ofSize: 16).fontName,
+                fontSize: 16
+            )
+            let backslash = (source as NSString).range(of: #"\"#).location
+            let font = try #require(styled.attribute(
+                .font,
+                at: backslash,
+                effectiveRange: nil
+            ) as? NSFont)
+            #expect(font.pointSize == 16)
         }
     }
 

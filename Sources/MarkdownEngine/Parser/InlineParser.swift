@@ -219,16 +219,18 @@ enum InlineParser {
     }
 
     private final class RawHTMLTerminatorCache {
-        // After a search reaches this parse region's end, no later opener can
-        // have that terminator either. Remembering the miss keeps malformed
-        // opener runs from rescanning every remaining suffix.
-        var commentExhausted = false
-        var processingInstructionExhausted = false
-        var cdataExhausted = false
-        var declarationExhausted = false
-        var singleQuotedAttributeExhausted = false
-        var doubleQuotedAttributeExhausted = false
-        var autolinkExhaustedThrough = 0
+        // A failed suffix search proves only that openers at or after its start
+        // cannot close. Speculative link-label scans can run ahead and then
+        // resume earlier, so each watermark records where that proof begins.
+        var commentExhaustedFrom = Int.max
+        var processingInstructionExhaustedFrom = Int.max
+        var cdataExhaustedFrom = Int.max
+        var declarationExhaustedFrom = Int.max
+        var singleQuotedAttributeExhaustedFrom = Int.max
+        var doubleQuotedAttributeExhaustedFrom = Int.max
+        // Autolinks cannot cross a line ending. IndexSet keeps one compressed
+        // no-closer interval per affected line while allowing out-of-order probes.
+        var autolinkNoCloserLocations = IndexSet()
         var searchCount = 0
         var angleSpanInspectionCount = 0
     }
@@ -845,54 +847,60 @@ enum InlineParser {
             if matches(ns, len, at: i, chars: [langle, bang, 0x2D, 0x2D, 0x2D, rangle]) {
                 return .rawHTML(range: NSRange(location: i, length: 6))
             }
-            guard !terminators.commentExhausted else { return nil }
+            guard i < terminators.commentExhaustedFrom else { return nil }
             terminators.searchCount += 1
             let close = ns.range(
                 of: "-->",
                 range: NSRange(location: i + 4, length: len - i - 4)
             )
             guard close.location != NSNotFound else {
-                terminators.commentExhausted = true
+                terminators.commentExhaustedFrom = min(terminators.commentExhaustedFrom, i)
                 return nil
             }
             return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
         }
         if matches(ns, len, at: i, chars: [langle, 0x3F]) {
-            guard !terminators.processingInstructionExhausted else { return nil }
+            guard i < terminators.processingInstructionExhaustedFrom else { return nil }
             terminators.searchCount += 1
             let close = ns.range(
                 of: "?>",
                 range: NSRange(location: i + 2, length: len - i - 2)
             )
             guard close.location != NSNotFound else {
-                terminators.processingInstructionExhausted = true
+                terminators.processingInstructionExhaustedFrom = min(
+                    terminators.processingInstructionExhaustedFrom,
+                    i
+                )
                 return nil
             }
             return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
         }
         if matches(ns, len, at: i, chars: [langle, bang, lbracket, 0x43, 0x44, 0x41, 0x54, 0x41, lbracket]) {
-            guard !terminators.cdataExhausted else { return nil }
+            guard i < terminators.cdataExhaustedFrom else { return nil }
             terminators.searchCount += 1
             let close = ns.range(
                 of: "]]>",
                 range: NSRange(location: i + 9, length: len - i - 9)
             )
             guard close.location != NSNotFound else {
-                terminators.cdataExhausted = true
+                terminators.cdataExhaustedFrom = min(terminators.cdataExhaustedFrom, i)
                 return nil
             }
             return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
         }
         if matches(ns, len, at: i, chars: [langle, bang]),
            let first = peek(ns, i + 2, len), isASCIIAlpha(first) {
-            guard !terminators.declarationExhausted else { return nil }
+            guard i < terminators.declarationExhaustedFrom else { return nil }
             terminators.searchCount += 1
             let close = ns.range(
                 of: ">",
                 range: NSRange(location: i + 3, length: len - i - 3)
             )
             guard close.location != NSNotFound else {
-                terminators.declarationExhausted = true
+                terminators.declarationExhaustedFrom = min(
+                    terminators.declarationExhaustedFrom,
+                    i
+                )
                 return nil
             }
             return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
@@ -1001,9 +1009,12 @@ enum InlineParser {
     ) -> Bool {
         guard let first = peek(ns, cursor, len) else { return false }
         if first == 0x22 || first == 0x27 {
+            let quoteOffset = cursor
             let isDoubleQuoted = first == 0x22
-            if isDoubleQuoted, terminators.doubleQuotedAttributeExhausted { return false }
-            if !isDoubleQuoted, terminators.singleQuotedAttributeExhausted { return false }
+            if isDoubleQuoted,
+               quoteOffset >= terminators.doubleQuotedAttributeExhaustedFrom { return false }
+            if !isDoubleQuoted,
+               quoteOffset >= terminators.singleQuotedAttributeExhaustedFrom { return false }
             cursor += 1
             while cursor < len, ns.character(at: cursor) != first {
                 terminators.angleSpanInspectionCount += 1
@@ -1011,9 +1022,15 @@ enum InlineParser {
             }
             guard cursor < len else {
                 if isDoubleQuoted {
-                    terminators.doubleQuotedAttributeExhausted = true
+                    terminators.doubleQuotedAttributeExhaustedFrom = min(
+                        terminators.doubleQuotedAttributeExhaustedFrom,
+                        quoteOffset
+                    )
                 } else {
-                    terminators.singleQuotedAttributeExhausted = true
+                    terminators.singleQuotedAttributeExhaustedFrom = min(
+                        terminators.singleQuotedAttributeExhaustedFrom,
+                        quoteOffset
+                    )
                 }
                 return false
             }
@@ -1060,17 +1077,20 @@ enum InlineParser {
         start i: Int,
         terminators: RawHTMLTerminatorCache
     ) -> Span? {
-        guard i >= terminators.autolinkExhaustedThrough else { return nil }
+        guard !terminators.autolinkNoCloserLocations.contains(i) else { return nil }
         var close = i + 1
         while close < len,
               ns.character(at: close) != rangle,
               ns.character(at: close) != newline,
               ns.character(at: close) != carriageReturn {
             terminators.angleSpanInspectionCount += 1
+            // A nested opener cannot belong to this autolink, but may begin
+            // a valid one when the outer scan reaches it.
+            if ns.character(at: close) == langle { return nil }
             close += 1
         }
         guard close < len, ns.character(at: close) == rangle else {
-            terminators.autolinkExhaustedThrough = close
+            terminators.autolinkNoCloserLocations.insert(integersIn: i..<close)
             return nil
         }
         let url = NSRange(location: i + 1, length: close - i - 1)
