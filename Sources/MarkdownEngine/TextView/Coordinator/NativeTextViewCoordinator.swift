@@ -156,7 +156,19 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         documentId: String,
         text: String
     )?
-    var isProgrammaticEdit: Bool = false
+    /// Finder invalidation is public and synchronous, so a programmatic edit
+    /// can re-enter through a controller patch before its own scope unwinds.
+    private var programmaticEditDepth = 0
+    var isProgrammaticEdit: Bool {
+        get { programmaticEditDepth > 0 }
+        set {
+            if newValue {
+                programmaticEditDepth += 1
+            } else {
+                programmaticEditDepth = max(0, programmaticEditDepth - 1)
+            }
+        }
+    }
     var isWritingToolsActive: Bool = false
     var wtStartDocumentId: String?
     var wtSourceSnapshot: String?

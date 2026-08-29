@@ -182,6 +182,107 @@ struct SingleViewTests {
         #expect(responder.stringWillChangeCount == 1)
     }
 
+    @Test("a Binding splice stays programmatic across a nested Finder patch")
+    func bindingSpliceSurvivesReentrantFinderPatch() {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let text = MutableTextBox("- item")
+        var mutations: [MarkdownTextMutation] = []
+        let wrapper = NativeTextViewWrapper(
+            text: Binding(
+                get: { text.value },
+                set: { text.writeFromBinding($0) }
+            ),
+            controller: controller,
+            fontName: "Helvetica",
+            fontSize: 16,
+            onTextMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            }
+        )
+        let coordinator = wrapper.makeCoordinator()
+        let layoutManager = NSTextLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 600, height: 400))
+        layoutManager.textContainer = container
+        controller.textContentStorage.addTextLayoutManager(layoutManager)
+        let textView = NativeTextView(
+            frame: NSRect(x: 0, y: 0, width: 600, height: 400),
+            textContainer: container
+        )
+        textView.isEditable = true
+        coordinator.adopt(textView, text: text.value)
+
+        let responder = TextFinderResponder()
+        var didApplyNestedPatch = false
+        responder.onStringWillChange = {
+            guard !didApplyNestedPatch else { return }
+            didApplyNestedPatch = true
+            #expect(controller.applyPatch(
+                range: NSRange(location: 2, length: 1),
+                replacement: "I"
+            ))
+        }
+        controller.textFinderActionResponder = responder
+
+        text.value = "- item\n"
+        let outerSucceeded = coordinator.spliceExternalText(
+            text.value,
+            in: textView,
+            publishesMutation: false
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        #expect(outerSucceeded)
+        #expect(textView.string == "- Item\n")
+        #expect(text.value == "- Item\n")
+        #expect(coordinator.lastSyncedText == "- Item\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 2, length: 1),
+            replacement: "I"
+        )])
+        #expect(text.bindingWriteCount == 0)
+        #expect(controller.documentRevision == 2)
+        #expect(controller.documentMutationDelta == 1)
+        #expect(controller.documentPublishedDelta == 0)
+
+        didApplyNestedPatch = false
+        responder.onStringWillChange = {
+            guard !didApplyNestedPatch else { return }
+            didApplyNestedPatch = true
+            #expect(controller.applyPatch(
+                range: NSRange(location: 0, length: 0),
+                replacement: "# "
+            ))
+        }
+        text.value = "- Item\n!"
+        let shiftedOuterSucceeded = coordinator.spliceExternalText(
+            text.value,
+            in: textView,
+            publishesMutation: false
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        #expect(shiftedOuterSucceeded)
+        #expect(textView.string == "# - Item\n!")
+        #expect(text.value == "# - Item\n!")
+        #expect(coordinator.lastSyncedText == "# - Item\n!")
+        #expect(mutations == [
+            MarkdownTextMutation(
+                range: NSRange(location: 2, length: 1),
+                replacement: "I"
+            ),
+            MarkdownTextMutation(
+                range: NSRange(location: 0, length: 0),
+                replacement: "# "
+            )
+        ])
+        #expect(text.bindingWriteCount == 0)
+        #expect(controller.documentRevision == 4)
+        #expect(controller.documentMutationDelta == 4)
+        #expect(controller.documentPublishedDelta == 2)
+    }
+
     @Test("Find invalidates before every projected client-string change")
     func findInvalidatesAllProjectionChanges() {
         let controller = MarkdownEditorController()

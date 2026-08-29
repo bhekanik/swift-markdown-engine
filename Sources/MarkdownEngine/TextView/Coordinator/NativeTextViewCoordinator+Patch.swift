@@ -24,9 +24,12 @@ extension NativeTextViewCoordinator {
         registersUndo: Bool = false,
         publishesMutation: Bool = true
     ) -> Bool {
-        let length = (textView.string as NSString).length
+        let sourceText = textView.string
+        let length = (sourceText as NSString).length
         guard patch.range.location != NSNotFound, patch.range.location >= 0,
               patch.range.length >= 0, NSMaxRange(patch.range) <= length else { return false }
+        let sourceController = editorController
+        let sourceRevision = sourceController?.documentRevision
 
         // Close any open coalescing group BEFORE touching registration —
         // NSUndoManager rejects a disable that straddles an open group.
@@ -39,6 +42,12 @@ extension NativeTextViewCoordinator {
         defer { isProgrammaticEdit = false }
 
         guard textView.shouldChangeText(in: patch.range, replacementString: patch.replacement) else {
+            return false
+        }
+        guard textView.string == sourceText,
+              editorController === sourceController,
+              sourceController?.documentRevision == sourceRevision else {
+            discardPendingTextProposal()
             return false
         }
         if !publishesMutation {
@@ -70,7 +79,7 @@ extension NativeTextViewCoordinator {
     ) -> Bool {
         let currentDisplay = textView.string
         guard currentDisplay != newText else { return true }
-        let patch = MarkdownTextPatch.diff(from: currentDisplay, to: newText)
+        var patch = MarkdownTextPatch.diff(from: currentDisplay, to: newText)
 
         // A change spanning nearly the whole document is a different document,
         // not an edit: the rebuild is both cheaper and the correct reset.
@@ -78,16 +87,35 @@ extension NativeTextViewCoordinator {
         let touched = max(patch.range.length, (patch.replacement as NSString).length)
         guard oldLength == 0 || touched * 4 < oldLength * 3 else { return false }
 
-        let selection = textView.selectedRange()
+        var selection = textView.selectedRange()
         let previousSyncedText = lastSyncedText
         if !publishesMutation {
             lastSyncedText = newText
         }
-        guard applyProgrammaticPatch(
+        let controllerBeforeEdit = editorController
+        let revisionBeforeEdit = controllerBeforeEdit?.documentRevision
+        var applied = applyProgrammaticPatch(
             patch,
             to: textView,
             publishesMutation: publishesMutation
-        ) else {
+        )
+        if !applied,
+           textView.string != currentDisplay,
+           let controller = controllerBeforeEdit,
+           editorController === controller,
+           let revisionBeforeEdit,
+           let records = controller.documentMutationRecords(after: revisionBeforeEdit),
+           !records.isEmpty,
+           let rebasedPatch = rebased(patch, through: records) {
+            patch = rebasedPatch
+            selection = textView.selectedRange()
+            applied = applyProgrammaticPatch(
+                patch,
+                to: textView,
+                publishesMutation: publishesMutation
+            )
+        }
+        guard applied else {
             lastSyncedText = previousSyncedText
             return false
         }
@@ -96,8 +124,34 @@ extension NativeTextViewCoordinator {
                        withLength: (patch.replacement as NSString).length)
             .clamped(toLength: (textView.string as NSString).length)
         textView.setSelectedRange(adjusted)
-        lastSyncedText = newText
+        lastSyncedText = textView.string
         return true
+    }
+
+    private func discardPendingTextProposal() {
+        pendingTextMutation = nil
+        pendingTextMutationStartLength = nil
+        pendingEditedRange = nil
+        pendingEditCount = 0
+        pendingBacktickWindow = nil
+        pendingExtFenceTouched = false
+        pendingListStructureEdit = false
+        pendingPreEditActiveTokenIndices = nil
+    }
+
+    private func rebased(
+        _ patch: MarkdownTextPatch,
+        through records: [MarkdownDocumentMutationRecord]
+    ) -> MarkdownTextPatch? {
+        var range = patch.range
+        for record in records {
+            guard let mutation = record.mutation else { return nil }
+            range = range.adjusting(
+                forReplacementOf: mutation.range,
+                withLength: (mutation.replacement as NSString).length
+            )
+        }
+        return MarkdownTextPatch(range: range, replacement: patch.replacement)
     }
 }
 
