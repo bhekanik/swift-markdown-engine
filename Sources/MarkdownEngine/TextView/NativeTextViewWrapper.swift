@@ -295,14 +295,18 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
 
         context.coordinator.textView = textView
         context.coordinator.editorController = owner
-        if let owner {
-            owner.attach(textView: textView, coordinator: context.coordinator)
-            context.coordinator.reportAttachment(textView)
+        if let owner, owner.attach(
+                textView: textView,
+                coordinator: context.coordinator,
+                notifyEmbedder: false
+            ) {
+            context.coordinator.pendingAttachmentAnnouncement = owner
         } else {
             // Refused above. Ask to be handed the controller when it frees up:
             // SwiftUI builds a remount's replacement before dismantling the
             // original and then sends this view no further update pass, so
             // re-checking on the next pass would never happen.
+            context.coordinator.editorController = nil
             context.coordinator.isDetachedFromDocument = true
             controller?.awaitSlot(context.coordinator)
             context.coordinator.reportAttachment(nil)
@@ -512,11 +516,15 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // not go on to write the document's configuration or rebuild its
         // storage from this view's text.
         if let controller,
-           !controller.attach(textView: textView, coordinator: context.coordinator) {
+           !controller.attach(
+                textView: textView,
+                coordinator: context.coordinator,
+                notifyEmbedder: false
+           ) {
             return
         }
-        if controller != nil {
-            context.coordinator.reportAttachment(textView)
+        if controllerChanged, let controller {
+            context.coordinator.pendingAttachmentAnnouncement = controller
         }
         context.coordinator.configuration.undo = configuration.undo
         textView.configuration.undo = configuration.undo
@@ -747,6 +755,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         context.coordinator.didInitialFormatting = true
+        context.coordinator.reportPendingAttachment(textView)
     }
 
     public func makeCoordinator() -> Coordinator {

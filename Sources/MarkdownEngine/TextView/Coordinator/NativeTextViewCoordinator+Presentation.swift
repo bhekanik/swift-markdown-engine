@@ -113,6 +113,7 @@ extension NativeTextViewCoordinator {
             notifyEmbedder: false
         ) else { return }
         editorController = controller
+        pendingAttachmentAnnouncement = controller
         isDetachedFromDocument = false
 
         // Zeroed on both sides of the move, as in a controller swap: detaching
@@ -130,7 +131,6 @@ extension NativeTextViewCoordinator {
         invalidateParseCache()
         rebuildTextStorageAndStyle(textView, from: authoritative, invalidateLayout: true)
         didInitialFormatting = true
-        controller.notifyEmbedderOfAttachment(textView)
-        reportAttachment(textView)
+        reportPendingAttachment(textView)
     }
 }

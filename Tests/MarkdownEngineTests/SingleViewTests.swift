@@ -22,6 +22,21 @@ import Testing
 @MainActor
 @Suite("One view per controller", .serialized)
 struct SingleViewTests {
+    private final class MutableTextBox {
+        var value: String
+
+        init(_ value: String) {
+            self.value = value
+        }
+
+        func apply(_ mutation: MarkdownTextMutation) {
+            value = (value as NSString).replacingCharacters(
+                in: mutation.range,
+                with: mutation.replacement
+            )
+        }
+    }
+
 
     private final class TextFinderResponder: MarkdownTextFinderActionResponder {
         var performed: [NSTextFinder.Action] = []
@@ -305,6 +320,144 @@ struct SingleViewTests {
                 onCodeBlockSelectionChange: { _ in recordCodeSelection?(label) }
             )
         }
+    }
+
+    private struct MutableAttachmentHost: View {
+        let text: MutableTextBox
+        let controller: MarkdownEditorController
+        let onMutation: (MarkdownTextMutation) -> Void
+        let onAttachmentChange: (NSTextView?) -> Void
+
+        var body: some View {
+            NativeTextViewWrapper(
+                text: Binding(
+                    get: { text.value },
+                    set: { text.value = $0 }
+                ),
+                controller: controller,
+                fontName: "Helvetica",
+                fontSize: 16,
+                onAttachmentChange: onAttachmentChange,
+                onTextMutation: onMutation
+            )
+        }
+    }
+
+    @Test("controller onAttach is a post-sync mutable boundary")
+    func controllerOnAttachCanPatchInitialMount() throws {
+        _ = NSApplication.shared
+        let text = MutableTextBox("alpha\n")
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        var attachmentCount = 0
+        controller.onAttach = { textView in
+            guard textView != nil else { return }
+            attachmentCount += 1
+            #expect(controller.applyPatch(
+                range: NSRange(location: 0, length: 5),
+                replacement: "ALPHA"
+            ))
+        }
+        let root = MutableAttachmentHost(
+            text: text,
+            controller: controller,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { _ in }
+        )
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        host.rootView = root
+        host.layoutSubtreeIfNeeded()
+
+        #expect(attachmentCount == 1)
+        #expect(text.value == "ALPHA\n")
+        #expect(controller.textView?.string == "ALPHA\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 0, length: 5),
+            replacement: "ALPHA"
+        )])
+    }
+
+    @Test("wrapper attachment is post-sync after a controller swap")
+    func wrapperAttachmentCanPatchControllerSwap() throws {
+        _ = NSApplication.shared
+        let text = MutableTextBox("alpha\n")
+        let first = MarkdownEditorController()
+        let second = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        var events: [String] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: first,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        second.onAttach = { textView in
+            if textView != nil { events.append("controller") }
+        }
+        let secondRoot = MutableAttachmentHost(
+            text: text,
+            controller: second,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { textView in
+                guard textView != nil else { return }
+                events.append("wrapper")
+                #expect(second.applyPatch(
+                    range: NSRange(location: 0, length: 5),
+                    replacement: "ALPHA"
+                ))
+            }
+        )
+        host.rootView = secondRoot
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        host.rootView = secondRoot
+        host.layoutSubtreeIfNeeded()
+
+        #expect(events == ["controller", "wrapper"])
+        #expect(text.value == "ALPHA\n")
+        #expect(second.textView?.string == "ALPHA\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 0, length: 5),
+            replacement: "ALPHA"
+        )])
+    }
+
+    @Test("reentrant teardown does not publish a late wrapper attachment")
+    func controllerAttachmentCanTearDownSynchronously() {
+        _ = NSApplication.shared
+        let text = MutableTextBox("alpha\n")
+        let controller = MarkdownEditorController()
+        var wrapperAttachments: [Bool] = []
+        controller.onAttach = { textView in
+            guard let textView else { return }
+            controller.detach(textView: textView)
+        }
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: controller,
+            onMutation: { _ in },
+            onAttachmentChange: { wrapperAttachments.append($0 != nil) }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        #expect(!controller.isAttached)
+        #expect(wrapperAttachments.isEmpty)
     }
 
     @Test("a controller swap detaches through the outgoing callback")

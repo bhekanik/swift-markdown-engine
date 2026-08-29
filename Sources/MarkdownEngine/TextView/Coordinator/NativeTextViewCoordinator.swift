@@ -68,6 +68,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// embedder owns it and outlives the editor.
     weak var editorController: MarkdownEditorController?
     var onAttachmentChange: ((NSTextView?) -> Void)?
+    /// Reserved controller whose public attachment callbacks must wait until
+    /// `updateNSView` has synchronized storage, styling, and host callbacks.
+    weak var pendingAttachmentAnnouncement: MarkdownEditorController?
     private weak var reportedAttachedTextView: NSTextView?
     private var didReportAttachment = false
 
@@ -81,6 +84,23 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         didReportAttachment = true
         reportedAttachedTextView = textView
         onAttachmentChange?(textView)
+    }
+
+    func reportPendingAttachment(_ textView: NSTextView) {
+        guard let controller = pendingAttachmentAnnouncement else { return }
+        pendingAttachmentAnnouncement = nil
+        guard editorController === controller,
+              controller.textView === textView else { return }
+        controller.notifyEmbedderOfAttachment(textView)
+        guard editorController === controller,
+              controller.textView === textView else {
+            if editorController === controller {
+                editorController = nil
+                isDetachedFromDocument = true
+            }
+            return
+        }
+        reportAttachment(textView)
     }
 
     /// Where this VIEW was in each document it has shown, keyed by controller
