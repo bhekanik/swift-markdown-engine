@@ -702,7 +702,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // change is too large to be an edit.
         if !isNodeSwitch, !rawSourceModeChanged, !fontChanged, !controllerChanged,
            context.coordinator.didInitialFormatting,
-           context.coordinator.spliceExternalText(textToSynchronize, in: textView) {
+           context.coordinator.spliceExternalText(
+               textToSynchronize,
+               in: textView,
+               publishesMutation: false
+           ) {
             textView.recalcOverscroll(for: nsView)
             (nsView as? ClampedScrollView)?.clampToInsets()
             context.coordinator.onTextMutation = onTextMutation

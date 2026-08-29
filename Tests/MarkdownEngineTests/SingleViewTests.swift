@@ -24,6 +24,7 @@ import Testing
 struct SingleViewTests {
     private final class MutableTextBox {
         var value: String
+        private(set) var bindingWriteCount = 0
 
         init(_ value: String) {
             self.value = value
@@ -34,6 +35,11 @@ struct SingleViewTests {
                 in: mutation.range,
                 with: mutation.replacement
             )
+        }
+
+        func writeFromBinding(_ value: String) {
+            bindingWriteCount += 1
+            self.value = value
         }
     }
 
@@ -332,7 +338,7 @@ struct SingleViewTests {
             NativeTextViewWrapper(
                 text: Binding(
                     get: { text.value },
-                    set: { text.value = $0 }
+                    set: { text.writeFromBinding($0) }
                 ),
                 controller: controller,
                 fontName: "Helvetica",
@@ -773,16 +779,18 @@ struct SingleViewTests {
         let targetView = try #require(documentA.textView)
 
         text.value = "bravo\n"
-        let targetRoot = MutableAttachmentHost(
-            text: text,
-            controller: documentB,
-            onMutation: { mutation in
-                mutationsB.append(mutation)
-                text.apply(mutation)
-            },
-            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
-        )
-        host.rootView = targetRoot
+        func targetRoot() -> MutableAttachmentHost {
+            MutableAttachmentHost(
+                text: text,
+                controller: documentB,
+                onMutation: { mutation in
+                    mutationsB.append(mutation)
+                    text.apply(mutation)
+                },
+                onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+            )
+        }
+        host.rootView = targetRoot()
         host.layoutSubtreeIfNeeded()
 
         #expect(documentA.textView == nil)
@@ -792,7 +800,7 @@ struct SingleViewTests {
         #expect(targetView.textLayoutManager?.textContentManager !== documentB.textContentStorage)
         #expect(events == ["A:on", "A:off", "B:off"])
 
-        host.rootView = targetRoot
+        host.rootView = targetRoot()
         host.layoutSubtreeIfNeeded()
         #expect(documentA.textView == nil)
         #expect(documentB.textView === occupyingView)
@@ -806,21 +814,60 @@ struct SingleViewTests {
         #expect(mutationsA.isEmpty)
         #expect(mutationsB.isEmpty)
 
+        #expect(documentB.applyPatch(
+            range: NSRange(location: 0, length: 5),
+            replacement: "BRAVO"
+        ))
+        #expect(occupyingView.string == "BRAVO\n")
+        #expect(text.value == "bravo\n")
+        #expect(mutationsB.isEmpty)
+
         documentB.detach(textView: occupyingView)
 
         #expect(documentB.textView === targetView)
         #expect(targetView.textLayoutManager?.textContentManager === documentB.textContentStorage)
-        #expect(targetView.string == "bravo\n")
+        #expect(targetView.string == "BRAVO\n")
+        #expect(text.value == "bravo\n")
+        #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
         #expect(events == ["A:on", "A:off", "B:off", "B:on"])
+        #expect(mutationsB.isEmpty)
+        #expect(text.bindingWriteCount == 0)
 
-        targetView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        host.rootView = targetRoot()
+        host.layoutSubtreeIfNeeded()
+        #expect(targetView.string == "BRAVO\n")
+        #expect(text.value == "bravo\n")
+        #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
+        #expect(events == ["A:on", "A:off", "B:off", "B:on"])
+        #expect(mutationsB.isEmpty)
+        #expect(text.bindingWriteCount == 0)
+
+        text.value = "BRAVO\n"
+        host.rootView = targetRoot()
+        host.layoutSubtreeIfNeeded()
+        #expect(targetView.string == "BRAVO\n")
+        #expect(mutationsB.isEmpty)
+        #expect(text.bindingWriteCount == 0)
+
+        text.value = "BRAVO!\n"
+        host.rootView = targetRoot()
+        host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.02))
-        #expect(text.value == "bravo!\n")
-        #expect(targetView.string == "bravo!\n")
+        #expect(targetView.string == "BRAVO!\n")
+        #expect(text.value == "BRAVO!\n")
+        #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
+        #expect(events == ["A:on", "A:off", "B:off", "B:on"])
+        #expect(mutationsB.isEmpty)
+        #expect(text.bindingWriteCount == 0)
+
+        targetView.insertText("?", replacementRange: NSRange(location: 6, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        #expect(text.value == "BRAVO!?\n")
+        #expect(targetView.string == "BRAVO!?\n")
         #expect(mutationsA.isEmpty)
         #expect(mutationsB == [MarkdownTextMutation(
-            range: NSRange(location: 5, length: 0),
-            replacement: "!"
+            range: NSRange(location: 6, length: 0),
+            replacement: "?"
         )])
     }
 
