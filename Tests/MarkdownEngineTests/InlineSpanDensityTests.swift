@@ -89,9 +89,9 @@ struct InlineSpanDensityTests {
             extensions: [HighlightExtension(), StrikethroughExtension()]
         ).extensionRegistry
 
-        // Escapes in image descriptions and explicit reference labels intentionally
-        // reset the semantic baseline; focused tests pin each changed tree.
-        #expect(fingerprint(corpus(4000), registry: registry) == "970d45f9c52518d2")
+        // Definition-aware references and balanced bracket association intentionally
+        // reset the semantic baseline; CommonMarkReferenceConformanceTests pins them.
+        #expect(fingerprint(corpus(4000), registry: registry) == "745e22fdbb6b4878")
     }
 
     // MARK: - Cost curve

@@ -165,6 +165,8 @@ enum MarkdownASTStyler {
                 case .referenceLink(let range, _, _, _, let children):
                     ranges.append(range)
                     walk(children)
+                case .referenceImage(let range, _, _, _, _):
+                    ranges.append(range)
                 case .autolink(let range, _, _):
                     ranges.append(range)
                 case .emphasis(_, _, _, let children):
@@ -205,6 +207,8 @@ enum MarkdownASTStyler {
                         ranges.append(range)
                     }
                     walk(children)
+                case .referenceImage(let range, _, _, _, _):
+                    ranges.append(range)
                 case .link(_, _, _, _, _, let children), .emphasis(_, _, _, let children):
                     walk(children)
                 case .ext(let node):
@@ -1017,6 +1021,16 @@ enum MarkdownASTStyler {
                     if let title { attrs.append((title, [.foregroundColor: ctx.theme.mutedText])) }
                 }
 
+            case .referenceImage(let range, _, let label, let markers, let children):
+                attrs.append((range, [.spellingState: 0]))
+                if ctx.isActive(range) {
+                    for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+                    if let label {
+                        attrs.append((label, [.foregroundColor: ctx.theme.mutedText]))
+                    }
+                }
+                styleInlines(children, font: font, ctx: ctx, into: &attrs)
+
             case .referenceLink(let range, let textRange, let label, let markers, let children):
                 styleReferenceLink(
                     range: range,
@@ -1050,7 +1064,7 @@ enum MarkdownASTStyler {
 
             case .autolink(let range, let urlRange, let markers):
                 attrs.append((range, [.spellingState: 0]))
-                if let url = linkURL(for: urlRange, ctx: ctx, emailFallback: true) {
+                if let url = linkURL(for: urlRange, ctx: ctx, autolink: true) {
                     attrs.append((urlRange, [
                         .link: url,
                         .underlineStyle: NSUnderlineStyle.single.rawValue,
@@ -1145,13 +1159,13 @@ enum MarkdownASTStyler {
     private static func linkURL(
         for range: NSRange,
         ctx: Ctx,
-        emailFallback: Bool = false
+        autolink: Bool = false
     ) -> URL? {
         guard range.length > 0 else { return nil }
-        var value = MarkdownLinkSyntax.unescapedText(in: ctx.ns, range: range)
-        if emailFallback, value.contains("@"), !value.contains(":") {
-            value = "mailto:\(value)"
-        } else if !value.contains("://") && !value.hasPrefix("mailto:") {
+        var value = autolink
+            ? MarkdownLinkSyntax.autolinkDestination(in: ctx.ns, range: range)
+            : MarkdownLinkSyntax.unescapedText(in: ctx.ns, range: range)
+        if !value.contains("://") && !value.hasPrefix("mailto:") {
             value = "https://\(value)"
         }
         return URL(string: value)
@@ -1220,6 +1234,22 @@ enum MarkdownASTStyler {
                     )
                     hideInlineTarget(markers: markers, ctx: ctx, into: &attrs)
                 }
+            case .referenceImage(let range, _, _, let markers, let children):
+                let active = forceReveal || ctx.isActive(range)
+                if !active {
+                    shrink(markers, ctx: ctx, into: &attrs)
+                    if markers.count >= 4 {
+                        let target = NSRange(
+                            location: markers[2].location,
+                            length: NSMaxRange(markers[3]) - markers[2].location
+                        )
+                        attrs.append((target, [
+                            .font: ctx.inlineMarkerFont,
+                            .foregroundColor: NSColor.clear,
+                        ]))
+                    }
+                }
+                shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
             case .referenceLink(let range, let textRange, let label, let markers, let children):
                 let active = forceReveal || ctx.isActive(range)
                 if ctx.referenceDefinition(textRange: textRange, label: label) != nil, !active {

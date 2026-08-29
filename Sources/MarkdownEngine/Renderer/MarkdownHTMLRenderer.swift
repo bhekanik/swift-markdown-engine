@@ -31,7 +31,10 @@ public enum MarkdownHTMLRenderer {
             guard case .linkDefinition(_, let label, let destination, let title) = block else { continue }
             let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label)
             if definitions[key] == nil {
-                definitions[key] = ReferenceDefinition(destination: destination, title: title)
+                definitions[key] = ReferenceDefinition(
+                    destination: MarkdownLinkSyntax.unescapedText(in: ns, range: destination),
+                    title: title.map { MarkdownLinkSyntax.unescapedText(in: ns, range: $0) }
+                )
             }
         }
         let env = Env(registry: registry,
@@ -47,8 +50,8 @@ public enum MarkdownHTMLRenderer {
 
     /// Extension lookup threaded through the render walk.
     private struct ReferenceDefinition {
-        let destination: NSRange
-        let title: NSRange?
+        let destination: String
+        let title: String?
     }
 
     private struct Env {
@@ -115,7 +118,11 @@ public enum MarkdownHTMLRenderer {
             .map(stripQuoteMarkers)
             .filter { !$0.isEmpty }
             .joined(separator: "\n")
-        let inlines = InlineParser.parse(stripped, registry: env.registry)
+        let inlines = InlineParser.parse(
+            stripped,
+            registry: env.registry,
+            referenceDefinitions: Set(env.definitions.keys)
+        )
         return "<blockquote>\(renderInlines(inlines, ns: stripped as NSString, env: env))</blockquote>"
     }
 
@@ -281,19 +288,22 @@ public enum MarkdownHTMLRenderer {
             let label = MarkdownLinkSyntax.unescapedText(in: ns, range: alt)
             return "<img src=\"\(escape(destination))\" alt=\"\(escape(label))\"\(titleAttribute)>"
 
+        case .referenceImage(_, let alt, let label, _, let children):
+            let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label ?? alt)
+            guard let definition = env.definitions[key] else {
+                return escape(ns.substring(with: alt))
+            }
+            let titleAttribute = definition.title.map { " title=\"\(escape($0))\"" } ?? ""
+            let imageLabel = InlineParser.plainText(children, source: ns)
+            return "<img src=\"\(escape(definition.destination))\" alt=\"\(escape(imageLabel))\"\(titleAttribute)>"
+
         case .referenceLink(let range, let textRange, let label, _, let children):
             let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label ?? textRange)
             guard let definition = env.definitions[key] else {
                 return escape(MarkdownLinkSyntax.unescapedText(in: ns, range: range))
             }
-            let titleAttribute = definition.title.map {
-                " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""
-            } ?? ""
-            let destination = MarkdownLinkSyntax.unescapedText(
-                in: ns,
-                range: definition.destination
-            )
-            return "<a href=\"\(escape(destination))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
+            let titleAttribute = definition.title.map { " title=\"\(escape($0))\"" } ?? ""
+            return "<a href=\"\(escape(definition.destination))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
 
         case .footnoteReference(_, let label, _):
             return "<sup>\(escape(ns.substring(with: label)))</sup>"
@@ -303,7 +313,7 @@ public enum MarkdownHTMLRenderer {
 
         case .autolink(_, let url, _):
             let label = ns.substring(with: url)
-            let destination = label.contains("@") && !label.contains(":") ? "mailto:\(label)" : label
+            let destination = MarkdownLinkSyntax.autolinkDestination(in: ns, range: url)
             return "<a href=\"\(escape(destination))\">\(escape(label))</a>"
 
         case .ext(let node):

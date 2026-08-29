@@ -191,7 +191,12 @@ private enum SemanticCollector {
 
         case .table(let range):
             collect(
-                InlineParser.parse(source, range: range, registry: registry),
+                InlineParser.parse(
+                    source,
+                    range: range,
+                    registry: registry,
+                    referenceDefinitions: Set(linkDefinitions.keys)
+                ),
                 source: source,
                 linkDefinitions: linkDefinitions,
                 footnoteDefinitions: footnoteDefinitions,
@@ -255,6 +260,21 @@ private enum SemanticCollector {
                     )
                 ))
 
+            case .referenceImage(_, let alt, let label, _, let children):
+                let key = MarkdownLinkSyntax.normalizedLabel(
+                    in: source,
+                    range: label ?? alt
+                )
+                if let definition = linkDefinitions[key] {
+                    result.append(Candidate(
+                        range: alt,
+                        role: .image(
+                            label: InlineParser.plainText(children, source: source),
+                            destination: definition.destination
+                        )
+                    ))
+                }
+
             case .referenceLink(_, let textRange, let label, _, let children):
                 let key = MarkdownLinkSyntax.normalizedLabel(
                     in: source,
@@ -286,7 +306,10 @@ private enum SemanticCollector {
             case .autolink(_, let url, _):
                 result.append(Candidate(
                     range: url,
-                    role: .link(destination: source.substring(with: url))
+                    role: .link(destination: MarkdownLinkSyntax.autolinkDestination(
+                        in: source,
+                        range: url
+                    ))
                 ))
 
             case .ext(let node):

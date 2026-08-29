@@ -126,7 +126,7 @@ enum MarkdownLinkSyntax {
         guard indent <= 3,
               i < end, ns.character(at: i) == lbracket,
               i + 1 < end, ns.character(at: i + 1) != caret,
-              let close = closingBracket(in: ns, from: i + 1, end: end),
+              let close = closingReferenceLabel(in: ns, from: i + 1, end: end),
               close + 1 < end, ns.character(at: close + 1) == colon else { return nil }
 
         let label = NSRange(location: i + 1, length: close - i - 1)
@@ -281,6 +281,20 @@ enum MarkdownLinkSyntax {
         return nil
     }
 
+    static func closingReferenceLabel(in ns: NSString, from start: Int, end: Int) -> Int? {
+        var i = start
+        while i < end {
+            let character = ns.character(at: i)
+            if character == lf || character == cr { return nil }
+            if !isEscaped(i, in: ns) {
+                if character == lbracket { return nil }
+                if character == rbracket { return i }
+            }
+            i += 1
+        }
+        return nil
+    }
+
     private static func closingBracket(in ns: NSString, from start: Int, end: Int) -> Int? {
         var i = start
         while i < end {
@@ -325,6 +339,11 @@ enum MarkdownLinkSyntax {
             i += 1
         }
         return String(decoding: codeUnits, as: UTF16.self)
+    }
+
+    static func autolinkDestination(in ns: NSString, range: NSRange) -> String {
+        let label = ns.substring(with: range)
+        return label.contains("@") && !label.contains(":") ? "mailto:\(label)" : label
     }
 
     static func escapeMarkerRanges(in ns: NSString, range: NSRange) -> [NSRange] {

@@ -464,6 +464,8 @@ extension MarkdownStyler {
             case .link(let range, _, _, _, _, _),
                  .image(let range, _, _, _, _):
                 appendPlain(range, font)
+            case .referenceImage(_, _, _, _, let children):
+                recurse(children, font)
             case .referenceLink(_, _, _, _, let children):
                 recurse(children, font)
             case .footnoteReference(_, let label, _),

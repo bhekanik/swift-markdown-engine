@@ -42,6 +42,10 @@ enum InlineASTAdapter {
         case .image(let range, let alt, _, _, let markers):
             result.append(MarkdownToken(kind: .imageLink, range: range, contentRange: alt, markerRanges: markers))
 
+        case .referenceImage(let range, let alt, _, let markers, let children):
+            result.append(MarkdownToken(kind: .imageLink, range: range, contentRange: alt, markerRanges: markers))
+            children.forEach { append($0, to: &result) }
+
         case .referenceLink(_, _, _, _, let children):
             children.forEach { append($0, to: &result) }
 

@@ -394,6 +394,18 @@ private enum MarkdownTextProjectionBuilder {
                 removals += outside(alt, in: range)
                 removals += MarkdownLinkSyntax.escapeMarkerRanges(in: source, range: alt)
 
+            case .referenceImage(let range, let alt, let label, _, let children):
+                removals += outside(alt, in: range)
+                if let label {
+                    removals += MarkdownLinkSyntax.escapeMarkerRanges(in: source, range: label)
+                }
+                collect(
+                    children,
+                    source: source,
+                    referenceDefinitions: referenceDefinitions,
+                    removals: &removals
+                )
+
             case .referenceLink(let range, let textRange, let label, _, let children):
                 let definitionLabel = label ?? textRange
                 let key = MarkdownLinkSyntax.normalizedLabel(in: source, range: definitionLabel)
@@ -598,7 +610,12 @@ private enum MarkdownTextProjectionBuilder {
                 guard end > start else { continue }
                 let cell = NSRange(location: start, length: end - start)
                 collect(
-                    InlineParser.parse(source, range: cell, registry: registry),
+                    InlineParser.parse(
+                        source,
+                        range: cell,
+                        registry: registry,
+                        referenceDefinitions: referenceDefinitions
+                    ),
                     source: source,
                     referenceDefinitions: referenceDefinitions,
                     removals: &removals

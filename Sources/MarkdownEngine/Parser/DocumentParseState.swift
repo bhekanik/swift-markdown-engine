@@ -26,6 +26,7 @@ final class DocumentParseState {
     private var chars: [unichar] = []
     private var blocks: [Block] = []
     private var tokens: [MarkdownToken] = []
+    private var referenceDefinitions: Set<String> = []
     private var valid = false
     /// Registry fingerprint the stored tokens were computed under; a change
     /// (extension registered/unregistered at runtime) invalidates the splice
@@ -47,7 +48,7 @@ final class DocumentParseState {
     func invalidate() {
         lock.lock()
         valid = false
-        chars = []; blocks = []; tokens = []
+        chars = []; blocks = []; tokens = []; referenceDefinitions = []
         lock.unlock()
     }
 
@@ -63,6 +64,7 @@ final class DocumentParseState {
         let prevChars = chars
         let prevBlocks = blocks
         let prevTokens = tokens
+        let prevReferenceDefinitions = referenceDefinitions
         let wasValid = valid && fingerprint == registry.fingerprint
         lock.unlock()
 
@@ -120,17 +122,25 @@ final class DocumentParseState {
             )?.blocks
         }
         let resolvedBlocks = newBlocks ?? BlockParser.computeBlocks(text, registry: registry)
+        let resolvedReferenceDefinitions = DocumentAST.referenceDefinitionLabels(in: resolvedBlocks, ns)
         let tBlocks = DispatchTime.now().uptimeNanoseconds
 
         // 3. Tokens: prefix/suffix reuse on the same diff, full fallback.
         var newTokens: [MarkdownToken]?
-        if wasValid, let diff, newBlocks != nil {
+        if wasValid, let diff, newBlocks != nil,
+           prevReferenceDefinitions == resolvedReferenceDefinitions {
             newTokens = MarkdownTokenizer.incrementalTokens(
                 oldChars: prevChars, prevTokens: prevTokens,
-                newChars: newChars, blocks: resolvedBlocks, ns: ns, diff: diff, registry: registry
+                newChars: newChars, blocks: resolvedBlocks, ns: ns, diff: diff, registry: registry,
+                referenceDefinitions: resolvedReferenceDefinitions
             )?.tokens
         }
-        let resolvedTokens = newTokens ?? MarkdownTokenizer.fullTokens(blocks: resolvedBlocks, ns: ns, registry: registry)
+        let resolvedTokens = newTokens ?? MarkdownTokenizer.fullTokens(
+            blocks: resolvedBlocks,
+            ns: ns,
+            registry: registry,
+            referenceDefinitions: resolvedReferenceDefinitions
+        )
         let tTokens = DispatchTime.now().uptimeNanoseconds
         PerfTrace.note {
             let ms = { (a: UInt64, b: UInt64) in String(format: "%.2f", Double(b - a) / 1_000_000) }
@@ -143,6 +153,7 @@ final class DocumentParseState {
         chars = newChars
         blocks = resolvedBlocks
         tokens = resolvedTokens
+        referenceDefinitions = resolvedReferenceDefinitions
         valid = true
         fingerprint = registry.fingerprint
         lock.unlock()
@@ -151,7 +162,14 @@ final class DocumentParseState {
         // DocumentAST.parse, smart-input helpers) take the memcmp hit instead
         // of splicing against a one-keystroke-stale cache every time.
         BlockParser.seedCache(chars: newChars, blocks: resolvedBlocks, fingerprint: registry.fingerprint)
-        MarkdownTokenizer.seedCache(chars: newChars, tokens: resolvedTokens, fingerprint: registry.fingerprint)
+        MarkdownTokenizer.seedCache(
+            chars: newChars,
+            tokens: resolvedTokens,
+            fingerprint: MarkdownTokenizer.cacheFingerprint(
+                registry: registry,
+                referenceDefinitions: resolvedReferenceDefinitions
+            )
+        )
         return resolvedTokens
     }
 }

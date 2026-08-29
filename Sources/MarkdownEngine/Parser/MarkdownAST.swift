@@ -127,12 +127,14 @@ enum DocumentAST {
         } else {
             relevant = blocks.map { ($0, nil) }
         }
+        let referenceDefinitions = referenceDefinitionLabels(in: blocks, ns)
         return relevant.flatMap { candidate in
             nodes(
                 for: candidate.block,
                 ns: ns,
                 scopedRanges: candidate.scopes,
-                registry: registry
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
             )
         }
     }
@@ -182,7 +184,13 @@ enum DocumentAST {
         return scopedRanges.contains { NSIntersectionRange($0, range).length > 0 }
     }
 
-    private static func nodes(for block: Block, ns: NSString, scopedRanges: [NSRange]?, registry: ExtensionRegistry) -> [BlockNode] {
+    private static func nodes(
+        for block: Block,
+        ns: NSString,
+        scopedRanges: [NSRange]?,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
+    ) -> [BlockNode] {
         let scoped = inScope(block.range, scopedRanges)
         switch block.kind {
         case .frontmatter:
@@ -190,19 +198,48 @@ enum DocumentAST {
         case .linkDefinition:
             return linkDefinitions(in: block.range, ns)
         case .footnoteDefinition:
-            return [footnoteDefinition(in: block.range, ns, scoped: scoped, registry: registry)]
+            return [footnoteDefinition(
+                in: block.range,
+                ns,
+                scoped: scoped,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            )]
         case .paragraph:
-            return [.paragraph(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range, registry: registry) : [])]
+            return [.paragraph(
+                range: block.range,
+                inlines: scoped ? InlineParser.parse(
+                    ns,
+                    range: block.range,
+                    registry: registry,
+                    referenceDefinitions: referenceDefinitions
+                ) : []
+            )]
         case .heading:
-            return [heading(block.range, ns, scoped: scoped, registry: registry)]
+            return [heading(
+                block.range,
+                ns,
+                scoped: scoped,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            )]
         case .blockquote:
-            return [.blockquote(range: block.range, inlines: scoped ? InlineParser.parse(ns, range: block.range, registry: registry) : [])]
+            return [.blockquote(
+                range: block.range,
+                inlines: scoped ? InlineParser.parse(
+                    ns,
+                    range: block.range,
+                    registry: registry,
+                    referenceDefinitions: referenceDefinitions
+                ) : []
+            )]
         case .list:
             return [list(
                 block.range,
                 ns,
                 scopedRanges: scopedRanges,
-                registry: registry
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
             )]
         case .fencedCode:
             return [.codeBlock(range: block.range)]
@@ -213,8 +250,28 @@ enum DocumentAST {
         case .blank:
             return [.blank(range: block.range)]
         case .ext(let id):
-            return [extensionBlock(id: id, range: block.range, ns, scoped: scoped, registry: registry)]
+            return [extensionBlock(
+                id: id,
+                range: block.range,
+                ns,
+                scoped: scoped,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            )]
         }
+    }
+
+    static func referenceDefinitionLabels(
+        in blocks: [Block],
+        _ ns: NSString
+    ) -> Set<String> {
+        Set(blocks.flatMap { block -> [String] in
+            guard block.kind == .linkDefinition else { return [] }
+            return linkDefinitions(in: block.range, ns).compactMap { node in
+                guard case .linkDefinition(_, let label, _, _) = node else { return nil }
+                return MarkdownLinkSyntax.normalizedLabel(in: ns, range: label)
+            }
+        })
     }
 
     private static func linkDefinitions(in range: NSRange, _ ns: NSString) -> [BlockNode] {
@@ -244,14 +301,20 @@ enum DocumentAST {
         in range: NSRange,
         _ ns: NSString,
         scoped: Bool,
-        registry: ExtensionRegistry
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
     ) -> BlockNode {
         let firstLine = NSIntersectionRange(
             ns.lineRange(for: NSRange(location: range.location, length: 0)),
             range
         )
         guard let header = MarkdownLinkSyntax.footnoteDefinitionHeader(in: ns, lineRange: firstLine) else {
-            return .paragraph(range: range, inlines: scoped ? InlineParser.parse(ns, range: range, registry: registry) : [])
+            return .paragraph(range: range, inlines: scoped ? InlineParser.parse(
+                ns,
+                range: range,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            ) : [])
         }
 
         var markers = header.markers
@@ -283,14 +346,25 @@ enum DocumentAST {
             label: header.label,
             markers: markers,
             inlines: scoped && body.length > 0
-                ? InlineParser.parse(ns, range: body, registry: registry) : []
+                ? InlineParser.parse(
+                    ns,
+                    range: body,
+                    registry: registry,
+                    referenceDefinitions: referenceDefinitions
+                ) : []
         )
     }
 
     /// Split an extension fenced block into open fence line, optional closing
     /// fence line, and the content between; inlines parse over the content.
-    private static func extensionBlock(id: String, range: NSRange, _ ns: NSString,
-                                       scoped: Bool, registry: ExtensionRegistry) -> BlockNode {
+    private static func extensionBlock(
+        id: String,
+        range: NSRange,
+        _ ns: NSString,
+        scoped: Bool,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
+    ) -> BlockNode {
         let fence = registry.blockEntry(for: id)?.fence ?? ""
         let end = NSMaxRange(range)
         // Opening fence line including its terminator — via lineRange, the
@@ -321,12 +395,23 @@ enum DocumentAST {
             closeFence: closeFence,
             contentRange: contentRange,
             inlines: scoped && contentRange.length > 0
-                ? InlineParser.parse(ns, range: contentRange, registry: registry) : []
+                ? InlineParser.parse(
+                    ns,
+                    range: contentRange,
+                    registry: registry,
+                    referenceDefinitions: referenceDefinitions
+                ) : []
         ))
     }
 
     /// Excluding setext syntax keeps the underline out of inline styling.
-    private static func heading(_ range: NSRange, _ ns: NSString, scoped: Bool = true, registry: ExtensionRegistry = .empty) -> BlockNode {
+    private static func heading(
+        _ range: NSRange,
+        _ ns: NSString,
+        scoped: Bool = true,
+        registry: ExtensionRegistry = .empty,
+        referenceDefinitions: Set<String> = []
+    ) -> BlockNode {
         let end = NSMaxRange(range)
         var i = range.location
         while i < end, ns.character(at: i) == space || ns.character(at: i) == tab { i += 1 }
@@ -346,7 +431,12 @@ enum DocumentAST {
                 level: level,
                 range: range,
                 markers: [NSIntersectionRange(underline, range)],
-                inlines: scoped ? InlineParser.parse(ns, range: contentRange, registry: registry) : []
+                inlines: scoped ? InlineParser.parse(
+                    ns,
+                    range: contentRange,
+                    registry: registry,
+                    referenceDefinitions: referenceDefinitions
+                ) : []
             )
         }
 
@@ -359,14 +449,20 @@ enum DocumentAST {
         let contentRange = NSRange(location: contentStart, length: contentEnd - contentStart)
 
         return .heading(level: level, range: range, markers: markers,
-                        inlines: scoped ? InlineParser.parse(ns, range: contentRange, registry: registry) : [])
+                        inlines: scoped ? InlineParser.parse(
+                            ns,
+                            range: contentRange,
+                            registry: registry,
+                            referenceDefinitions: referenceDefinitions
+                        ) : [])
     }
 
     private static func list(
         _ range: NSRange,
         _ ns: NSString,
         scopedRanges: [NSRange]? = nil,
-        registry: ExtensionRegistry = .empty
+        registry: ExtensionRegistry = .empty,
+        referenceDefinitions: Set<String> = []
     ) -> BlockNode {
         var itemRanges: [NSRange] = []
         var cursor = range.location
@@ -396,6 +492,7 @@ enum DocumentAST {
                 ns,
                 scoped: scoped,
                 registry: registry,
+                referenceDefinitions: referenceDefinitions,
                 levels: &levels
             )
             if scoped { items.append(item) }
@@ -408,6 +505,7 @@ enum DocumentAST {
         _ ns: NSString,
         scoped: Bool = true,
         registry: ExtensionRegistry = .empty,
+        referenceDefinitions: Set<String> = [],
         levels: inout ListLevelResolver
     ) -> ListItem {
         let end = NSMaxRange(lineRange)
@@ -467,7 +565,12 @@ enum DocumentAST {
         let content = NSRange(location: i, length: max(0, contentEnd - i))
         return ListItem(range: lineRange, marker: marker, ordered: ordered, number: number,
                         checkbox: checkbox, checked: checked, indent: indent, level: level,
-                        contentRange: content, inlines: scoped ? InlineParser.parse(ns, range: content, registry: registry) : [])
+                        contentRange: content, inlines: scoped ? InlineParser.parse(
+                            ns,
+                            range: content,
+                            registry: registry,
+                            referenceDefinitions: referenceDefinitions
+                        ) : [])
     }
 
     private static func isLineBreak(_ c: unichar) -> Bool { c == 0x0A || c == 0x0D }

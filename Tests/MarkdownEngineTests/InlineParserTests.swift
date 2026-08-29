@@ -354,19 +354,19 @@ struct InlineParserTests {
 
     @Test("full, collapsed, and shortcut reference links preserve their label shape")
     func referenceLinks() {
-        #expect(InlineParser.parse("[text][ID]") == [
+        #expect(InlineParser.parse("[text][ID]", referenceDefinitions: ["id"]) == [
             .referenceLink(
                 range: r(0, 10), textRange: r(1, 4), label: r(7, 2),
                 markers: [r(0, 1), r(5, 1), r(6, 1), r(9, 1)], children: [.text(r(1, 4))]
             ),
         ])
-        #expect(InlineParser.parse("[text][]") == [
+        #expect(InlineParser.parse("[text][]", referenceDefinitions: ["text"]) == [
             .referenceLink(
                 range: r(0, 8), textRange: r(1, 4), label: nil,
                 markers: [r(0, 1), r(5, 1), r(6, 1), r(7, 1)], children: [.text(r(1, 4))]
             ),
         ])
-        #expect(InlineParser.parse("[ID]") == [
+        #expect(InlineParser.parse("[ID]", referenceDefinitions: ["id"]) == [
             .referenceLink(
                 range: r(0, 4), textRange: r(1, 2), label: nil,
                 markers: [r(0, 1), r(3, 1)], children: [.text(r(1, 2))]
@@ -377,7 +377,10 @@ struct InlineParserTests {
     @Test("explicit reference labels admit escapes without decoding normalization")
     func escapedReferenceLabels() throws {
         let source = #"[foo][ref\[]"#
-        let node = try #require(InlineParser.parse(source).first)
+        let node = try #require(InlineParser.parse(
+            source,
+            referenceDefinitions: [#"ref\["#]
+        ).first)
         guard case let .referenceLink(_, textRange, label, _, _) = node else {
             Issue.record("Expected reference link")
             return
@@ -386,6 +389,16 @@ struct InlineParserTests {
         #expect(ns.substring(with: textRange) == "foo")
         #expect(label.map { ns.substring(with: $0) } == #"ref\["#)
         #expect(label.map { MarkdownLinkSyntax.normalizedLabel(in: ns, range: $0) } == #"ref\["#)
+
+        for invalid in ["[foo][ref[]", #"[foo][ref\\[]"#] {
+            #expect(InlineParser.parse(
+                invalid,
+                referenceDefinitions: [#"ref\["#]
+            ).allSatisfy {
+                if case .referenceLink = $0 { return false }
+                return true
+            })
+        }
     }
 
     @Test("footnote references claim the whole bracket run")

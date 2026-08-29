@@ -158,6 +158,14 @@ struct BlockParserTests {
         #expect(BlockParser.parse(malformed).first?.kind == .paragraph)
     }
 
+    @Test("reference labels reject raw and evenly escaped opening brackets")
+    func invalidReferenceLabelBrackets() {
+        for source in ["[ref[]: /uri", #"[ref\\[]: /uri"#] {
+            #expect(BlockParser.parse(source).allSatisfy { $0.kind != .linkDefinition })
+        }
+        #expect(BlockParser.parse(#"[ref\[]: /uri"#).first?.kind == .linkDefinition)
+    }
+
     @Test("link definitions reject bare destination whitespace and ASCII controls")
     func invalidBareDefinitionEscapes() {
         let invalid = [#"[id]: /a\ b"#, #"[id]: /a\\ b"#]
