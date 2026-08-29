@@ -307,6 +307,11 @@ struct CommonMarkReferenceConformanceTests {
     func inlineRawHTMLOpacity() {
         let labels = [
             #"outer <x attr="> ["> tail"#,
+            #"outer <x a="["> tail"#,
+            "outer <x\ta=\"[\"> tail",
+            "outer <x\na=\"[\"> tail",
+            "outer <x\r\na=\"[\"> tail",
+            "outer <x\ra=\"[\"> tail",
             "outer </x> tail",
             "outer <!-- [opaque] --> tail",
             "outer <?test [opaque] ?> tail",
@@ -347,6 +352,50 @@ struct CommonMarkReferenceConformanceTests {
             #expect(!MarkdownHTMLRenderer.html(from: source)
                 .hasPrefix("<p><a href=\"/uri\">outer"))
         }
+
+        for invalidWhitespace in ["\u{00A0}", "\u{000B}"] {
+            let labelPrefix = "[outer <x\(invalidWhitespace)a="
+            let source = "\(labelPrefix)[> tail][ref]\n\n[ref]: /uri\n"
+            #expect(linkCounts(in: DocumentAST.parse(source)).references == 1)
+            #expect(MarkdownHTMLRenderer.html(from: source)
+                .hasPrefix("<p>\(escapedHTML(labelPrefix))<a href=\"/uri\">&gt; tail</a>"))
+            #expect(MarkdownTextProjection.make(markdown: source).string
+                == "\(labelPrefix)> tail\n\n")
+
+            let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+            #expect(accessibility.text.string == "\(labelPrefix)> tail\n\n")
+            #expect(accessibility.spans.contains {
+                $0.role == .link(destination: "/uri")
+                    && $0.visibleRange == NSRange(
+                        location: (labelPrefix as NSString).length,
+                        length: 6
+                    )
+            })
+
+            let styled = MarkdownRendering.attributedString(
+                for: source,
+                fontName: NSFont.systemFont(ofSize: 16).fontName,
+                fontSize: 16
+            )
+            #expect(styled.attribute(.link, at: 1, effectiveRange: nil) == nil)
+            #expect(styled.attribute(
+                .link,
+                at: (source as NSString).range(of: "> tail").location,
+                effectiveRange: nil
+            ) != nil)
+        }
+    }
+
+    @Test("unclosed raw HTML terminators are searched once per form")
+    func malformedRawHTMLOperationBound() {
+        let comments = Array(repeating: "<!--", count: 128).joined()
+        #expect(InlineParser.rawHTMLTerminatorSearchCount(in: comments) == 1)
+
+        let processingInstructions = Array(repeating: "<?", count: 128).joined()
+        #expect(InlineParser.rawHTMLTerminatorSearchCount(in: processingInstructions) == 1)
+
+        let cdata = Array(repeating: "<![CDATA[", count: 128).joined()
+        #expect(InlineParser.rawHTMLTerminatorSearchCount(in: cdata) == 1)
     }
 
     @Test("CommonMark 604/605 email autolinks share HTML, styling and accessibility destinations")

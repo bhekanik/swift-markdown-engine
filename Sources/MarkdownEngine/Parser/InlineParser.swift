@@ -101,6 +101,20 @@ enum InlineParser {
         registry: ExtensionRegistry = .empty,
         referenceDefinitions: Set<String> = []
     ) -> [InlineNode] {
+        parse(
+            text,
+            registry: registry,
+            referenceDefinitions: referenceDefinitions,
+            rawHTMLTerminators: RawHTMLTerminatorCache()
+        )
+    }
+
+    private static func parse(
+        _ text: String,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
+    ) -> [InlineNode] {
         let ns = text as NSString
         let len = ns.length
         guard len > 0 else { return [] }
@@ -112,7 +126,8 @@ enum InlineParser {
             len: len,
             claimed: ClaimedIndex(claimed),
             registry: registry,
-            referenceDefinitions: referenceDefinitions
+            referenceDefinitions: referenceDefinitions,
+            rawHTMLTerminators: rawHTMLTerminators
         )
         claimed += scanHardBreaks(ns, len: len, claimed: ClaimedIndex(claimed))
         let emphasis = resolveEmphasis(ns, len: len, claimed: ClaimedIndex(claimed))
@@ -123,6 +138,17 @@ enum InlineParser {
             registry: registry,
             referenceDefinitions: referenceDefinitions
         )
+    }
+
+    static func rawHTMLTerminatorSearchCount(in text: String) -> Int {
+        let terminators = RawHTMLTerminatorCache()
+        _ = parse(
+            text,
+            registry: .empty,
+            referenceDefinitions: [],
+            rawHTMLTerminators: terminators
+        )
+        return terminators.searchCount
     }
 
     /// Parse the inline content of `range` within `ns`, returning nodes in absolute document coordinates.
@@ -168,6 +194,16 @@ enum InlineParser {
                 return r
             }
         }
+    }
+
+    private final class RawHTMLTerminatorCache {
+        // After a search reaches this parse region's end, no later opener can
+        // have that terminator either. Remembering the miss keeps malformed
+        // opener runs from rescanning every remaining suffix.
+        var commentExhausted = false
+        var processingInstructionExhausted = false
+        var cdataExhausted = false
+        var searchCount = 0
     }
 
     /// The already-claimed ranges, in a form the later passes can consult in
@@ -298,7 +334,8 @@ enum InlineParser {
         len: Int,
         claimed: ClaimedIndex,
         registry: ExtensionRegistry,
-        referenceDefinitions: Set<String>
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> [Span] {
         var claimed = claimed
         // A candidate overlapping a claimed span is rejected unless that escape
@@ -335,7 +372,8 @@ enum InlineParser {
                 len,
                 at: i,
                 registry: registry,
-                referenceDefinitions: referenceDefinitions
+                referenceDefinitions: referenceDefinitions,
+                rawHTMLTerminators: rawHTMLTerminators
             ),
                !hasDisallowedClaimedOverlap(span) {
                 spans.append(span)
@@ -352,14 +390,16 @@ enum InlineParser {
         _ len: Int,
         at i: Int,
         registry: ExtensionRegistry,
-        referenceDefinitions: Set<String>
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> Span? {
         if let span = matchBuiltIn(
             ns,
             len,
             at: i,
             registry: registry,
-            referenceDefinitions: referenceDefinitions
+            referenceDefinitions: referenceDefinitions,
+            rawHTMLTerminators: rawHTMLTerminators
         ) { return span }
         // Extensions match after every built-in, in registration order.
         let c = ns.character(at: i)
@@ -377,7 +417,8 @@ enum InlineParser {
         _ len: Int,
         at i: Int,
         registry: ExtensionRegistry,
-        referenceDefinitions: Set<String>
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> Span? {
         let c = ns.character(at: i)
         let c1 = peek(ns, i + 1, len)
@@ -387,7 +428,8 @@ enum InlineParser {
                 len,
                 start: i,
                 registry: registry,
-                referenceDefinitions: referenceDefinitions
+                referenceDefinitions: referenceDefinitions,
+                rawHTMLTerminators: rawHTMLTerminators
             )
         }
         if c == lbracket, c1 == caret { return matchFootnoteReference(ns, len, start: i) }
@@ -397,11 +439,12 @@ enum InlineParser {
                 len,
                 start: i,
                 registry: registry,
-                referenceDefinitions: referenceDefinitions
+                referenceDefinitions: referenceDefinitions,
+                rawHTMLTerminators: rawHTMLTerminators
             )
         }
         if c == langle {
-            return matchAutolink(ns, len, start: i) ?? matchInlineRawHTML(ns, len, start: i)
+            return matchAngleSpan(ns, len, start: i, terminators: rawHTMLTerminators)
         }
         return nil
     }
@@ -452,20 +495,26 @@ enum InlineParser {
         (idx >= 0 && idx < len) ? ns.character(at: idx) : nil
     }
 
+    private static func isASCIIAlpha(_ character: unichar) -> Bool {
+        (0x41...0x5A).contains(character) || (0x61...0x7A).contains(character)
+    }
+
     /// `![ alt ]( url )`, `![ alt ][ label ]`, or shortcut `![ alt ]`.
     private static func matchImage(
         _ ns: NSString,
         _ len: Int,
         start i: Int,
         registry: ExtensionRegistry,
-        referenceDefinitions: Set<String>
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> Span? {
         let altStart = i + 2
         guard let closeBracket = closingLinkTextBracket(
             in: ns,
             from: altStart,
             end: len,
-            registry: registry
+            registry: registry,
+            rawHTMLTerminators: rawHTMLTerminators
         ) else {
             return nil
         }
@@ -532,14 +581,16 @@ enum InlineParser {
         _ len: Int,
         start i: Int,
         registry: ExtensionRegistry,
-        referenceDefinitions: Set<String>
+        referenceDefinitions: Set<String>,
+        rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> Span? {
         let textStart = i + 1
         guard let closeBracket = closingLinkTextBracket(
             in: ns,
             from: textStart,
             end: len,
-            registry: registry
+            registry: registry,
+            rawHTMLTerminators: rawHTMLTerminators
         ),
               closeBracket > textStart else { return nil }
         let textRange = NSRange(location: textStart, length: closeBracket - textStart)
@@ -611,7 +662,8 @@ enum InlineParser {
         in ns: NSString,
         from start: Int,
         end: Int,
-        registry: ExtensionRegistry
+        registry: ExtensionRegistry,
+        rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> Int? {
         var depth = 0
         var i = start
@@ -626,8 +678,12 @@ enum InlineParser {
                     }
                 }
                 if character == langle,
-                   let angleSpan = matchAutolink(ns, end, start: i)
-                    ?? matchInlineRawHTML(ns, end, start: i) {
+                   let angleSpan = matchAngleSpan(
+                        ns,
+                        end,
+                        start: i,
+                        terminators: rawHTMLTerminators
+                    ) {
                     i = NSMaxRange(angleSpan.fullRange)
                     continue
                 } else if character == lbracket {
@@ -714,12 +770,92 @@ enum InlineParser {
     private static let emailAutolink = try! NSRegularExpression(
         pattern: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"#
     )
-    private static let inlineRawHTML = try! NSRegularExpression(
-        pattern: #"(?:<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9:._-]*(?:\s*=\s*(?:[^\"'=<>`\x00-\x20]+|'[^']*'|\"[^\"]*\"))?)*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>|<!-->|<!--->|<!--[\s\S]*?-->|<[?][\s\S]*?[?]>|<![A-Za-z]+[^>]*>|<!\[CDATA\[[\s\S]*?\]\]>)"#
-    )
+    private static let inlineRawHTMLTag: NSRegularExpression = {
+        let lineEnding = #"(?:\r\n|[\n\r])"#
+        let whitespace = #"(?:[ \t]+|[ \t]*"# + lineEnding + #"[ \t]*)"#
+        let optionalWhitespace = #"[ \t]*(?:"# + lineEnding + #"[ \t]*)?"#
+        let tagName = #"[A-Za-z][A-Za-z0-9-]*"#
+        let attributeName = #"[A-Za-z_:][A-Za-z0-9:._-]*"#
+        let attributeValue = #"(?:[^\"'=<>`\x00-\x20]+|'[^']*'|\"[^\"]*\")"#
+        let attribute = whitespace + attributeName
+            + #"(?:"# + optionalWhitespace + #"="# + optionalWhitespace + attributeValue + #")?"#
+        return try! NSRegularExpression(
+            pattern: #"(?:<"# + tagName + #"(?:"# + attribute + #")*"#
+                + optionalWhitespace + #"/?>|</"# + tagName + optionalWhitespace + #">)"#
+        )
+    }()
 
-    private static func matchInlineRawHTML(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        guard let match = inlineRawHTML.firstMatch(
+    private static func matchAngleSpan(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Span? {
+        let next = peek(ns, i + 1, len)
+        if next == bang || next == 0x3F || next == 0x2F {
+            return matchInlineRawHTML(ns, len, start: i, terminators: terminators)
+        }
+        return matchInlineRawHTML(ns, len, start: i, terminators: terminators)
+            ?? matchAutolink(ns, len, start: i)
+    }
+
+    private static func matchInlineRawHTML(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Span? {
+        if matches(ns, len, at: i, chars: [langle, bang, 0x2D, 0x2D]) {
+            if matches(ns, len, at: i, chars: [langle, bang, 0x2D, 0x2D, rangle]) {
+                return .rawHTML(range: NSRange(location: i, length: 5))
+            }
+            if matches(ns, len, at: i, chars: [langle, bang, 0x2D, 0x2D, 0x2D, rangle]) {
+                return .rawHTML(range: NSRange(location: i, length: 6))
+            }
+            guard !terminators.commentExhausted else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: "-->",
+                range: NSRange(location: i + 4, length: len - i - 4)
+            )
+            guard close.location != NSNotFound else {
+                terminators.commentExhausted = true
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
+        }
+        if matches(ns, len, at: i, chars: [langle, 0x3F]) {
+            guard !terminators.processingInstructionExhausted else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: "?>",
+                range: NSRange(location: i + 2, length: len - i - 2)
+            )
+            guard close.location != NSNotFound else {
+                terminators.processingInstructionExhausted = true
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
+        }
+        if matches(ns, len, at: i, chars: [langle, bang, lbracket, 0x43, 0x44, 0x41, 0x54, 0x41, lbracket]) {
+            guard !terminators.cdataExhausted else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: "]]>",
+                range: NSRange(location: i + 9, length: len - i - 9)
+            )
+            guard close.location != NSNotFound else {
+                terminators.cdataExhausted = true
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
+        }
+        if matches(ns, len, at: i, chars: [langle, bang]),
+           let first = peek(ns, i + 2, len), isASCIIAlpha(first),
+           let close = findChar(ns, len, from: i + 3, char: rangle) {
+            return .rawHTML(range: NSRange(location: i, length: close + 1 - i))
+        }
+        guard let match = inlineRawHTMLTag.firstMatch(
             in: ns as String,
             options: .anchored,
             range: NSRange(location: i, length: len - i)
