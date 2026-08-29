@@ -165,4 +165,20 @@ struct AccessibilityTests {
         ) == source)
         #expect(textView.accessibilityCustomRotors().isEmpty)
     }
+
+    @Test("line lookup follows NSString line boundaries")
+    func lineLookupSupportsDocumentSeparators() throws {
+        let textView = view(text: "alpha\rbeta\u{2028}gamma")
+        let visibleString = try #require(textView.accessibilityString(
+            for: NSRange(location: 0, length: textView.accessibilityNumberOfCharacters())
+        ))
+        let visible = visibleString as NSString
+
+        #expect(textView.accessibilityLine(for: visible.range(of: "alpha").location) == 0)
+        #expect(textView.accessibilityLine(for: visible.range(of: "beta").location) == 1)
+        #expect(textView.accessibilityLine(for: visible.range(of: "gamma").location) == 2)
+        #expect(textView.accessibilityRange(forLine: 1) == visible.lineRange(
+            for: NSRange(location: visible.range(of: "beta").location, length: 0)
+        ))
+    }
 }

@@ -132,8 +132,13 @@ extension NativeTextView {
         let text = markdownAccessibility.text.string as NSString
         guard index >= 0, index <= text.length else { return NSNotFound }
         var line = 0
-        for offset in 0..<index where text.character(at: offset) == 0x0A {
+        var cursor = 0
+        while cursor < index {
+            let range = text.lineRange(for: NSRange(location: cursor, length: 0))
+            let next = NSMaxRange(range)
+            guard next > cursor, index >= next else { break }
             line += 1
+            cursor = next
         }
         return line
     }

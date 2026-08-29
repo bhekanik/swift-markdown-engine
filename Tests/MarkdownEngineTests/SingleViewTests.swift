@@ -159,6 +159,25 @@ struct SingleViewTests {
         #expect(responder.stringWillChangeCount == 1)
     }
 
+    @Test("the projection cache follows text and presentation changes")
+    func projectionCacheInvalidation() {
+        let controller = MarkdownEditorController()
+        let (textView, coordinator) = view(on: controller, text: "==alpha==\n")
+
+        #expect(controller.textProjection.string == "==alpha==\n")
+        #expect(controller.textProjection.string == "==alpha==\n")
+
+        coordinator.configuration.extensions = [HighlightExtension()]
+        #expect(controller.textProjection.string == "alpha\n")
+
+        coordinator.configuration.rawSourceMode = true
+        #expect(controller.textProjection.string == "==alpha==\n")
+
+        coordinator.configuration.rawSourceMode = false
+        textView.insertText("!", replacementRange: NSRange(location: 7, length: 0))
+        #expect(controller.textProjection.string == "alpha!\n")
+    }
+
     // MARK: - A refused view reaches nothing
 
     private struct TwoViewHost: View {

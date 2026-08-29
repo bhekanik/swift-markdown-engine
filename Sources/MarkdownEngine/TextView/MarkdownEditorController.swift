@@ -104,6 +104,18 @@ public final class MarkdownEditorController {
     /// for why there is only ever one.
     private var attachment: Attachment?
 
+    private struct TextProjectionCacheKey: Equatable {
+        let textView: ObjectIdentifier
+        let generation: UInt64
+        let rawSourceMode: Bool
+        let extensionRegistryFingerprint: String
+    }
+
+    private var textProjectionCache: (
+        key: TextProjectionCacheKey,
+        projection: MarkdownTextProjection
+    )?
+
     /// Undo manager handed to the text view when
     /// ``MarkdownEditorConfiguration/undo`` is ``UndoPolicy/external``.
     /// Ignored under ``UndoPolicy/engine``.
@@ -143,10 +155,22 @@ public final class MarkdownEditorController {
         guard let textView else {
             return .identity("")
         }
-        return .make(
-            markdown: textView.string,
-            configuration: coordinator?.configuration ?? .default
+        let configuration = coordinator?.configuration ?? .default
+        let key = TextProjectionCacheKey(
+            textView: ObjectIdentifier(textView),
+            generation: coordinator?.parseGeneration ?? 0,
+            rawSourceMode: configuration.rawSourceMode,
+            extensionRegistryFingerprint: configuration.extensionRegistry.fingerprint
         )
+        if let cached = textProjectionCache, cached.key == key {
+            return cached.projection
+        }
+        let projection = MarkdownTextProjection.make(
+            markdown: textView.string,
+            configuration: configuration
+        )
+        textProjectionCache = (key, projection)
+        return projection
     }
 
     /// Scroll a UTF-16 display range through TextKit 2 fragment geometry.
@@ -390,6 +414,7 @@ public final class MarkdownEditorController {
         }
         if wasAttached || attachment?.textView == nil { attachment = nil }
         guard wasAttached else { return }
+        textProjectionCache = nil
         onAttach?(nil)
         if let waiter = waiting {
             waiting = nil
