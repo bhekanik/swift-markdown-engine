@@ -47,7 +47,15 @@ extension NativeTextViewCoordinator {
         documentId: String,
         text: String
     ) {
+        let sourceText = textView.string
+        let sourceController = editorController
+        let sourceRevision = sourceController?.documentRevision
         notifyTextFinderClientStringWillChange(in: textView)
+        let authoritativeText = textView.string == sourceText
+                && editorController === sourceController
+                && sourceController?.documentRevision == sourceRevision
+            ? text
+            : textView.string
         if rawSourceMode {
             enterRawSourceMode(textView)
         } else {
@@ -60,7 +68,7 @@ extension NativeTextViewCoordinator {
 
         rebuildTextStorageAndStyle(
             textView,
-            from: text,
+            from: authoritativeText,
             invalidateLayout: true,
             notifyTextFinder: false
         )

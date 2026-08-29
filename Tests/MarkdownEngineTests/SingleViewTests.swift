@@ -22,6 +22,14 @@ import Testing
 @MainActor
 @Suite("One view per controller", .serialized)
 struct SingleViewTests {
+    private func drainMainQueue() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+
     private final class MutableTextBox {
         var value: String
         private(set) var bindingWriteCount = 0
@@ -183,7 +191,7 @@ struct SingleViewTests {
     }
 
     @Test("a Binding splice stays programmatic across a nested Finder patch")
-    func bindingSpliceSurvivesReentrantFinderPatch() {
+    func bindingSpliceSurvivesReentrantFinderPatch() async {
         _ = NSApplication.shared
         let controller = MarkdownEditorController()
         let text = MutableTextBox("- item")
@@ -231,7 +239,7 @@ struct SingleViewTests {
             in: textView,
             publishesMutation: false
         )
-        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        await drainMainQueue()
 
         #expect(outerResult == .applied)
         #expect(textView.string == "- Item\n")
@@ -261,7 +269,7 @@ struct SingleViewTests {
             in: textView,
             publishesMutation: false
         )
-        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        await drainMainQueue()
 
         #expect(shiftedOuterResult == .applied)
         #expect(textView.string == "# - Item\n!")
@@ -338,7 +346,7 @@ struct SingleViewTests {
     }
 
     @Test("Finder edits touching a Binding patch boundary defer reconciliation")
-    func bindingSpliceDefersBoundaryConflicts() {
+    func bindingSpliceDefersBoundaryConflicts() async {
         func runCase(
             nestedPatch: MarkdownTextPatch,
             bindingAfterNestedPatch: String,
@@ -346,7 +354,7 @@ struct SingleViewTests {
             expectedDelta: Int,
             expectedSelectionAfterNestedPatch: Int,
             expectedFinalRevision: UInt64
-        ) {
+        ) async {
             let controller = MarkdownEditorController()
             let text = MutableTextBox("abc")
             var mutations: [MarkdownTextMutation] = []
@@ -438,10 +446,15 @@ struct SingleViewTests {
                 location: expectedSelectionAfterNestedPatch,
                 length: 0
             ))
+
+            await drainMainQueue()
+            #expect(textView.string == text.value)
+            #expect(coordinator.lastSyncedText == text.value)
+            #expect(text.bindingWriteCount == 0)
         }
 
         _ = NSApplication.shared
-        runCase(
+        await runCase(
             nestedPatch: MarkdownTextPatch(
                 range: NSRange(location: 1, length: 1),
                 replacement: "B"
@@ -452,7 +465,7 @@ struct SingleViewTests {
             expectedSelectionAfterNestedPatch: 3,
             expectedFinalRevision: 1
         )
-        runCase(
+        await runCase(
             nestedPatch: MarkdownTextPatch(
                 range: NSRange(location: 1, length: 0),
                 replacement: "Y"
@@ -463,7 +476,7 @@ struct SingleViewTests {
             expectedSelectionAfterNestedPatch: 4,
             expectedFinalRevision: 2
         )
-        runCase(
+        await runCase(
             nestedPatch: MarkdownTextPatch(
                 range: NSRange(location: 2, length: 1),
                 replacement: ""
@@ -474,6 +487,268 @@ struct SingleViewTests {
             expectedSelectionAfterNestedPatch: 2,
             expectedFinalRevision: 2
         )
+    }
+
+    @Test("Find replacement refuses ranges invalidated by its pre-change callback")
+    func findReplacementRejectsReentrantStaleRanges() {
+        func runCase(replaceAll: Bool) {
+            let controller = MarkdownEditorController()
+            let (textView, coordinator) = view(on: controller, text: "alpha alpha")
+            var mutations: [MarkdownTextMutation] = []
+            coordinator.onTextMutation = { mutations.append($0) }
+            let responder = TextFinderResponder()
+            var didApplyNestedPatch = false
+            responder.onStringWillChange = {
+                guard !didApplyNestedPatch else { return }
+                didApplyNestedPatch = true
+                #expect(controller.applyPatch(
+                    range: NSRange(location: 0, length: 6),
+                    replacement: ""
+                ))
+            }
+            controller.textFinderActionResponder = responder
+
+            if replaceAll {
+                coordinator.handleReplaceAll(query: "alpha", replacement: "X")
+            } else {
+                coordinator.handleReplaceCurrent(
+                    query: "alpha",
+                    replacement: "X",
+                    currentIndex: 1
+                )
+            }
+
+            #expect(textView.string == "alpha")
+            #expect(mutations == [MarkdownTextMutation(
+                range: NSRange(location: 0, length: 6),
+                replacement: ""
+            )])
+            #expect(controller.documentRevision == 1)
+            #expect(coordinator.pendingTextMutation == nil)
+            #expect(coordinator.pendingTextMutationStartLength == nil)
+            #expect(coordinator.pendingEditedRange == nil)
+            #expect(coordinator.pendingEditCount == 0)
+        }
+
+        runCase(replaceAll: false)
+        runCase(replaceAll: true)
+
+        let wrapper = NativeTextViewWrapper(
+            text: .constant("alpha alpha"),
+            fontName: "Helvetica",
+            fontSize: 16
+        )
+        let coordinator = wrapper.makeCoordinator()
+        let textView = NativeTextView(
+            frame: NSRect(x: 0, y: 0, width: 600, height: 400)
+        )
+        textView.isEditable = true
+        coordinator.adopt(textView, text: "alpha alpha")
+
+        coordinator.handleReplaceAll(query: "alpha", replacement: "X")
+
+        #expect(textView.string == "X X")
+    }
+
+    @Test("rebuild defers stale input after a Finder callback edits storage")
+    func rebuildDoesNotOverwriteReentrantFinderPatch() async {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let text = MutableTextBox("alpha")
+        var mutations: [MarkdownTextMutation] = []
+        let wrapper = NativeTextViewWrapper(
+            text: Binding(
+                get: { text.value },
+                set: { text.writeFromBinding($0) }
+            ),
+            controller: controller,
+            fontName: "Helvetica",
+            fontSize: 16,
+            onTextMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            }
+        )
+        let coordinator = wrapper.makeCoordinator()
+        let layoutManager = NSTextLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 600, height: 400))
+        layoutManager.textContainer = container
+        controller.textContentStorage.addTextLayoutManager(layoutManager)
+        let textView = NativeTextView(
+            frame: NSRect(x: 0, y: 0, width: 600, height: 400),
+            textContainer: container
+        )
+        textView.isEditable = true
+        coordinator.adopt(textView, text: text.value)
+
+        let responder = TextFinderResponder()
+        var didApplyNestedPatch = false
+        responder.onStringWillChange = {
+            guard !didApplyNestedPatch else { return }
+            didApplyNestedPatch = true
+            #expect(controller.applyPatch(
+                range: NSRange(location: 0, length: 1),
+                replacement: "A"
+            ))
+        }
+        controller.textFinderActionResponder = responder
+
+        text.value = "omega"
+        coordinator.rebuildTextStorageAndStyle(textView, from: text.value)
+        await drainMainQueue()
+
+        #expect(textView.string == "Alpha")
+        #expect(text.value == "Amega")
+        #expect(coordinator.lastSyncedText == "Alpha")
+        #expect(text.bindingWriteCount == 0)
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 0, length: 1),
+            replacement: "A"
+        )])
+        #expect(controller.documentRevision == 1)
+
+        coordinator.rebuildTextStorageAndStyle(textView, from: text.value)
+        #expect(textView.string == "Amega")
+        #expect(coordinator.lastSyncedText == "Amega")
+        #expect(mutations.count == 1)
+        #expect(text.bindingWriteCount == 0)
+    }
+
+    @Test("presentation flips keep edits made by the Finder callback")
+    func presentationChangeDoesNotOverwriteReentrantFinderPatch() async {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let text = MutableTextBox("alpha")
+        var mutations: [MarkdownTextMutation] = []
+        let wrapper = NativeTextViewWrapper(
+            text: Binding(
+                get: { text.value },
+                set: { text.writeFromBinding($0) }
+            ),
+            controller: controller,
+            fontName: "Helvetica",
+            fontSize: 16,
+            onTextMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            }
+        )
+        let coordinator = wrapper.makeCoordinator()
+        let layoutManager = NSTextLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 600, height: 400))
+        layoutManager.textContainer = container
+        controller.textContentStorage.addTextLayoutManager(layoutManager)
+        let textView = NativeTextView(
+            frame: NSRect(x: 0, y: 0, width: 600, height: 400),
+            textContainer: container
+        )
+        textView.isEditable = true
+        coordinator.adopt(textView, text: text.value)
+
+        let responder = TextFinderResponder()
+        var nestedPatch = MarkdownTextPatch(
+            range: NSRange(location: 0, length: 1),
+            replacement: "A"
+        )
+        var didApplyNestedPatch = false
+        responder.onStringWillChange = {
+            guard !didApplyNestedPatch else { return }
+            didApplyNestedPatch = true
+            #expect(controller.applyPatch(
+                range: nestedPatch.range,
+                replacement: nestedPatch.replacement
+            ))
+        }
+        controller.textFinderActionResponder = responder
+
+        let enteringSnapshot = text.value
+        coordinator.applyPresentationChange(
+            to: true,
+            in: textView,
+            documentId: "doc",
+            text: enteringSnapshot
+        )
+        await drainMainQueue()
+        #expect(textView.string == "Alpha")
+        #expect(text.value == "Alpha")
+        #expect(coordinator.lastSyncedText == "Alpha")
+
+        nestedPatch = MarkdownTextPatch(
+            range: NSRange(location: 2, length: 1),
+            replacement: "P"
+        )
+        didApplyNestedPatch = false
+        let leavingSnapshot = text.value
+        coordinator.applyPresentationChange(
+            to: false,
+            in: textView,
+            documentId: "doc",
+            text: leavingSnapshot
+        )
+        await drainMainQueue()
+
+        #expect(textView.string == "AlPha")
+        #expect(text.value == "AlPha")
+        #expect(coordinator.lastSyncedText == "AlPha")
+        #expect(text.bindingWriteCount == 0)
+        #expect(mutations == [
+            MarkdownTextMutation(
+                range: NSRange(location: 0, length: 1),
+                replacement: "A"
+            ),
+            MarkdownTextMutation(
+                range: NSRange(location: 2, length: 1),
+                replacement: "P"
+            )
+        ])
+        #expect(controller.documentRevision == 2)
+    }
+
+    @Test("the latest rich and raw edits write the Binding once")
+    func typingWritebackUsesLatestLiveText() async {
+        func runCase(rawSourceMode: Bool) async {
+            let controller = MarkdownEditorController()
+            let text = MutableTextBox("alpha")
+            var configuration = MarkdownEditorConfiguration.default
+            configuration.rawSourceMode = rawSourceMode
+            let wrapper = NativeTextViewWrapper(
+                text: Binding(
+                    get: { text.value },
+                    set: { text.writeFromBinding($0) }
+                ),
+                configuration: configuration,
+                controller: controller,
+                fontName: "Helvetica",
+                fontSize: 16,
+                onTextMutation: { _ in }
+            )
+            let coordinator = wrapper.makeCoordinator()
+            let layoutManager = NSTextLayoutManager()
+            let container = NSTextContainer(size: NSSize(width: 600, height: 400))
+            layoutManager.textContainer = container
+            controller.textContentStorage.addTextLayoutManager(layoutManager)
+            let textView = NativeTextView(
+                frame: NSRect(x: 0, y: 0, width: 600, height: 400),
+                textContainer: container
+            )
+            textView.isEditable = true
+            coordinator.adopt(textView, text: text.value)
+
+            textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+            #expect(textView.string == "alpha!")
+            #expect(text.value == "alpha")
+            #expect(coordinator.lastSyncedText == "alpha")
+
+            await drainMainQueue()
+
+            #expect(text.value == "alpha!")
+            #expect(coordinator.lastSyncedText == "alpha!")
+            #expect(text.bindingWriteCount == 1)
+        }
+
+        _ = NSApplication.shared
+        await runCase(rawSourceMode: false)
+        await runCase(rawSourceMode: true)
     }
 
     @Test("Find invalidates before every projected client-string change")

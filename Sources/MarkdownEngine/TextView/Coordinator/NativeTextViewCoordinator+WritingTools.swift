@@ -107,9 +107,7 @@ extension NativeTextViewCoordinator {
             }
             publish(mutation)
         }
-        DispatchQueue.main.async { [self] in
-            writeBindingBack(sourceText)
-        }
+        scheduleBindingWriteBack(sourceText, from: textView)
     }
 
     private func rebasedWritingToolsMutation(

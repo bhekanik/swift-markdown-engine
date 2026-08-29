@@ -66,6 +66,58 @@ extension NativeTextViewCoordinator {
         return true
     }
 
+    func applyProgrammaticPatches(
+        _ patches: [MarkdownTextPatch],
+        to textView: NSTextView,
+        actionName: String? = nil,
+        registersUndo: Bool = false
+    ) -> Bool {
+        let descending = patches.sorted { $0.range.location > $1.range.location }
+        textView.breakUndoCoalescing()
+        isProgrammaticEdit = true
+        defer { isProgrammaticEdit = false }
+        for patch in descending {
+            guard self.textView(
+                textView,
+                shouldChangeTextIn: patch.range,
+                replacementString: patch.replacement
+            ) else {
+                discardPendingTextProposal()
+                return false
+            }
+            discardPendingTextProposal()
+        }
+
+        let undoManager = textView.undoManager
+        if registersUndo { undoManager?.beginUndoGrouping() }
+        defer {
+            if registersUndo {
+                undoManager?.endUndoGrouping()
+                if let actionName { undoManager?.setActionName(actionName) }
+            }
+            textView.breakUndoCoalescing()
+        }
+
+        beginSuppressingTextFinderInvalidation()
+        defer { endSuppressingTextFinderInvalidation() }
+        var selection = textView.selectedRange()
+        for patch in descending {
+            guard applyProgrammaticPatch(
+                patch,
+                to: textView,
+                registersUndo: registersUndo
+            ) else { return false }
+            selection = selection.adjusting(
+                forReplacementOf: patch.range,
+                withLength: (patch.replacement as NSString).length
+            )
+        }
+        textView.setSelectedRange(
+            selection.clamped(toLength: (textView.string as NSString).length)
+        )
+        return true
+    }
+
     /// Reconcile an externally changed `text` binding by splicing the single
     /// changed run instead of rebuilding the whole storage.
     ///
@@ -84,6 +136,9 @@ extension NativeTextViewCoordinator {
         publishesMutation: Bool = true
     ) -> ExternalTextSpliceResult {
         let currentDisplay = textView.string
+        if !publishesMutation {
+            synchronizeWithoutBindingWrite(newText)
+        }
         guard currentDisplay != newText else { return .applied }
         var patch = MarkdownTextPatch.diff(from: currentDisplay, to: newText)
 
@@ -95,9 +150,6 @@ extension NativeTextViewCoordinator {
 
         var selection = textView.selectedRange()
         let previousSyncedText = lastSyncedText
-        if !publishesMutation {
-            lastSyncedText = newText
-        }
         let controllerBeforeEdit = editorController
         let revisionBeforeEdit = controllerBeforeEdit?.documentRevision
         var applied = applyProgrammaticPatch(
@@ -125,7 +177,11 @@ extension NativeTextViewCoordinator {
         }
         guard applied else {
             if wasInvalidated {
-                lastSyncedText = textView.string
+                if !publishesMutation {
+                    synchronizeWithoutBindingWrite(textView.string)
+                } else {
+                    lastSyncedText = textView.string
+                }
                 return .invalidated
             }
             lastSyncedText = previousSyncedText
@@ -136,11 +192,15 @@ extension NativeTextViewCoordinator {
                        withLength: (patch.replacement as NSString).length)
             .clamped(toLength: (textView.string as NSString).length)
         textView.setSelectedRange(adjusted)
-        lastSyncedText = textView.string
+        if !publishesMutation {
+            synchronizeWithoutBindingWrite(textView.string)
+        } else {
+            lastSyncedText = textView.string
+        }
         return .applied
     }
 
-    private func discardPendingTextProposal() {
+    func discardPendingTextProposal() {
         pendingTextMutation = nil
         pendingTextMutationStartLength = nil
         pendingEditedRange = nil

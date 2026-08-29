@@ -36,16 +36,26 @@ extension NativeTextViewCoordinator {
         // the ensureLayout below rebuilds from scratch anyway. This rebuild's own
         // ensureLayout IS that one-shot per-document layout.
         didEnsureLayoutForCurrentDocument = true
+        var displayText = text
         if textView.string != text {
+            let sourceText = textView.string
+            let sourceController = editorController
+            let sourceRevision = sourceController?.documentRevision
             if notifyTextFinder {
                 notifyTextFinderClientStringWillChange(in: textView)
             }
-            textView.string = text
-            parseGeneration &+= 1
+            if textView.string == sourceText,
+               editorController === sourceController,
+               sourceController?.documentRevision == sourceRevision {
+                textView.string = text
+                parseGeneration &+= 1
+            } else {
+                displayText = textView.string
+            }
         }
-        lastSyncedText = text
-        previousDisplayLength = (text as NSString).length
-        let nsDisplay = text as NSString
+        synchronizeWithoutBindingWrite(displayText)
+        previousDisplayLength = (displayText as NSString).length
+        let nsDisplay = displayText as NSString
         // Fresh document baseline: drop the incremental parse state and reseed
         // the backtick census (a stale count from the previous document would
         // force a spurious full-document restyle on the first keystroke).
@@ -70,7 +80,7 @@ extension NativeTextViewCoordinator {
         // pages does the identical work in 78ms. So the whole styled string is built on a
         // DETACHED NSMutableAttributedString and handed to the live storage in ONE
         // transfer — the expensive first-touch happens off the layout-connected storage.
-        let built = NSMutableAttributedString(string: text)
+        let built = NSMutableAttributedString(string: displayText)
         built.setAttributes(baseAttrs, range: fullRange)
 
         // Kept for the end-of-rebuild selection replay (see below); raw mode leaves it nil.
@@ -79,7 +89,7 @@ extension NativeTextViewCoordinator {
             // Base attributes only — the source stays verbatim and unstyled.
             activeTokenIndices = []
         } else {
-            let parsed = parsedDocument(for: text)
+            let parsed = parsedDocument(for: displayText)
             parsedForReplay = parsed
             let tokens = parsed.tokens
             // Hide caret from styling when read-only, else clicks reveal raw token syntax.
@@ -92,7 +102,7 @@ extension NativeTextViewCoordinator {
             )
 
             let ranges = MarkdownStyler.styleAttributes(
-                text: text,
+                text: displayText,
                 fontName: fontName,
                 fontSize: fontSize,
                 layoutBridge: layoutBridge,

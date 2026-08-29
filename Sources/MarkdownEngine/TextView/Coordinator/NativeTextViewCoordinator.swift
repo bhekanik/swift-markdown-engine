@@ -147,7 +147,40 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// the `didEnsureLayoutForCurrentDocument` suppression pattern.
     var isRebuildingDocument = false
     var isNotifyingTextFinderClientStringChange = false
+    /// Batch admission already notified Finder before any requested patch lands.
+    /// Suppress the second notification while applying that admitted batch.
+    private var textFinderInvalidationSuppressionDepth = 0
+    var suppressesTextFinderInvalidation: Bool {
+        textFinderInvalidationSuppressionDepth > 0
+    }
+    func beginSuppressingTextFinderInvalidation() {
+        textFinderInvalidationSuppressionDepth += 1
+    }
+    func endSuppressingTextFinderInvalidation() {
+        textFinderInvalidationSuppressionDepth = max(0, textFinderInvalidationSuppressionDepth - 1)
+    }
+    /// Main-queue Binding writes must not outlive a newer edit or rebuild.
+    private var bindingWritebackGeneration: UInt64 = 0
     var lastSyncedText: String
+
+    func scheduleBindingWriteBack(_ newText: String, from textView: NSTextView) {
+        bindingWritebackGeneration &+= 1
+        let generation = bindingWritebackGeneration
+        DispatchQueue.main.async { [weak self, weak textView] in
+            guard let self, let textView,
+                  generation == self.bindingWritebackGeneration,
+                  self.textView === textView,
+                  textView.string == newText else { return }
+            self.lastSyncedText = newText
+            guard self.text != newText else { return }
+            self.writeBindingBack(newText)
+        }
+    }
+
+    func synchronizeWithoutBindingWrite(_ newText: String) {
+        bindingWritebackGeneration &+= 1
+        lastSyncedText = newText
+    }
     /// A controller takeover can expose newer document storage than the
     /// embedder's binding. Ignore only that captured stale snapshot until the
     /// binding advances; a different value remains a supported external edit.

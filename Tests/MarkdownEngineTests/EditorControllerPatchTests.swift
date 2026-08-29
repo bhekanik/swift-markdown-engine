@@ -16,6 +16,14 @@ import Testing
 @Suite("Editor controller patches")
 struct EditorControllerPatchTests {
 
+    private final class TextFinderResponder: MarkdownTextFinderActionResponder {
+        var onStringWillChange: (() -> Void)?
+
+        func performTextFinderAction(_: NSTextFinder.Action) {}
+        func validateTextFinderAction(_: NSTextFinder.Action) -> Bool { false }
+        func textFinderClientStringWillChange() { onStringWillChange?() }
+    }
+
     private func makeEditor(
         _ text: String,
         undo: UndoPolicy = .engine,
@@ -140,6 +148,39 @@ struct EditorControllerPatchTests {
 
         #expect(textView.string == "1 two 3")
         #expect(textView.selectedRange() == NSRange(location: 7, length: 0))
+    }
+
+    @Test("a reentrant Finder edit refuses a batch before any requested patch lands")
+    func reentrantFinderEditDoesNotPartiallyApplyBatch() {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let responder = TextFinderResponder()
+        var didApplyNestedPatch = false
+        responder.onStringWillChange = {
+            guard !didApplyNestedPatch else { return }
+            didApplyNestedPatch = true
+            #expect(controller.applyPatch(
+                range: NSRange(location: 2, length: 1),
+                replacement: "C"
+            ))
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(controller.applyPatches([
+            MarkdownTextPatch(range: NSRange(location: 0, length: 1), replacement: "A"),
+            MarkdownTextPatch(range: NSRange(location: 5, length: 1), replacement: "F"),
+        ]) == false)
+
+        #expect(textView.string == "abCdef")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 2, length: 1),
+            replacement: "C"
+        )])
+        #expect(controller.documentRevision == 1)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
     }
 
     @Test("overlapping patches are refused before anything is applied")

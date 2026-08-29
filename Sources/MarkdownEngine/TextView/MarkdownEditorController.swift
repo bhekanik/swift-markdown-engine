@@ -259,34 +259,12 @@ public final class MarkdownEditorController {
             else { return false }
         }
 
-        // One undo group and one coalescing boundary for the batch, not one per
-        // patch — the API promises a single edit.
-        textView.breakUndoCoalescing()
-        let undoManager = textView.undoManager
-        if registersUndo { undoManager?.beginUndoGrouping() }
-        defer {
-            if registersUndo {
-                undoManager?.endUndoGrouping()
-                if let actionName { undoManager?.setActionName(actionName) }
-            }
-            textView.breakUndoCoalescing()
-        }
-
-        var selection = textView.selectedRange()
-        var applied = false
-        for patch in ascending.reversed() {
-            guard coordinator.applyProgrammaticPatch(
-                patch, to: textView, registersUndo: registersUndo) else { continue }
-            selection = selection.adjusting(
-                forReplacementOf: patch.range,
-                withLength: (patch.replacement as NSString).length
-            )
-            applied = true
-        }
-        guard applied else { return false }
-        textView.setSelectedRange(
-            selection.clamped(toLength: (textView.string as NSString).length))
-        return true
+        return coordinator.applyProgrammaticPatches(
+            ascending,
+            to: textView,
+            actionName: actionName,
+            registersUndo: registersUndo
+        )
     }
 
     /// In bounds, and not cutting a character in half.

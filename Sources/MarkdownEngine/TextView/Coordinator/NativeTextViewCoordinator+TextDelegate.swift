@@ -117,11 +117,7 @@ extension NativeTextViewCoordinator {
             pendingEditedRange = nil
             guard !tv.hasMarkedText() else { return }
             if tv.string != lastSyncedText {
-                let rawText = tv.string
-                DispatchQueue.main.async {
-                    self.lastSyncedText = rawText
-                    self.writeBindingBack(rawText)
-                }
+                scheduleBindingWriteBack(tv.string, from: tv)
             }
             if let bottomTextView = tv as? NativeTextView,
                let scrollView = tv.enclosingScrollView {
@@ -204,11 +200,7 @@ extension NativeTextViewCoordinator {
         }
 
         if !wtActive, tv.string != lastSyncedText {
-            let changedText = tv.string
-            DispatchQueue.main.async {
-                self.lastSyncedText = changedText
-                self.writeBindingBack(changedText)
-            }
+            scheduleBindingWriteBack(tv.string, from: tv)
         }
 
         let paragraphRange = fullText.paragraphRange(for: safeSelRange)
@@ -656,16 +648,62 @@ extension NativeTextViewCoordinator {
         return count
     }
 
+    public func textView(
+        _ textView: NSTextView,
+        shouldChangeTextInRanges affectedRanges: [NSValue],
+        replacementStrings: [String]?
+    ) -> Bool {
+        if affectedRanges.count == 1 {
+            return self.textView(
+                textView,
+                shouldChangeTextIn: affectedRanges[0].rangeValue,
+                replacementString: replacementStrings?.first
+            )
+        }
+        let preText = textView.string
+        let preController = editorController
+        let preRevision = preController?.documentRevision
+        if replacementStrings != nil, !suppressesTextFinderInvalidation {
+            notifyTextFinderClientStringWillChange(in: textView)
+        }
+        guard textView.string == preText,
+              editorController === preController,
+              preController?.documentRevision == preRevision else {
+            discardPendingTextProposal()
+            return false
+        }
+
+        parseGeneration &+= 1
+        pendingTextMutationStartLength = (preText as NSString).length
+        pendingEditedRange = nil
+        pendingTextMutation = nil
+        pendingEditCount = max(2, affectedRanges.count)
+        pendingBacktickWindow = nil
+        pendingExtFenceTouched = true
+        pendingListStructureEdit = true
+        pendingPreEditActiveTokenIndices = nil
+        return true
+    }
+
     public func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
         // ONE bridge of the pre-edit text — every `textView.string` read is an
         // O(doc) copy of the mutable backing store; this function used to take
         // four of them per keystroke.
         let preText = textView.string
         let preNS = preText as NSString
+        let preController = editorController
+        let preRevision = preController?.documentRevision
         if replacementString != nil,
            affectedCharRange.location >= 0,
-           NSMaxRange(affectedCharRange) <= preNS.length {
+           NSMaxRange(affectedCharRange) <= preNS.length,
+           !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
+        }
+        guard textView.string == preText,
+              editorController === preController,
+              preController?.documentRevision == preRevision else {
+            discardPendingTextProposal()
+            return false
         }
         // Open the keystroke's PERF frame HERE: the pre-edit parse and the
         // smart-input interceptors below used to run before the frame existed
