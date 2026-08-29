@@ -131,6 +131,7 @@ struct CoordinatorAdoptTests {
 
     private final class ReentrantSyntaxHighlighter: SyntaxHighlighter, @unchecked Sendable {
         var onHighlight: (() -> Void)?
+        var appearanceNotification: Notification.Name?
 
         func codeFont(size: CGFloat) -> PlatformFont {
             PlainTextSyntaxHighlighter().codeFont(size: size)
@@ -145,7 +146,11 @@ struct CoordinatorAdoptTests {
             return nil
         }
 
-        var appearanceDidChangeNotification: Notification.Name? { nil }
+        var appearanceDidChangeNotification: Notification.Name? { appearanceNotification }
+    }
+
+    private final class CallbackCounter: @unchecked Sendable {
+        var value = 0
     }
 
     @Test("adopt wires the delegate, styles the document and attaches the controller")
@@ -422,8 +427,22 @@ struct CoordinatorAdoptTests {
         _ = NSApplication.shared
         let controller = MarkdownEditorController()
         let selectionEvent = Notification.Name("CoordinatorAdoptTests.refusedRetrySelection")
+        let appearanceEvent = Notification.Name("CoordinatorAdoptTests.refusedRetryAppearance")
+        let applyBoldEvent = Notification.Name("CoordinatorAdoptTests.refusedRetryBold")
+        let findScrollEvent = Notification.Name("CoordinatorAdoptTests.refusedRetryFindScroll")
+        let findClearEvent = Notification.Name("CoordinatorAdoptTests.refusedRetryFindClear")
+        let findQueryEvent = Notification.Name("CoordinatorAdoptTests.refusedRetryFindQuery")
+        let findResultsEvent = Notification.Name("CoordinatorAdoptTests.refusedRetryFindResults")
+        let highlighter = ReentrantSyntaxHighlighter()
+        highlighter.appearanceNotification = appearanceEvent
         var configuration = MarkdownEditorConfiguration.default
         configuration.services.bus.selectionBoldDidChange = selectionEvent
+        configuration.services.bus.applyBoldRequest = applyBoldEvent
+        configuration.services.bus.findScrollToRange = findScrollEvent
+        configuration.services.bus.findClearHighlights = findClearEvent
+        configuration.services.bus.findQuery = findQueryEvent
+        configuration.services.bus.findResults = findResultsEvent
+        configuration.services.syntaxHighlighter = highlighter
         let firstCoordinator = NativeTextViewWrapper(
             text: .constant("alpha"),
             configuration: configuration,
@@ -467,10 +486,12 @@ struct CoordinatorAdoptTests {
 
         first.setSelectedRange(NSRange(location: 5, length: 0))
         selectionEvents = 0
-        #expect(firstCoordinator.adopt(first, text: "replacement") == false)
+        let refusedText = "before\n```swift\nlet value = 1\n```\nafter\n"
+        #expect(firstCoordinator.adopt(first, text: refusedText) == false)
 
-        #expect(first.string == "replacement")
+        #expect(first.string == refusedText)
         #expect(first.delegate == nil)
+        #expect(firstCoordinator.textView == nil)
         #expect(selectionEvents == 0)
         #expect(nestedResult == nil)
         #expect(owner.string == "alpha")
@@ -478,6 +499,68 @@ struct CoordinatorAdoptTests {
         #expect(controller.documentRevision == 0)
         #expect(controller.documentMutationDelta == 0)
         #expect(controller.documentPublishedDelta == 0)
+
+        var appearanceResult: Bool?
+        highlighter.onHighlight = {
+            guard appearanceResult == nil else { return }
+            appearanceResult = controller.applyPatch(
+                range: NSRange(location: 0, length: 1),
+                replacement: "Y"
+            )
+        }
+        let findResults = CallbackCounter()
+        let findObserver = NotificationCenter.default.addObserver(
+            forName: findResultsEvent,
+            object: nil,
+            queue: nil
+        ) { _ in
+            MainActor.assumeIsolated { findResults.value += 1 }
+        }
+        defer { NotificationCenter.default.removeObserver(findObserver) }
+        NotificationCenter.default.post(name: appearanceEvent, object: nil)
+        first.setSelectedRange(NSRange(location: 0, length: 6))
+        NotificationCenter.default.post(name: applyBoldEvent, object: nil)
+        NotificationCenter.default.post(
+            name: findScrollEvent,
+            object: nil,
+            userInfo: [
+                "currentIndex": 0,
+                "allRanges": [NSRange(location: 0, length: 6)],
+            ]
+        )
+        #expect(first.textStorage?.attribute(.findHighlight, at: 0, effectiveRange: nil) == nil)
+        NotificationCenter.default.post(name: findClearEvent, object: nil)
+        NotificationCenter.default.post(
+            name: findQueryEvent,
+            object: nil,
+            userInfo: ["query": "before", "currentIndex": 0]
+        )
+
+        #expect(appearanceResult == nil)
+        #expect(first.string == refusedText)
+        #expect(first.textStorage?.attribute(.findHighlight, at: 0, effectiveRange: nil) == nil)
+        #expect(findResults.value == 0)
+        #expect(owner.string == "alpha")
+        #expect(controller.text == "alpha")
+        #expect(controller.documentRevision == 0)
+        #expect(controller.documentMutationDelta == 0)
+        #expect(controller.documentPublishedDelta == 0)
+
+        let disposableCoordinator = NativeTextViewWrapper(
+            text: .constant("discarded"),
+            controller: controller
+        ).makeCoordinator()
+        let disposable = NSTextView(frame: .zero)
+        #expect(disposableCoordinator.adopt(disposable, text: "discarded") == false)
+        #expect(disposableCoordinator.textView == nil)
+        #expect(disposableCoordinator.detach(disposable))
+        #expect(disposableCoordinator.detach(disposable) == false)
+
+        #expect(ownerCoordinator.detach(owner))
+        #expect(firstCoordinator.adopt(first, text: "stale"))
+        #expect(first.string == "alpha")
+        #expect(controller.textView === first)
+        #expect(firstCoordinator.detach(first))
     }
 
     @Test("public adoption rejects service mutations during its rebuild")

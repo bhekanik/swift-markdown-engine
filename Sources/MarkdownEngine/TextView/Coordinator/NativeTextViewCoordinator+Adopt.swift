@@ -46,7 +46,6 @@ public extension NativeTextViewCoordinator {
                     return false
                 }
                 isolateRefusedTextView(textView, text: text)
-                self.textView = textView
                 appKitAdoptedTextView = textView
                 editorController = nil
                 requestedControllerWhileDetached = requestedController
