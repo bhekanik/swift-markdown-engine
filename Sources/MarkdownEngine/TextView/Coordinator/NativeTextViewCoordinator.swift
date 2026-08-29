@@ -110,6 +110,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// so that re-entrant pass is pure waste (measured 71ms on a 346k note). Mirrors
     /// the `didEnsureLayoutForCurrentDocument` suppression pattern.
     var isRebuildingDocument = false
+    var isNotifyingTextFinderClientStringChange = false
     var lastSyncedText: String
     var isProgrammaticEdit: Bool = false
     var isWritingToolsActive: Bool = false

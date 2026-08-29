@@ -47,6 +47,7 @@ extension NativeTextViewCoordinator {
         documentId: String,
         text: String
     ) {
+        notifyTextFinderClientStringWillChange(in: textView)
         if rawSourceMode {
             enterRawSourceMode(textView)
         } else {
@@ -57,7 +58,12 @@ extension NativeTextViewCoordinator {
         textView.breakUndoCoalescing()
         undoManagers[documentId]?.removeAllActions()
 
-        rebuildTextStorageAndStyle(textView, from: text, invalidateLayout: true)
+        rebuildTextStorageAndStyle(
+            textView,
+            from: text,
+            invalidateLayout: true,
+            notifyTextFinder: false
+        )
 
         if !rawSourceMode {
             finishLeavingRawSourceMode(textView)

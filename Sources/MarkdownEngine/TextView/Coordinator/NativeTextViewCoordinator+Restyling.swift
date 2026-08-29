@@ -16,7 +16,8 @@ extension NativeTextViewCoordinator {
     func rebuildTextStorageAndStyle(
         _ textView: NSTextView,
         from text: String,
-        invalidateLayout: Bool = false
+        invalidateLayout: Bool = false,
+        notifyTextFinder: Bool = true
     ) {
         // Suppress the re-entrant textViewDidChangeSelection that `textView.string =`
         // and the setAttributedString transfer below fire synchronously (71ms of
@@ -36,6 +37,9 @@ extension NativeTextViewCoordinator {
         // ensureLayout IS that one-shot per-document layout.
         didEnsureLayoutForCurrentDocument = true
         if textView.string != text {
+            if notifyTextFinder {
+                notifyTextFinderClientStringWillChange(in: textView)
+            }
             textView.string = text
             parseGeneration &+= 1
         }
@@ -170,6 +174,33 @@ extension NativeTextViewCoordinator {
                 nativeTextView?.updateWideTableOverlays()
             }
         }
+    }
+
+    func applyExtensionChange(
+        _ extensions: [any MarkdownExtension],
+        in textView: NSTextView
+    ) {
+        var updated = configuration
+        updated.extensions = extensions
+        guard updated.extensionRegistry.fingerprint != configuration.extensionRegistry.fingerprint
+        else { return }
+
+        notifyTextFinderClientStringWillChange(in: textView)
+        configuration.extensions = extensions
+        (textView as? NativeTextView)?.configuration.extensions = extensions
+        cachedParsedDocument = nil
+        let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+        if fullRange.length > 0 {
+            restyleParagraphs([fullRange], in: textView)
+        }
+    }
+
+    func notifyTextFinderClientStringWillChange(in textView: NSTextView) {
+        guard editorController?.textView === textView,
+              !isNotifyingTextFinderClientStringChange else { return }
+        isNotifyingTextFinderClientStringChange = true
+        editorController?.textFinderActionResponder?.textFinderClientStringWillChange()
+        isNotifyingTextFinderClientStringChange = false
     }
 
     func restyleTextView(

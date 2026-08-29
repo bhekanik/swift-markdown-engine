@@ -562,13 +562,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // themselves via the registry fingerprint.
         let newExtensionFingerprint = configuration.extensionRegistry.fingerprint
         if newExtensionFingerprint != context.coordinator.configuration.extensionRegistry.fingerprint {
-            context.coordinator.configuration.extensions = configuration.extensions
-            textView.configuration.extensions = configuration.extensions
-            context.coordinator.cachedParsedDocument = nil
-            let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
-            if fullRange.length > 0 {
-                context.coordinator.restyleParagraphs([fullRange], in: textView)
-            }
+            context.coordinator.applyExtensionChange(configuration.extensions, in: textView)
         }
         // Reading column centers by POSITION (container subview), so the text inset is constant.
         let desiredTextInset = NSSize(

@@ -28,6 +28,7 @@ struct SingleViewTests {
         var validated: [NSTextFinder.Action] = []
         var stringWillChangeCount = 0
         var validationResult = false
+        var onStringWillChange: (() -> Void)?
 
         func performTextFinderAction(_ action: NSTextFinder.Action) {
             performed.append(action)
@@ -40,6 +41,7 @@ struct SingleViewTests {
 
         func textFinderClientStringWillChange() {
             stringWillChangeCount += 1
+            onStringWillChange?()
         }
     }
 
@@ -157,6 +159,46 @@ struct SingleViewTests {
 
         textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
         #expect(responder.stringWillChangeCount == 1)
+    }
+
+    @Test("Find invalidates before every projected client-string change")
+    func findInvalidatesAllProjectionChanges() {
+        let controller = MarkdownEditorController()
+        let responder = TextFinderResponder()
+        controller.textFinderActionResponder = responder
+        let (textView, coordinator) = view(on: controller, text: "==alpha==\n")
+        var projectionBeforeChange: [String] = []
+        responder.onStringWillChange = {
+            projectionBeforeChange.append(controller.textProjection.string)
+            coordinator.notifyTextFinderClientStringWillChange(in: textView)
+        }
+
+        textView.insertText("!", replacementRange: NSRange(location: 7, length: 0))
+        #expect(projectionBeforeChange == ["==alpha==\n"])
+
+        coordinator.applyExtensionChange([HighlightExtension()], in: textView)
+        #expect(projectionBeforeChange == ["==alpha==\n", "==alpha!==\n"])
+        #expect(controller.textProjection.string == "alpha!\n")
+
+        coordinator.applyPresentationChange(
+            to: true,
+            in: textView,
+            documentId: "doc",
+            text: textView.string
+        )
+        #expect(projectionBeforeChange.last == "alpha!\n")
+        #expect(controller.textProjection.string == "==alpha!==\n")
+
+        coordinator.rebuildTextStorageAndStyle(textView, from: "replacement\n")
+        #expect(projectionBeforeChange.last == "==alpha!==\n")
+
+        let countBeforeStyleOnlyChange = responder.stringWillChangeCount
+        coordinator.restyleParagraphs(
+            [NSRange(location: 0, length: (textView.string as NSString).length)],
+            in: textView
+        )
+        #expect(responder.stringWillChangeCount == countBeforeStyleOnlyChange)
+        #expect(responder.stringWillChangeCount == 4)
     }
 
     @Test("the projection cache follows text and presentation changes")
