@@ -158,9 +158,11 @@ struct BlockParserTests {
         #expect(BlockParser.parse(malformed).first?.kind == .paragraph)
     }
 
-    @Test("link definitions do not escape destination whitespace")
+    @Test("link definitions reject bare destination whitespace and ASCII controls")
     func invalidBareDefinitionEscapes() {
-        for source in [#"[id]: /a\ b"#, #"[id]: /a\\ b"#] {
+        let invalid = [#"[id]: /a\ b"#, #"[id]: /a\\ b"#]
+            + LinkDestinationTestFixtures.invalidBareControlReferences
+        for source in invalid {
             #expect(BlockParser.parse(source).allSatisfy { $0.kind != .linkDefinition })
         }
     }

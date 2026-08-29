@@ -139,7 +139,7 @@ struct RangeScrollingTests {
 
         let ns = text as NSString
         let start = ns.range(of: "Line 10:").location
-        let end = NSMaxRange(ns.range(of: "Line 20:"))
+        let end = NSMaxRange(ns.range(of: "Line 21:"))
         let range = NSRange(location: start, length: end - start)
         let clipView = mounted.scrollView.contentView
         let beforeY = clipView.bounds.minY

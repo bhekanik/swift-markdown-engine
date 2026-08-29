@@ -120,7 +120,7 @@ struct MarkdownAccessibilityProjectionTests {
             "[x](https://example.com/a\\\nb)",
             #"![x](https://example.com/a\ b)"#,
             "[id]: /a\\ b\n\n[x][id]",
-        ]
+        ] + LinkDestinationTestFixtures.invalidBareControlDocuments
 
         for source in cases {
             #expect(project(source).spans.isEmpty)

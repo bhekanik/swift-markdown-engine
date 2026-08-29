@@ -479,12 +479,13 @@ struct MarkdownASTStylerTests {
             "[x](https://example.com/a\\\nb)",
             #"![x](https://example.com/a\ b)"#,
             "[id]: /a\\ b\n\n[x][id]",
-        ]
+        ] + LinkDestinationTestFixtures.invalidBareControlDocuments
 
         for source in cases {
             let rendered = render(source)
             expectSourceBytesUnchanged(source, rendered)
-            let label = (source as NSString).range(of: "x")
+            let labelMarker = (source as NSString).range(of: "[x]", options: .backwards)
+            let label = NSRange(location: labelMarker.location + 1, length: 1)
             #expect(rendered.attribute(.link, at: label.location, effectiveRange: nil) == nil)
         }
     }

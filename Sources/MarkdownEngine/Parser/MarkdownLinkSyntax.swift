@@ -70,7 +70,7 @@ enum MarkdownLinkSyntax {
             var depth = 0
             while i < length {
                 let c = ns.character(at: i)
-                guard c != lf, c != cr else { return nil }
+                guard !isAsciiControl(c) else { return nil }
                 if isWhitespace(c) { break }
                 if c == backslash,
                    i + 1 < length,
@@ -217,6 +217,7 @@ enum MarkdownLinkSyntax {
             var depth = 0
             while i < end, !isWhitespace(ns.character(at: i)) {
                 let c = ns.character(at: i)
+                guard !isAsciiControl(c) else { return nil }
                 if c == backslash,
                    i + 1 < end,
                    isAsciiPunctuation(ns.character(at: i + 1)) {
@@ -348,6 +349,10 @@ enum MarkdownLinkSyntax {
 
     private static func isWhitespace(_ c: unichar) -> Bool {
         c == space || c == tab
+    }
+
+    private static func isAsciiControl(_ character: unichar) -> Bool {
+        character <= 0x1F || character == 0x7F
     }
 
     private static func isAsciiPunctuation(_ character: unichar) -> Bool {

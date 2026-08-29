@@ -136,6 +136,20 @@ struct MarkdownTextProjectionTests {
         }
     }
 
+    @Test("bare destination controls remain visible Markdown")
+    func projectsBareDestinationControlsLiterally() {
+        for source in LinkDestinationTestFixtures.invalidBareControlDocuments {
+            let visible = project(source).string
+            if source.hasPrefix("![") {
+                #expect(visible.contains("![x]("))
+            } else if source.hasPrefix("[id]:") {
+                #expect(visible.contains("[x][id]"))
+            } else {
+                #expect(visible.contains("[x]("))
+            }
+        }
+    }
+
     @Test("every projected span round-trips across all golden constructs")
     func goldenSpansRoundTrip() {
         for entry in GoldenCorpusTests.corpus {

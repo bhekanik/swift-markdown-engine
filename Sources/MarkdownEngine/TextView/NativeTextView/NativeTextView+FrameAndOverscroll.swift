@@ -326,7 +326,6 @@ extension NativeTextView {
         let topInset = scrollView.contentInsets.top
         let bottomInset = scrollView.contentInsets.bottom
         let usableHeight = max(0, clipView.bounds.height - topInset - bottomInset)
-        let margin: CGFloat = 24
 
         // Off-screen TextKit 2 fragments can start with estimated Y positions.
         // Scroll to that estimate, lay out the new viewport, then remeasure.
@@ -342,22 +341,25 @@ extension NativeTextView {
 
             switch position {
             case .nearest:
-                if targetRect.height + 2 * margin > usableHeight {
+                if targetRect.height > usableHeight {
                     // A range taller than the viewport cannot be wholly visible.
                     // Keep an intersecting viewport stable; otherwise reveal its nearest edge.
                     if targetRect.maxY <= visibleTop {
-                        targetY = targetRect.maxY - clipView.bounds.height + bottomInset + margin
+                        targetY = targetRect.maxY - clipView.bounds.height + bottomInset
                     } else if targetRect.minY >= visibleBottom {
-                        targetY = targetRect.minY - topInset - margin
+                        targetY = targetRect.minY - topInset
                     } else {
                         return true
                     }
-                } else if targetRect.minY < visibleTop {
-                    targetY = targetRect.minY - topInset - margin
-                } else if targetRect.maxY > visibleBottom {
-                    targetY = targetRect.maxY - clipView.bounds.height + bottomInset + margin
                 } else {
-                    return true
+                    let margin = min(24, (usableHeight - targetRect.height) / 2)
+                    if targetRect.minY < visibleTop {
+                        targetY = targetRect.minY - topInset - margin
+                    } else if targetRect.maxY > visibleBottom {
+                        targetY = targetRect.maxY - clipView.bounds.height + bottomInset + margin
+                    } else {
+                        return true
+                    }
                 }
             case .center:
                 targetY = targetRect.midY - topInset - usableHeight / 2

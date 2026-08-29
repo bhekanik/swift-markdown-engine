@@ -332,7 +332,7 @@ struct InlineParserTests {
         }
     }
 
-    @Test("bare destinations do not escape whitespace or line endings")
+    @Test("bare destinations do not escape whitespace or ASCII controls")
     func invalidBareDestinationEscapes() {
         let invalid = [
             #"[x](https://example.com/a\ b)"#,
@@ -340,7 +340,8 @@ struct InlineParserTests {
             "[x](https://example.com/a\\\nb)",
             "[x](https://example.com/a\\\\\nb)",
             #"![x](https://example.com/a\ b)"#,
-        ]
+        ] + LinkDestinationTestFixtures.invalidBareControlLinks
+            + LinkDestinationTestFixtures.invalidBareControlImages
 
         for source in invalid {
             #expect(InlineParser.parse(source).allSatisfy { node in
