@@ -121,7 +121,7 @@ enum MarkdownDetection {
     /// window counts composable: full = fullBefore − windowBefore + windowAfter.
     static func backtickWindowCount(in text: NSString, around range: NSRange) -> Int {
         let length = text.length
-        guard range.location >= 0, NSMaxRange(range) <= length else { return 0 }
+        guard range.isWithin(documentLength: length) else { return 0 }
         var lo = range.location
         while lo > 0, text.character(at: lo - 1) == 0x60 { lo -= 1 }
         var hi = NSMaxRange(range)

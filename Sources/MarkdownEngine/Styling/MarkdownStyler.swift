@@ -134,8 +134,7 @@ enum MarkdownStyler {
         events.reserveCapacity(ranges.count * 2)
         for (i, styled) in ranges.enumerated() {
             let r = styled.range
-            guard r.location != NSNotFound, r.location >= 0, r.length > 0,
-                  NSMaxRange(r) <= documentLength else { continue }
+            guard r.length > 0, r.isWithin(documentLength: documentLength) else { continue }
             events.append((r.location, true, i))
             events.append((NSMaxRange(r), false, i))
         }

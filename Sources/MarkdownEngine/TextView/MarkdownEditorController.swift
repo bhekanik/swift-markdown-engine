@@ -276,12 +276,10 @@ public final class MarkdownEditorController {
     /// ``MarkdownTextMutation`` published to the embedder is not valid UTF-8,
     /// and a sync outbox that JSON-encodes it fails.
     private func isApplicable(_ patch: MarkdownTextPatch, in text: NSString) -> Bool {
-        patch.range.location != NSNotFound
-            && patch.range.location >= 0
-            && patch.range.length >= 0
-            && NSMaxRange(patch.range) <= text.length
-            && !text.splitsSurrogatePair(at: patch.range.location)
-            && !text.splitsSurrogatePair(at: NSMaxRange(patch.range))
+        guard patch.range.isWithin(documentLength: text.length) else { return false }
+        let end = patch.range.location + patch.range.length
+        return !text.splitsSurrogatePair(at: patch.range.location)
+            && !text.splitsSurrogatePair(at: end)
     }
 
     /// Bring the editor to `text` by patching the one run that changed.
@@ -437,6 +435,15 @@ public final class MarkdownEditorController {
 // MARK: - Range transformation
 
 extension NSRange {
+    func isWithin(documentLength: Int) -> Bool {
+        documentLength >= 0
+            && location != NSNotFound
+            && location >= 0
+            && length >= 0
+            && location <= documentLength
+            && length <= documentLength - location
+    }
+
     /// This range as it stands after `edited` was replaced by `newLength`
     /// characters. A location before the edit is untouched, one after it
     /// shifts, and one inside the replaced span clamps into the replacement.

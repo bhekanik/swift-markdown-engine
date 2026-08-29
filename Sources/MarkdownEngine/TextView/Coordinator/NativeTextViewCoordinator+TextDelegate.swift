@@ -556,8 +556,7 @@ extension NativeTextViewCoordinator {
     func editWindowTouchesExtensionFence(in text: NSString, around range: NSRange) -> Bool {
         let fences = cachedExtensionRegistry.blockEntries
         guard !fences.isEmpty else { return false }
-        guard range.location != NSNotFound, range.location >= 0,
-              NSMaxRange(range) <= text.length else { return false }
+        guard range.isWithin(documentLength: text.length) else { return false }
         let window = text.lineRange(for: range)
         let windowText = text.substring(with: window)
         return fences.contains { windowText.contains($0.fence) }
@@ -571,13 +570,8 @@ extension NativeTextViewCoordinator {
         range: NSRange,
         replacement: String
     ) -> Bool {
-        guard range.location != NSNotFound,
-              range.location >= 0,
-              range.length >= 0 else { return true }
-        let (rangeEnd, overflowed) = range.location.addingReportingOverflow(
-            range.length
-        )
-        guard !overflowed, rangeEnd <= text.length else { return true }
+        guard range.isWithin(documentLength: text.length) else { return true }
+        let rangeEnd = range.location + range.length
         guard !replacement.utf16.contains(where: {
             $0 == 0x0A || $0 == 0x0D
         }) else { return true }
@@ -633,8 +627,7 @@ extension NativeTextViewCoordinator {
               lengthDelta != Int.min,
               base.location == editedRange.location,
               editedRange.length - lengthDelta == base.oldLength,
-              editedRange.location >= 0,
-              NSMaxRange(editedRange) <= fullText.length
+              editedRange.isWithin(documentLength: fullText.length)
         else {
             backtickCensusNeedsRescan = false
             return MarkdownDetection.tripleBacktickCount(in: fullText)
@@ -672,6 +665,13 @@ extension NativeTextViewCoordinator {
             )
         }
         let preText = textView.string
+        let preNS = preText as NSString
+        guard affectedRanges.allSatisfy({
+            $0.rangeValue.isWithin(documentLength: preNS.length)
+        }) else {
+            discardPendingTextProposal()
+            return false
+        }
         let preController = editorController
         let preRevision = preController?.documentRevision
         if replacementStrings != nil, !suppressesTextFinderInvalidation {
@@ -720,12 +720,13 @@ extension NativeTextViewCoordinator {
         // four of them per keystroke.
         let preText = textView.string
         let preNS = preText as NSString
+        guard affectedCharRange.isWithin(documentLength: preNS.length) else {
+            discardPendingTextProposal()
+            return false
+        }
         let preController = editorController
         let preRevision = preController?.documentRevision
-        if replacementString != nil,
-           affectedCharRange.location >= 0,
-           NSMaxRange(affectedCharRange) <= preNS.length,
-           !suppressesTextFinderInvalidation {
+        if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }
         guard textView.string == preText,
@@ -743,12 +744,10 @@ extension NativeTextViewCoordinator {
         // the text is still pre-edit, so this O(1)-hits the cache the previous
         // cycle left behind. Bumping first forced parsedDocument onto its
         // O(doc) byte-compare verify on every ordinary keystroke.
-        let outOfBounds = affectedCharRange.location > preNS.length
-            || affectedCharRange.location + affectedCharRange.length > preNS.length
         let isUndoRedo = textView.undoManager?.isUndoing == true
             || textView.undoManager?.isRedoing == true
         let interactive = !isProgrammaticEdit && !isWritingToolsActive
-            && !configuration.rawSourceMode && !outOfBounds && !isUndoRedo
+            && !configuration.rawSourceMode && !isUndoRedo
         let preEditParsed = interactive
             ? PerfTrace.measure("preParse") { parsedDocument(for: preText) }
             : nil
@@ -768,42 +767,34 @@ extension NativeTextViewCoordinator {
         }
         pendingEditCount += 1
         // Pre-edit backtick window baseline for the incremental census.
-        if affectedCharRange.location >= 0, NSMaxRange(affectedCharRange) <= preNS.length {
-            pendingBacktickWindow = (affectedCharRange.location, affectedCharRange.length,
-                MarkdownDetection.backtickWindowCount(in: preNS, around: affectedCharRange))
-            pendingExtFenceTouched = editWindowTouchesExtensionFence(in: preNS, around: affectedCharRange)
-            // A programmatic sub-edit (e.g. list continuation) only OR-adds to
-            // this signal, so it cannot clear the user keystroke's structural
-            // marker, indentation, or line-break change.
-            let addsBreak = replacementString?.utf16.contains { $0 == 0x0A || $0 == 0x0D } ?? false
-            let removesBreak = affectedCharRange.length > 0
-                && preNS.rangeOfCharacter(from: .newlines, options: [], range: affectedCharRange).location != NSNotFound
-            // A tab insert/delete is an indent/outdent: it shifts a nested item's
-            // level and so the run's numbering, without touching a line break.
-            let addsTab = replacementString?.utf16.contains { $0 == 0x09 } ?? false
-            let removesTab = affectedCharRange.length > 0
-                && preNS.rangeOfCharacter(from: CharacterSet(charactersIn: "\t"), options: [], range: affectedCharRange).location != NSNotFound
-            let changesListPrefix = editChangesListStructure(
-                in: preNS,
-                range: affectedCharRange,
-                replacement: replacementString ?? ""
-            )
-            let structural = addsBreak || removesBreak || addsTab || removesTab
-                || changesListPrefix
-            pendingListStructureEdit = isProgrammaticEdit ? (pendingListStructureEdit || structural) : structural
-        } else {
-            pendingBacktickWindow = nil
-            pendingExtFenceTouched = false
-            pendingListStructureEdit = true
-        }
+        pendingBacktickWindow = (affectedCharRange.location, affectedCharRange.length,
+            MarkdownDetection.backtickWindowCount(in: preNS, around: affectedCharRange))
+        pendingExtFenceTouched = editWindowTouchesExtensionFence(in: preNS, around: affectedCharRange)
+        // A programmatic sub-edit (e.g. list continuation) only OR-adds to
+        // this signal, so it cannot clear the user keystroke's structural
+        // marker, indentation, or line-break change.
+        let addsBreak = replacementString?.utf16.contains { $0 == 0x0A || $0 == 0x0D } ?? false
+        let removesBreak = affectedCharRange.length > 0
+            && preNS.rangeOfCharacter(from: .newlines, options: [], range: affectedCharRange).location != NSNotFound
+        // A tab insert/delete is an indent/outdent: it shifts a nested item's
+        // level and so the run's numbering, without touching a line break.
+        let addsTab = replacementString?.utf16.contains { $0 == 0x09 } ?? false
+        let removesTab = affectedCharRange.length > 0
+            && preNS.rangeOfCharacter(from: CharacterSet(charactersIn: "\t"), options: [], range: affectedCharRange).location != NSNotFound
+        let changesListPrefix = editChangesListStructure(
+            in: preNS,
+            range: affectedCharRange,
+            replacement: replacementString ?? ""
+        )
+        let structural = addsBreak || removesBreak || addsTab || removesTab
+            || changesListPrefix
+        pendingListStructureEdit = isProgrammaticEdit
+            ? (pendingListStructureEdit || structural)
+            : structural
         if isProgrammaticEdit { return true }
         if isWritingToolsActive { return true }
         // Raw mode: plain-text editing — no smart Markdown input.
         if configuration.rawSourceMode { return true }
-        if outOfBounds {
-            pendingPreEditActiveTokenIndices = nil
-            return false
-        }
         if isUndoRedo {
             pendingPreEditActiveTokenIndices = nil
             return true

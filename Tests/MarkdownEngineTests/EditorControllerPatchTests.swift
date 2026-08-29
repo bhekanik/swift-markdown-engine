@@ -150,6 +150,47 @@ struct EditorControllerPatchTests {
         #expect(textView.string == "alpha")
     }
 
+    @Test("overflowing ranges are refused at every patch boundary")
+    func overflowingRangesRefused() {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("alpha") {
+            mutations.append($0)
+        }
+        let hostileRanges = [
+            NSRange(location: Int.max - 1, length: 100),
+            NSRange(location: Int.max, length: 0),
+            NSRange(location: 1, length: Int.max),
+        ]
+
+        for range in hostileRanges {
+            #expect(controller.applyPatch(range: range, replacement: "x") == false)
+            #expect(coordinator.applyProgrammaticPatch(
+                MarkdownTextPatch(range: range, replacement: "x"),
+                to: textView
+            ) == false)
+            #expect(coordinator.textView(
+                textView,
+                shouldChangeTextIn: range,
+                replacementString: "x"
+            ) == false)
+        }
+        #expect(controller.applyPatches([
+            MarkdownTextPatch(range: NSRange(location: 0, length: 1), replacement: "A"),
+            MarkdownTextPatch(range: hostileRanges[0], replacement: "x"),
+        ]) == false)
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextInRanges: hostileRanges.map(NSValue.init(range:)),
+            replacementStrings: ["x", "x", "x"]
+        ) == false)
+
+        #expect(textView.string == "alpha")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+    }
+
     @Test("a detached controller applies nothing")
     func detachedControllerIsInert() {
         let (textView, controller, _) = makeEditor("alpha")

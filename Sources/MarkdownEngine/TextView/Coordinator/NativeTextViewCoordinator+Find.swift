@@ -76,7 +76,7 @@ extension NativeTextViewCoordinator {
         guard !matches.isEmpty else { postFindResults(count: 0); return }
         let idx = min(max(requestedIndex, 0), matches.count - 1)
         let target = matches[idx]
-        guard NSMaxRange(target) <= (tv.string as NSString).length else { return }
+        guard target.isWithin(documentLength: (tv.string as NSString).length) else { return }
 
         tv.breakUndoCoalescing()
         isProgrammaticEdit = true
@@ -172,7 +172,7 @@ extension NativeTextViewCoordinator {
         let currentHighlightColor = theme.findCurrentMatchHighlight
 
         for (i, matchRange) in allRanges.enumerated() {
-            guard matchRange.location + matchRange.length <= fullRange.length else { continue }
+            guard matchRange.isWithin(documentLength: fullRange.length) else { continue }
             let color = (i == currentIndex) ? currentHighlightColor : highlightColor
             storage?.addAttribute(.backgroundColor, value: color, range: matchRange)
             storage?.addAttribute(.findHighlight, value: true, range: matchRange)
@@ -185,7 +185,7 @@ extension NativeTextViewCoordinator {
         // Scroll the current match into view.
         guard allRanges.indices.contains(currentIndex) else { return }
         let range = allRanges[currentIndex]
-        guard range.location + range.length <= fullRange.length else { return }
+        guard range.isWithin(documentLength: fullRange.length) else { return }
         // Scroll via TextKit 2 fragment layout, which works whether or not the
         // reading column is active. `scrollRangeToVisible` is unreliable for
         // off-screen content in a TextKit 2 text view (it routes through the

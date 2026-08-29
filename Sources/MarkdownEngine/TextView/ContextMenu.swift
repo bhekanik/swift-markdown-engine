@@ -134,7 +134,7 @@ extension NativeTextViewWrapper.Coordinator {
         // Defensive: a caller that miscomputes the offset would corrupt the
         // document rather than merely lose styling, so fall back to the plain
         // replacement instead of trapping on a bad range.
-        if NSMaxRange(target) <= replacement.length {
+        if target.isWithin(documentLength: replacement.length) {
             replacement.replaceCharacters(in: target, with: carried)
         }
         storage.replaceCharacters(in: range, with: replacement)

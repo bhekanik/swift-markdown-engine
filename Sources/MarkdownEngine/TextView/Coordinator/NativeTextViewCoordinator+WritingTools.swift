@@ -131,9 +131,10 @@ extension NativeTextViewCoordinator {
         }
 
         guard let initialSelection,
-              initialSelection.location >= 0,
               initialSelection.length > 0,
-              NSMaxRange(initialSelection) <= (sourceBeforeWritingTools as NSString).length
+              initialSelection.isWithin(
+                documentLength: (sourceBeforeWritingTools as NSString).length
+              )
         else {
             return fullReplacement(because: "the initial selection could not isolate the changed span")
         }
@@ -169,8 +170,7 @@ extension NativeTextViewCoordinator {
                 location: baselineLocation,
                 length: mutation.range.length
             )
-            guard baselineLocation >= 0,
-                  NSMaxRange(baselineRange) <= foreignOnlyBaseline.length
+            guard baselineRange.isWithin(documentLength: foreignOnlyBaseline.length)
             else {
                 return fullReplacement(because: "a concurrent edit could not be mapped to the listener's text")
             }

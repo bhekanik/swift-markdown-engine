@@ -79,8 +79,8 @@ extension NativeTextViewCoordinator {
             // Cached tokens can be stale for one async hop after a document swap
             // (shorter new text, queued update still holding the old parse). Skip
             // out-of-bounds tokens; the next parse refreshes the cache.
-            guard NSMaxRange(token.range) <= nsText.length,
-                  NSMaxRange(token.contentRange) <= nsText.length else { return nil }
+            guard token.range.isWithin(documentLength: nsText.length),
+                  token.contentRange.isWithin(documentLength: nsText.length) else { return nil }
             if let visibleRange, NSIntersectionRange(token.range, visibleRange).length == 0 { return nil }
             guard var boundingRect = textView.viewRect(forCharacterRange: token.range, using: layoutBridge) else { return nil }
 

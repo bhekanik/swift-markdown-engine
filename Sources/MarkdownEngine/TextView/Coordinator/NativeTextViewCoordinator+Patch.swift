@@ -34,8 +34,7 @@ extension NativeTextViewCoordinator {
         guard admittedByMutationTransaction || !rejectsReentrantMutation else { return false }
         let sourceText = textView.string
         let length = (sourceText as NSString).length
-        guard patch.range.location != NSNotFound, patch.range.location >= 0,
-              patch.range.length >= 0, NSMaxRange(patch.range) <= length else { return false }
+        guard patch.range.isWithin(documentLength: length) else { return false }
         let sourceController = editorController
         let sourceRevision = sourceController?.documentRevision
 
