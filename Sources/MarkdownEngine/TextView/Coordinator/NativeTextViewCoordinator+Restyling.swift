@@ -54,6 +54,11 @@ extension NativeTextViewCoordinator {
                 displayText = textView.string
             }
         }
+        // Parsing and styling call configured services. Keep their callbacks
+        // from mutating storage while the ranges below still describe this
+        // rebuild's snapshot; public attachment callbacks run after return.
+        beginMutationTransaction()
+        defer { endMutationTransaction() }
         synchronizeWithoutBindingWrite(
             displayText,
             preservingPendingBindingWrite: preservingPendingBindingWrite
@@ -226,6 +231,8 @@ extension NativeTextViewCoordinator {
     ) {
         // Raw mode: no restyling; typing keeps base attrs via the typing shim.
         guard !configuration.rawSourceMode else { return }
+        beginMutationTransaction()
+        defer { endMutationTransaction() }
         let (baseFont, paragraphStyle) = TextStylingService.makeBaseFontAndStyle(
             fontName: fontName,
             fontSize: fontSize,
@@ -388,6 +395,8 @@ extension NativeTextViewCoordinator {
     }
 
     func restyleParagraphs(_ paragraphs: [NSRange], in textView: NSTextView) {
+        beginMutationTransaction()
+        defer { endMutationTransaction() }
         let docText = textView.string      // one O(doc) bridge, reused below
         let parsed = parsedDocument(for: docText)
         let tokens = parsed.tokens

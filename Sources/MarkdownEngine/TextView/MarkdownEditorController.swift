@@ -103,6 +103,10 @@ public final class MarkdownEditorController {
     /// The one view showing this document. See ``attach(textView:coordinator:)``
     /// for why there is only ever one.
     private var attachment: Attachment?
+    /// Whether this document storage has received its initial text. Public
+    /// AppKit adoption uses this to distinguish first load from a later view
+    /// taking over the same authoritative storage.
+    private(set) var hasLoadedDocument = false
 
     private struct TextProjectionCacheKey: Equatable {
         let textView: ObjectIdentifier
@@ -350,8 +354,15 @@ public final class MarkdownEditorController {
         }
         let isNewView = attachment?.textView !== textView
         attachment = Attachment(textView: textView, coordinator: coordinator)
+        if textView.textLayoutManager?.textContentManager === textContentStorage {
+            hasLoadedDocument = true
+        }
         if isNewView, notifyEmbedder { onAttach?(textView) }
         return true
+    }
+
+    func markDocumentLoaded() {
+        hasLoadedDocument = true
     }
 
     func notifyEmbedderOfAttachment(_ textView: NSTextView) {

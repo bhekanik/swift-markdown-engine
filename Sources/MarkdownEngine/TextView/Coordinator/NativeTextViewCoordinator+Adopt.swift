@@ -22,8 +22,78 @@ public extension NativeTextViewCoordinator {
     ///
     /// Get a coordinator from `NativeTextViewWrapper(...).makeCoordinator()`,
     /// which seeds it with the configuration, fonts and controller you passed.
-    func adopt(_ textView: NSTextView, text: String) {
+    /// Returns `false` when that controller already drives another view. The
+    /// refused view remains isolated and inert; call `adopt` again after the
+    /// controller becomes available if this view should take over later.
+    @discardableResult
+    func adopt(_ textView: NSTextView, text: String) -> Bool {
+        let requestedController = editorController ?? requestedControllerWhileDetached
+        if let requestedController {
+            let hadAuthoritativeDocument = requestedController.hasLoadedDocument
+            guard requestedController.attach(
+                textView: textView,
+                coordinator: self,
+                notifyEmbedder: false
+            ) else {
+                // A failed admission must not run styling services. They are
+                // arbitrary embedder code and may reach the controller that
+                // still belongs to its current view.
+                guard self.textView == nil || self.textView === textView else {
+                    return false
+                }
+                self.textView = textView
+                editorController = nil
+                requestedControllerWhileDetached = requestedController
+                isDetachedFromDocument = true
+                textView.string = text
+                return false
+            }
+
+            self.textView = textView
+            editorController = requestedController
+            requestedControllerWhileDetached = nil
+            isDetachedFromDocument = false
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            if let layoutManager = textView.textLayoutManager {
+                requestedController.adopt(layoutManager: layoutManager)
+            }
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            let authoritativeText = hadAuthoritativeDocument ? textView.string : text
+            configureAdoptedTextView(
+                textView,
+                text: authoritativeText,
+                notifyTextFinder: false
+            )
+            requestedController.markDocumentLoaded()
+            requestedController.notifyEmbedderOfAttachment(textView)
+
+            guard editorController === requestedController,
+                  requestedController.textView === textView else {
+                editorController = nil
+                requestedControllerWhileDetached = requestedController
+                isDetachedFromDocument = true
+                if let layoutManager = textView.textLayoutManager,
+                   layoutManager.textContentManager == nil {
+                    NSTextContentStorage().addTextLayoutManager(layoutManager)
+                }
+                configureAdoptedTextView(textView, text: authoritativeText)
+                return false
+            }
+            return true
+        }
+
         self.textView = textView
+        requestedControllerWhileDetached = nil
+        isDetachedFromDocument = false
+        configureAdoptedTextView(textView, text: text)
+        return true
+    }
+
+    private func configureAdoptedTextView(
+        _ textView: NSTextView,
+        text: String,
+        notifyTextFinder: Bool = true
+    ) {
         textView.delegate = self
         textView.isRichText = true
         textView.allowsUndo = configuration.undo == .engine
@@ -35,9 +105,12 @@ public extension NativeTextViewCoordinator {
         }
         let font = NSFont(name: fontName, size: fontSize) ?? NSFont.systemFont(ofSize: fontSize)
         textView.font = font
-        rebuildTextStorageAndStyle(textView, from: text)
+        rebuildTextStorageAndStyle(
+            textView,
+            from: text,
+            notifyTextFinder: notifyTextFinder
+        )
         previousDisplayLength = (textView.string as NSString).length
         didInitialFormatting = true
-        editorController?.attach(textView: textView, coordinator: self)
     }
 }

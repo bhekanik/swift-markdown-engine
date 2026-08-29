@@ -372,6 +372,8 @@ extension NativeTextViewCoordinator {
         // Raw mode: plain source — no reveal.
         if configuration.rawSourceMode { return }
         if isWritingToolsActive { return }
+        beginMutationTransaction()
+        defer { endMutationTransaction() }
         PerfTrace.checkpoint("selIn")
         defer { PerfTrace.checkpoint("selOut") }
         // Assigning `textView.string` during a document rebuild re-enters here
