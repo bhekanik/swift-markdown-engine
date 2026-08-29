@@ -730,12 +730,23 @@ extension NativeTextViewCoordinator {
         }
         let preController = editorController
         let preRevision = preController?.documentRevision
+        let preTextStorage = textView.textStorage
+        let storageObservation = preTextStorage.map(beginObservingProposalTextStorage)
         if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }
-        guard textView.string == preText,
-              editorController === preController,
-              preController?.documentRevision == preRevision else {
+        if let storageObservation {
+            endObservingProposalTextStorage(storageObservation)
+        }
+        let hasSuspiciousStorageEdit = storageObservation?.didProcessCharacterEdit == true
+            || preTextStorage?.editedMask.contains(.editedCharacters) == true
+        // TextKit reports character-edit operations even when their final
+        // content is unchanged. Pay for the old equality check only on that
+        // exceptional path; ordinary keystrokes keep an O(1) boundary.
+        guard editorController === preController,
+              preController?.documentRevision == preRevision,
+              textView.textStorage === preTextStorage,
+              !hasSuspiciousStorageEdit || textView.string == preText else {
             discardPendingTextProposal()
             return false
         }
