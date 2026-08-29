@@ -19,6 +19,7 @@ import SwiftUI
 /// Notifications, Restyling, TextDelegate, WritingTools).
 public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var documentId: String?
+    var controllerlessRemountIdentity: AnyHashable?
     /// Remembered scroll offset (`bounds.origin.y`) per `documentId` — saved on
     /// switch-away, restored on switch-back. Dies with the coordinator, so an
     /// embedder that unmounts the editor supplies the two closures below instead.
@@ -256,6 +257,36 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         validPendingBindingWrite(from: textView, bindingText: bindingText)?.text
     }
 
+    func transferPendingBindingWrite(to replacement: NativeTextViewCoordinator) {
+        guard let textView,
+              let pending = validPendingBindingWrite(
+                  from: textView,
+                  bindingText: text
+              ),
+              let replacementTextView = replacement.textView,
+              replacement.documentId == pending.documentId,
+              replacement.text == pending.previousText,
+              replacementTextView.string == pending.previousText else {
+            invalidatePendingBindingWrite()
+            return
+        }
+        let selection = textView.selectedRange()
+        invalidatePendingBindingWrite()
+        replacement.rebuildTextStorageAndStyle(
+            replacementTextView,
+            from: pending.text
+        )
+        replacementTextView.setSelectedRange(
+            selection.clamped(toLength: (pending.text as NSString).length)
+        )
+        replacement.scheduleBindingWriteBack(pending.text, from: replacementTextView)
+    }
+
+    func invalidatePendingBindingWrite() {
+        pendingBindingWrite = nil
+        bindingWritebackGeneration &+= 1
+    }
+
     private func validPendingBindingWrite(
         generation: UInt64? = nil,
         from textView: NSTextView,
@@ -284,8 +315,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         preservingPendingBindingWrite: Bool = false
     ) {
         if preservingPendingBindingWrite { return }
-        bindingWritebackGeneration &+= 1
-        pendingBindingWrite = nil
+        invalidatePendingBindingWrite()
         lastSyncedText = newText
     }
     /// A controller takeover can expose newer document storage than the

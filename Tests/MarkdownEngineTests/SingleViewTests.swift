@@ -865,6 +865,279 @@ struct SingleViewTests {
         _ = NSApplication.shared
 
         do {
+            let text = MutableTextBox("alpha")
+            let mutations = MutationBox()
+            func root(documentId: String, identity: Int) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: nil,
+                    documentId: documentId,
+                    controllerlessRemountIdentity: "slot",
+                    identity: identity,
+                    onMutation: { mutations.values.append($0) },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root(documentId: "first", identity: 1))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let outgoing = try #require(textViews(in: host).first)
+            outgoing.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+
+            host.rootView = root(documentId: "second", identity: 2)
+            host.layoutSubtreeIfNeeded()
+            let replacement = try #require(textViews(in: host).first)
+            #expect(replacement !== outgoing)
+            #expect(replacement.string == "alpha")
+
+            await drainMainQueue()
+            host.layoutSubtreeIfNeeded()
+            #expect(replacement.string == "alpha")
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+            #expect(mutations.values == [MarkdownTextMutation(
+                range: NSRange(location: 5, length: 0),
+                replacement: "!"
+            )])
+        }
+
+        do {
+            let text = MutableTextBox("alpha")
+            func root(identity: Int) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: nil,
+                    documentId: "same",
+                    controllerlessRemountIdentity: "slot",
+                    identity: identity,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root(identity: 1))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let outgoing = try #require(textViews(in: host).first)
+            outgoing.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+            outgoing.setSelectedRange(NSRange(location: 6, length: 0))
+
+            host.rootView = root(identity: 2)
+            host.layoutSubtreeIfNeeded()
+            let replacement = try #require(textViews(in: host).first)
+            #expect(replacement !== outgoing)
+            #expect(replacement.string == "alpha!")
+            #expect(replacement.selectedRange() == NSRange(location: 6, length: 0))
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+
+            await drainMainQueue()
+            #expect(replacement.string == "alpha!")
+            #expect(text.value == "alpha!")
+            #expect(text.bindingWriteCount == 1)
+        }
+
+        do {
+            let leftText = MutableTextBox("alpha")
+            let rightText = MutableTextBox("bravo")
+            func root(_ text: MutableTextBox, identity: Int) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: nil,
+                    identity: identity,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let leftHost = NSHostingView(rootView: root(leftText, identity: 1))
+            let rightHost = NSHostingView(rootView: root(rightText, identity: 1))
+            for host in [leftHost, rightHost] {
+                host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+                host.layoutSubtreeIfNeeded()
+            }
+            let left = try #require(textViews(in: leftHost).first)
+            let right = try #require(textViews(in: rightHost).first)
+            right.setSelectedRange(NSRange(location: 2, length: 0))
+            left.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+
+            leftHost.rootView = root(leftText, identity: 2)
+            leftHost.layoutSubtreeIfNeeded()
+            let replacement = try #require(textViews(in: leftHost).first)
+            #expect(replacement.string == "alpha")
+            #expect(right.string == "bravo")
+            #expect(right.selectedRange() == NSRange(location: 2, length: 0))
+
+            await drainMainQueue()
+            #expect(leftText.value == "alpha")
+            #expect(rightText.value == "bravo")
+            #expect(leftText.bindingWriteCount == 0)
+            #expect(rightText.bindingWriteCount == 0)
+        }
+
+        do {
+            let leftText = MutableTextBox("alpha")
+            let rightText = MutableTextBox("bravo")
+            func root(
+                _ text: MutableTextBox,
+                remountIdentity: String,
+                identity: Int
+            ) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: nil,
+                    documentId: "shared",
+                    controllerlessRemountIdentity: remountIdentity,
+                    identity: identity,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let leftHost = NSHostingView(rootView: root(
+                leftText,
+                remountIdentity: "left-slot",
+                identity: 1
+            ))
+            let rightHost = NSHostingView(rootView: root(
+                rightText,
+                remountIdentity: "right-slot",
+                identity: 1
+            ))
+            for host in [leftHost, rightHost] {
+                host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+                host.layoutSubtreeIfNeeded()
+            }
+            let left = try #require(textViews(in: leftHost).first)
+            let right = try #require(textViews(in: rightHost).first)
+            left.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+            right.insertText("?", replacementRange: NSRange(location: 5, length: 0))
+            left.setSelectedRange(NSRange(location: 6, length: 0))
+            right.setSelectedRange(NSRange(location: 1, length: 0))
+
+            leftHost.rootView = root(
+                leftText,
+                remountIdentity: "left-slot",
+                identity: 2
+            )
+            rightHost.rootView = root(
+                rightText,
+                remountIdentity: "right-slot",
+                identity: 2
+            )
+            leftHost.layoutSubtreeIfNeeded()
+            rightHost.layoutSubtreeIfNeeded()
+            let leftReplacement = try #require(textViews(in: leftHost).first)
+            let rightReplacement = try #require(textViews(in: rightHost).first)
+            #expect(leftReplacement.string == "alpha!")
+            #expect(rightReplacement.string == "bravo?")
+            #expect(leftReplacement.selectedRange() == NSRange(location: 6, length: 0))
+            #expect(rightReplacement.selectedRange() == NSRange(location: 1, length: 0))
+
+            await drainMainQueue()
+            #expect(leftText.value == "alpha!")
+            #expect(rightText.value == "bravo?")
+            #expect(leftText.bindingWriteCount == 1)
+            #expect(rightText.bindingWriteCount == 1)
+        }
+
+        do {
+            let text = MutableTextBox("alpha")
+            func root(remountIdentity: String, identity: Int) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: nil,
+                    documentId: "same",
+                    controllerlessRemountIdentity: remountIdentity,
+                    identity: identity,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root(remountIdentity: "first-slot", identity: 1))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let textView = try #require(textViews(in: host).first)
+            textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+
+            host.rootView = root(remountIdentity: "second-slot", identity: 1)
+            host.layoutSubtreeIfNeeded()
+            let sameTextView = try #require(textViews(in: host).first)
+            #expect(sameTextView === textView)
+
+            host.rootView = root(remountIdentity: "second-slot", identity: 2)
+            host.layoutSubtreeIfNeeded()
+            #expect(try #require(textViews(in: host).first).string == "alpha")
+
+            await drainMainQueue()
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+        }
+
+        do {
+            let controller = MarkdownEditorController()
+            let text = MutableTextBox("alpha")
+            func root(
+                controller: MarkdownEditorController?,
+                identity: Int
+            ) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: controller,
+                    controllerlessRemountIdentity: "slot",
+                    identity: identity,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root(controller: nil, identity: 1))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let textView = try #require(textViews(in: host).first)
+            textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+
+            host.rootView = root(controller: controller, identity: 1)
+            host.layoutSubtreeIfNeeded()
+            #expect(controller.textView === textView)
+            host.rootView = root(controller: nil, identity: 2)
+            host.layoutSubtreeIfNeeded()
+            #expect(try #require(textViews(in: host).first).string == "alpha")
+
+            await drainMainQueue()
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+        }
+
+        do {
+            let text = MutableTextBox("alpha")
+            func root(documentId: String, identity: Int) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: nil,
+                    documentId: documentId,
+                    controllerlessRemountIdentity: "slot",
+                    identity: identity,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root(documentId: "first", identity: 1))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let textView = try #require(textViews(in: host).first)
+            textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+
+            host.rootView = root(documentId: "second", identity: 1)
+            host.layoutSubtreeIfNeeded()
+            let switchedTextView = try #require(textViews(in: host).first)
+            #expect(switchedTextView === textView)
+            host.rootView = root(documentId: "second", identity: 2)
+            host.layoutSubtreeIfNeeded()
+            #expect(try #require(textViews(in: host).first).string == "alpha")
+
+            await drainMainQueue()
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+        }
+
+        do {
             let controller = MarkdownEditorController()
             let text = MutableTextBox("alpha")
             func root(identity: Int) -> MutableAttachmentHost {
@@ -1105,6 +1378,7 @@ struct SingleViewTests {
         var configuration: MarkdownEditorConfiguration = .default
         var fontSize: CGFloat = 16
         var documentId = "default"
+        var controllerlessRemountIdentity: AnyHashable?
         var identity: Int?
         let onMutation: (MarkdownTextMutation) -> Void
         let onAttachmentChange: (NSTextView?) -> Void
@@ -1120,6 +1394,7 @@ struct SingleViewTests {
                 fontName: "Helvetica",
                 fontSize: fontSize,
                 documentId: documentId,
+                controllerlessRemountIdentity: controllerlessRemountIdentity,
                 onAttachmentChange: onAttachmentChange,
                 onTextMutation: onMutation
             )

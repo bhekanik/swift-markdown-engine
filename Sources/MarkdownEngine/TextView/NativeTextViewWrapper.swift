@@ -11,6 +11,54 @@
 import SwiftUI
 import AppKit
 
+@MainActor
+private enum ControllerlessRemountRegistry {
+    private struct Key: Hashable {
+        let remountIdentity: AnyHashable
+        let documentId: String
+    }
+
+    private final class WeakCoordinator {
+        weak var value: NativeTextViewCoordinator?
+
+        init(_ value: NativeTextViewCoordinator) {
+            self.value = value
+        }
+    }
+
+    private static var coordinators: [Key: WeakCoordinator] = [:]
+    private static var keysByCoordinator: [ObjectIdentifier: Key] = [:]
+
+    static func register(
+        _ coordinator: NativeTextViewCoordinator,
+        remountIdentity: AnyHashable?,
+        documentId: String,
+        active: Bool
+    ) {
+        unregister(coordinator)
+        guard active, let remountIdentity else { return }
+        let key = Key(remountIdentity: remountIdentity, documentId: documentId)
+        coordinators[key] = WeakCoordinator(coordinator)
+        keysByCoordinator[ObjectIdentifier(coordinator)] = key
+    }
+
+    static func replacement(for coordinator: NativeTextViewCoordinator) -> NativeTextViewCoordinator? {
+        guard let key = keysByCoordinator[ObjectIdentifier(coordinator)],
+              let replacement = coordinators[key]?.value,
+              replacement !== coordinator else { return nil }
+        return replacement
+    }
+
+    static func unregister(_ coordinator: NativeTextViewCoordinator) {
+        guard let key = keysByCoordinator.removeValue(
+            forKey: ObjectIdentifier(coordinator)
+        ) else { return }
+        if coordinators[key]?.value === coordinator {
+            coordinators[key] = nil
+        }
+    }
+}
+
 /// SwiftUI bridge for MarkdownEngine's AppKit-backed editor.
 ///
 /// Wraps a TextKit 2 `NSTextView` inside an `NSScrollView` and exposes a
@@ -63,6 +111,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// dropped only if the document's text changes while it is switched away. Set a
     /// stable, unique value per document so undo stays scoped.
     public var documentId: String
+    /// Stable identity for one controller-less editor slot across SwiftUI
+    /// remounts. Set this only when replacements with the same value represent
+    /// the same live editor, and use a distinct value for every simultaneously
+    /// mounted slot. It lets an unflushed local edit move to that exact replacement
+    /// without using `documentId` as a global view identity.
+    public var controllerlessRemountIdentity: AnyHashable?
     /// When `false` the editor renders read-only with no caret.
     public var isEditable: Bool
     /// Reports whether this wrapper owns its controller's one editor slot.
@@ -113,6 +167,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         fontName: String = "SF Pro",
         fontSize: CGFloat = 16,
         documentId: String = "default",
+        controllerlessRemountIdentity: AnyHashable? = nil,
         isEditable: Bool = true,
         onAttachmentChange: ((NSTextView?) -> Void)? = nil,
         onTextMutation: ((MarkdownTextMutation) -> Void)? = nil,
@@ -131,6 +186,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         self.fontName = fontName
         self.fontSize = fontSize
         self.documentId = documentId
+        self.controllerlessRemountIdentity = controllerlessRemountIdentity
         self.isEditable = isEditable
         self.onAttachmentChange = onAttachmentChange
         self.onTextMutation = onTextMutation
@@ -319,6 +375,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.requestedControllerWhileDetached = nil
             context.coordinator.isDetachedFromDocument = false
             context.coordinator.hasPendingAttachmentAnnouncement = true
+            ControllerlessRemountRegistry.register(
+                context.coordinator,
+                remountIdentity: controllerlessRemountIdentity,
+                documentId: documentId,
+                active: true
+            )
         }
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
@@ -390,6 +452,17 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         guard let textView = nsView.nativeTextView else {
             return
         }
+        if context.coordinator.controllerlessRemountIdentity != controllerlessRemountIdentity {
+            context.coordinator.invalidatePendingBindingWrite()
+            context.coordinator.controllerlessRemountIdentity = controllerlessRemountIdentity
+        }
+        ControllerlessRemountRegistry.register(
+            context.coordinator,
+            remountIdentity: controllerlessRemountIdentity,
+            documentId: documentId,
+            active: controller == nil
+                && context.coordinator.requestedControllerWhileDetached == nil
+        )
         let isNodeSwitch = context.coordinator.documentId != documentId
         // This snapshot chooses text authority, not admission. A callback may
         // free the target, but its document storage remains authoritative.
@@ -832,6 +905,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         context.coordinator.didInitialFormatting = true
+        ControllerlessRemountRegistry.register(
+            context.coordinator,
+            remountIdentity: controllerlessRemountIdentity,
+            documentId: documentId,
+            active: controller == nil
+                && context.coordinator.requestedControllerWhileDetached == nil
+        )
         if shouldReportDetachedIncoming && context.coordinator.isDetachedFromDocument {
             context.coordinator.reportAttachment(nil)
         }
@@ -845,6 +925,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             fontSize: fontSize
         )
         coordinator.documentId = documentId
+        coordinator.controllerlessRemountIdentity = controllerlessRemountIdentity
         coordinator.onPersistScrollOffset = onPersistScrollOffset
         coordinator.onAttachmentChange = onAttachmentChange
         coordinator.onTextMutation = onTextMutation
@@ -866,6 +947,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// different screen — and that is the only moment left to record where the
     /// reader was; the coordinator's own offsets die with it.
     public static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+        if let replacement = ControllerlessRemountRegistry.replacement(for: coordinator) {
+            coordinator.transferPendingBindingWrite(to: replacement)
+        } else {
+            coordinator.invalidatePendingBindingWrite()
+        }
+        ControllerlessRemountRegistry.unregister(coordinator)
         coordinator.reportAttachment(nil)
         coordinator.onAttachmentChange = nil
         if let textView = coordinator.textView {
