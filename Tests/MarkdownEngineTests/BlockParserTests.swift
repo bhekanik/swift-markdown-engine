@@ -138,6 +138,26 @@ struct BlockParserTests {
         assertTiles(text)
     }
 
+    @Test("link definitions find unescaped angle closers and retain source bytes")
+    func escapedLinkDefinitionDestination() throws {
+        let text = #"[id]: <https://example.com/a\>b> "ti\*tle""#
+        let node = try #require(DocumentAST.parse(text).first)
+        guard case .linkDefinition(let range, _, let destination, let title) = node else {
+            Issue.record("Expected link definition")
+            return
+        }
+        let ns = text as NSString
+        #expect(ns.substring(with: range) == text)
+        #expect(ns.substring(with: destination) == #"https://example.com/a\>b"#)
+        #expect(MarkdownLinkSyntax.unescapedText(in: ns, range: destination)
+            == "https://example.com/a>b")
+        #expect(title.map { MarkdownLinkSyntax.unescapedText(in: ns, range: $0) }
+            == "ti*tle")
+
+        let malformed = #"[id]: <https://example.com/a\>"#
+        #expect(BlockParser.parse(malformed).first?.kind == .paragraph)
+    }
+
     @Test("footnote definitions include four-space continuation lines")
     func footnoteDefinitionContinuation() throws {
         let text = "[^note]: first\n    *second*\nplain"

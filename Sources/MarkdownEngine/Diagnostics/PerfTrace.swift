@@ -30,7 +30,7 @@ enum PerfTrace {
 #endif
 
     // All call sites run on the main thread (the coordinator + text view are
-    // main-actor), so plain static state is safe under the package's Swift 5 mode.
+    // main-actor), so plain static state is safe under the package's Swift 6 isolation.
     private static var active = false
     private static var frameStart: UInt64 = 0
     private static var docLength = 0

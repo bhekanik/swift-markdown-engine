@@ -58,13 +58,10 @@ enum MarkdownLinkSyntax {
             let open = i
             i += 1
             let destinationStart = i
-            while i < length {
-                let c = ns.character(at: i)
-                guard c != lf, c != cr else { return nil }
-                if c == rangle, !isEscaped(i, in: ns) { break }
-                i += 1
+            guard let close = closingAngleDestination(in: ns, from: i, end: length) else {
+                return nil
             }
-            guard i < length, ns.character(at: i) == rangle else { return nil }
+            i = close
             destination = NSRange(location: destinationStart, length: i - destinationStart)
             markers = [NSRange(location: open, length: 1), NSRange(location: i, length: 1)]
             i += 1
@@ -206,8 +203,10 @@ enum MarkdownLinkSyntax {
             let open = i
             i += 1
             let destinationStart = i
-            while i < end, ns.character(at: i) != rangle { i += 1 }
-            guard i < end, !isEscaped(i, in: ns) else { return nil }
+            guard let close = closingAngleDestination(in: ns, from: i, end: end) else {
+                return nil
+            }
+            i = close
             destination = NSRange(location: destinationStart, length: i - destinationStart)
             markers = [NSRange(location: open, length: 1), NSRange(location: i, length: 1)]
             i += 1
@@ -286,12 +285,56 @@ enum MarkdownLinkSyntax {
         return nil
     }
 
+    private static func closingAngleDestination(
+        in ns: NSString,
+        from start: Int,
+        end: Int
+    ) -> Int? {
+        var i = start
+        while i < end {
+            let character = ns.character(at: i)
+            if character == lf || character == cr { return nil }
+            if character == langle, !isEscaped(i, in: ns) { return nil }
+            if character == rangle, !isEscaped(i, in: ns) { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    static func unescapedText(in ns: NSString, range: NSRange) -> String {
+        var codeUnits: [unichar] = []
+        codeUnits.reserveCapacity(range.length)
+        var i = range.location
+        let end = NSMaxRange(range)
+        while i < end {
+            let character = ns.character(at: i)
+            if character == backslash, i + 1 < end {
+                let next = ns.character(at: i + 1)
+                if isAsciiPunctuation(next) {
+                    codeUnits.append(next)
+                    i += 2
+                    continue
+                }
+            }
+            codeUnits.append(character)
+            i += 1
+        }
+        return String(decoding: codeUnits, as: UTF16.self)
+    }
+
     private static func skipWhitespace(in ns: NSString, index: inout Int, end: Int) {
         while index < end, isWhitespace(ns.character(at: index)) { index += 1 }
     }
 
     private static func isWhitespace(_ c: unichar) -> Bool {
         c == space || c == tab
+    }
+
+    private static func isAsciiPunctuation(_ character: unichar) -> Bool {
+        (character >= 0x21 && character <= 0x2F)
+            || (character >= 0x3A && character <= 0x40)
+            || (character >= 0x5B && character <= 0x60)
+            || (character >= 0x7B && character <= 0x7E)
     }
 
     private static func isEscaped(_ index: Int, in ns: NSString) -> Bool {

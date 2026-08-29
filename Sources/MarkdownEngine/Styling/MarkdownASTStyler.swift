@@ -1135,7 +1135,7 @@ enum MarkdownASTStyler {
         emailFallback: Bool = false
     ) -> URL? {
         guard range.length > 0 else { return nil }
-        var value = ctx.ns.substring(with: range)
+        var value = MarkdownLinkSyntax.unescapedText(in: ctx.ns, range: range)
         if emailFallback, value.contains("@"), !value.contains(":") {
             value = "mailto:\(value)"
         } else if !value.contains("://") && !value.hasPrefix("mailto:") {

@@ -74,6 +74,31 @@ struct MarkdownAccessibilityProjectionTests {
         #expect(links.contains("https://reference.example"))
     }
 
+    @Test("escaped inline, image, and reference destinations expose decoded semantics")
+    func escapedDestinations() {
+        let source = #"""
+[inline](<https://example.com/a\>b>)
+![image](https://example.com/a\)b)
+[reference][id]
+
+[id]: <https://example.com/a\>b>
+"""#
+        let projection = project(source)
+
+        #expect(projection.text.string == "inline\nimage\nreference\n\n")
+        #expect(projection.spans.contains {
+            $0.role == .link(destination: "https://example.com/a>b")
+                && substring($0.visibleRange, in: projection.text.string) == "inline"
+        })
+        #expect(projection.spans.contains {
+            $0.role == .image(label: "image", destination: "https://example.com/a)b")
+        })
+        #expect(projection.spans.contains {
+            $0.role == .link(destination: "https://example.com/a>b")
+                && substring($0.visibleRange, in: projection.text.string) == "reference"
+        })
+    }
+
     @Test("raw mode exposes source text without rendered structure")
     func rawModeIsUnstructuredSource() {
         let source = "# [Heading](https://example.com)\n"

@@ -264,24 +264,28 @@ enum InlineParser {
 
     private static func scanLinkFamily(_ ns: NSString, len: Int, claimed: ClaimedIndex, registry: ExtensionRegistry) -> [Span] {
         var claimed = claimed
-        // A candidate overlapping a claimed span is rejected, except for spans
-        // wholly nested inside a Markdown link's label (#118). Only that case
-        // needs the full overlap list; everything else short-circuits on the
-        // first one.
+        // A candidate overlapping a claimed span is rejected unless that escape
+        // is meaningful inside the candidate. Those cases need the full overlap
+        // list; everything else short-circuits on the first one.
         func hasDisallowedClaimedOverlap(_ span: Span) -> Bool {
-            let nestedRange: NSRange?
+            let allowedRanges: [NSRange]
             switch span {
-            case .link(_, let textRange, _, _, _),
-                 .referenceLink(_, let textRange, _, _):
-                nestedRange = textRange
+            case .link(_, let textRange, let url, let title, _):
+                allowedRanges = [textRange, url] + (title.map { [$0] } ?? [])
+            case .image(_, _, let url, let title, _):
+                allowedRanges = [url] + (title.map { [$0] } ?? [])
+            case .referenceLink(_, let textRange, _, _):
+                allowedRanges = [textRange]
             case .autolink:
                 // Backslashes have no escape semantics inside autolinks, including before `>`.
-                nestedRange = span.fullRange
+                allowedRanges = [span.fullRange]
             default:
-                nestedRange = nil
+                allowedRanges = []
             }
-            guard let nestedRange else { return claimed.overlaps(span.fullRange) }
-            return claimed.overlapping(span.fullRange).contains { !rangeContains(nestedRange, $0) }
+            guard !allowedRanges.isEmpty else { return claimed.overlaps(span.fullRange) }
+            return claimed.overlapping(span.fullRange).contains { claimedRange in
+                !allowedRanges.contains { rangeContains($0, claimedRange) }
+            }
         }
         var spans: [Span] = []
         var i = 0

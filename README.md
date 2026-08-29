@@ -5,7 +5,7 @@
 <h1 align="center">SwiftMarkdownEngine</h1>  
 
 <p align="center">
-  <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-5.9+-F05138?logo=swift&logoColor=white" alt="Swift 5.9+" /></a>
+  <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-6.2+-F05138?logo=swift&logoColor=white" alt="Swift 6.2+" /></a>
   <a href="https://developer.apple.com/macos/"><img src="https://img.shields.io/badge/Platforms-macOS%2014+-lightgrey" alt="Platforms macOS 14+" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellow.svg" alt="License: Apache 2.0" /></a>
   <a href="https://github.com/nodes-app/swift-markdown-engine/actions/workflows/ci.yml"><img src="https://github.com/nodes-app/swift-markdown-engine/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
@@ -195,7 +195,7 @@ hosted on Swift Package Index, docs will live at
 ## Requirements & Status
 
 - macOS 14 or later (15.1+ for Apple Writing Tools integration)
-- Swift 5.9 / Xcode 15 or later
+- Swift 6.2 / Xcode 26 or later
 
 MarkdownEngine is currently **pre-1.0**. The public API may change between
 minor releases as it stabilizes. Production use is fine — pin a specific

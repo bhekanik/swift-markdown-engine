@@ -403,6 +403,31 @@ struct MarkdownASTStylerTests {
     }
 
     @MainActor
+    @Test("escaped destinations create decoded clickable links without changing source")
+    func escapedDestinationsAreClickable() throws {
+        let source = #"""
+[inline](https://example.com/a\)b)
+[reference][id]
+
+[id]: <https://example.com/a\>b>
+"""#
+        let rendered = render(source)
+        let ns = source as NSString
+        expectSourceBytesUnchanged(source, rendered)
+
+        let inline = try #require(
+            rendered.attribute(.link, at: ns.range(of: "inline").location, effectiveRange: nil)
+                as? URL
+        )
+        let reference = try #require(
+            rendered.attribute(.link, at: ns.range(of: "reference").location, effectiveRange: nil)
+                as? URL
+        )
+        #expect(inline == URL(string: "https://example.com/a)b"))
+        #expect(reference == URL(string: "https://example.com/a>b"))
+    }
+
+    @MainActor
     @Test("reference links resolve from full definitions during scoped styling")
     func scopedReferenceLinksUseFullDefinitionMap() throws {
         let source = "[Straße   Note][ STRASSE NOTE ]\n\n[strasse note]: https://example.com \"title\"\n[other]: /two\n"

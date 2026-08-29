@@ -27,6 +27,22 @@ struct MarkdownHTMLRendererTests {
         #expect(html("a < b & c > d") == "<p>a &lt; b &amp; c &gt; d</p>")
     }
 
+    @Test("escaped punctuation is decoded in link targets and titles")
+    func escapedLinkTargets() {
+        #expect(html(#"[inline](<https://example.com/a\>b> "ti\*tle")"#)
+            == #"<p><a href="https://example.com/a&gt;b" title="ti*tle">inline</a></p>"#)
+        #expect(html(#"[official](/bar\* "ti\*tle")"#)
+            == #"<p><a href="/bar*" title="ti*tle">official</a></p>"#)
+        #expect(html(#"![image](https://example.com/a\)b "cap\*tion")"#)
+            == #"<p><img src="https://example.com/a)b" alt="image" title="cap*tion"></p>"#)
+        #expect(html(#"""
+[reference][id]
+
+[id]: <https://example.com/a\>b> 'ti\'tle'
+"""#)
+            == "<p><a href=\"https://example.com/a&gt;b\" title=\"ti'tle\">reference</a>\n</p>")
+    }
+
     @Test("fenced code block — language class, no language, html escaping")
     func fencedCode() {
         #expect(html("```swift\nlet x = 1\n```") == "<pre><code class=\"language-swift\">let x = 1</code></pre>")

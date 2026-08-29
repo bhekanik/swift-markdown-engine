@@ -94,6 +94,19 @@ struct MarkdownTextProjectionTests {
         #expect(projection.string == "A known and [orphan][missing].\n\n")
     }
 
+    @Test("escaped link targets remain hidden across inline, image, and reference forms")
+    func projectsEscapedLinkTargets() {
+        let source = #"""
+[inline](<https://example.com/a\>b>) ![image](https://example.com/a\)b) [reference][id]
+
+[id]: <https://example.com/a\>b> "ti\*tle"
+"""#
+        let projection = project(source)
+
+        #expect(projection.string == "inline image reference\n\n")
+        #expect(!projection.string.contains("example.com"))
+    }
+
     @Test("every projected span round-trips across all golden constructs")
     func goldenSpansRoundTrip() {
         for entry in GoldenCorpusTests.corpus {

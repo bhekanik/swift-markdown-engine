@@ -4,8 +4,8 @@ import PackageDescription
 // MarkdownEngine — a TextKit-2 backed Markdown editor view for macOS.
 //
 // Embedders import `MarkdownEngine` and supply their own adapters that
-// conform to the engine's service protocols (`EmbeddedImageProvider`,
-// `SyntaxHighlighter`). The engine has zero external dependencies.
+// conform to the engine's service protocols, such as `SyntaxHighlighter`.
+// The engine has zero external dependencies.
 //
 // Recto fork: the turnkey `MarkdownEngineCodeBlocks` / `MarkdownEngineLatex`
 // products are gone along with their HighlighterSwift and SwiftMath

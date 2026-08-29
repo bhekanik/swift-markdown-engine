@@ -117,7 +117,10 @@ private enum SemanticCollector {
             let key = MarkdownLinkSyntax.normalizedLabel(in: source, range: label)
             if result[key] == nil {
                 result[key] = ReferenceDefinition(
-                    destination: source.substring(with: destination)
+                    destination: MarkdownLinkSyntax.unescapedText(
+                        in: source,
+                        range: destination
+                    )
                 )
             }
         }
@@ -230,7 +233,10 @@ private enum SemanticCollector {
             case .link(_, let textRange, let url, _, _, let children):
                 result.append(Candidate(
                     range: textRange,
-                    role: .link(destination: source.substring(with: url))
+                    role: .link(destination: MarkdownLinkSyntax.unescapedText(
+                        in: source,
+                        range: url
+                    ))
                 ))
                 collect(
                     children,
@@ -245,7 +251,7 @@ private enum SemanticCollector {
                     range: alt,
                     role: .image(
                         label: source.substring(with: alt),
-                        destination: source.substring(with: url)
+                        destination: MarkdownLinkSyntax.unescapedText(in: source, range: url)
                     )
                 ))
 

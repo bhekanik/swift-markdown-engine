@@ -267,20 +267,32 @@ public enum MarkdownHTMLRenderer {
             }
 
         case .link(_, _, let url, let title, _, let children):
-            let titleAttribute = title.map { " title=\"\(escape(ns.substring(with: $0)))\"" } ?? ""
-            return "<a href=\"\(escape(ns.substring(with: url)))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
+            let titleAttribute = title.map {
+                " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""
+            } ?? ""
+            let destination = MarkdownLinkSyntax.unescapedText(in: ns, range: url)
+            return "<a href=\"\(escape(destination))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
 
         case .image(_, let alt, let url, let title, _):
-            let titleAttribute = title.map { " title=\"\(escape(ns.substring(with: $0)))\"" } ?? ""
-            return "<img src=\"\(escape(ns.substring(with: url)))\" alt=\"\(escape(ns.substring(with: alt)))\"\(titleAttribute)>"
+            let titleAttribute = title.map {
+                " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""
+            } ?? ""
+            let destination = MarkdownLinkSyntax.unescapedText(in: ns, range: url)
+            return "<img src=\"\(escape(destination))\" alt=\"\(escape(ns.substring(with: alt)))\"\(titleAttribute)>"
 
         case .referenceLink(let range, let textRange, let label, _, let children):
             let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label ?? textRange)
             guard let definition = env.definitions[key] else {
                 return escape(ns.substring(with: range))
             }
-            let titleAttribute = definition.title.map { " title=\"\(escape(ns.substring(with: $0)))\"" } ?? ""
-            return "<a href=\"\(escape(ns.substring(with: definition.destination)))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
+            let titleAttribute = definition.title.map {
+                " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""
+            } ?? ""
+            let destination = MarkdownLinkSyntax.unescapedText(
+                in: ns,
+                range: definition.destination
+            )
+            return "<a href=\"\(escape(destination))\"\(titleAttribute)>\(renderInlines(children, ns: ns, env: env, linkable: false))</a>"
 
         case .footnoteReference(_, let label, _):
             return "<sup>\(escape(ns.substring(with: label)))</sup>"

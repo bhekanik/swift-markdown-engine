@@ -258,6 +258,53 @@ struct InlineParserTests {
         ])
     }
 
+    @Test("link destinations and titles honor CommonMark punctuation escapes")
+    func escapedLinkTargets() throws {
+        let cases: [(source: String, destination: String, title: String?, image: Bool)] = [
+            (#"[angle](<https://example.com/a\>b> "ti\*tle")"#, "https://example.com/a>b", "ti*tle", false),
+            (#"[paren](https://example.com/a\)b 'ti\'tle')"#, "https://example.com/a)b", "ti'tle", false),
+            (#"[official](/bar\* "ti\*tle")"#, "/bar*", "ti*tle", false),
+            (#"![image](<https://example.com/a\>b>)"#, "https://example.com/a>b", nil, true),
+            (#"[slash](path\\)"#, #"path\"#, nil, false),
+        ]
+
+        for entry in cases {
+            let node = try #require(InlineParser.parse(entry.source).first)
+            let ns = entry.source as NSString
+            let range: NSRange
+            let destination: NSRange
+            let title: NSRange?
+            switch node {
+            case .link(let nodeRange, _, let url, let nodeTitle, _, _):
+                #expect(entry.image == false)
+                range = nodeRange
+                destination = url
+                title = nodeTitle
+            case .image(let nodeRange, _, let url, let nodeTitle, _):
+                #expect(entry.image)
+                range = nodeRange
+                destination = url
+                title = nodeTitle
+            default:
+                Issue.record("Expected link or image for \(entry.source)")
+                continue
+            }
+            #expect(ns.substring(with: range) == entry.source)
+            #expect(MarkdownLinkSyntax.unescapedText(in: ns, range: destination)
+                == entry.destination)
+            #expect(title.map { MarkdownLinkSyntax.unescapedText(in: ns, range: $0) }
+                == entry.title)
+        }
+
+        for malformed in [#"[x](<a\>)"#, #"[x](a\)"#, #"[x](<a<b>)"#] {
+            #expect(InlineParser.parse(malformed).allSatisfy { node in
+                if case .link = node { return false }
+                if case .image = node { return false }
+                return true
+            })
+        }
+    }
+
     @Test("full, collapsed, and shortcut reference links preserve their label shape")
     func referenceLinks() {
         #expect(InlineParser.parse("[text][ID]") == [
