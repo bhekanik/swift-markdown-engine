@@ -731,10 +731,7 @@ extension NativeTextViewCoordinator {
         let preController = editorController
         let preRevision = preController?.documentRevision
         let preTextStorage = textView.textStorage
-        let storageObservation = preTextStorage.map(ProposalTextStorageObservation.init(storage:))
-        if let storageObservation {
-            beginObservingProposalTextStorage(storageObservation)
-        }
+        let storageObservation = preTextStorage.map(beginObservingProposalTextStorage)
         if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }

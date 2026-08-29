@@ -8,14 +8,52 @@
 // Keeps the editor in sync while you type, updating formatting, selections,
 // and other editing behavior in one place.
 import AppKit
+import os
 import SwiftUI
 
-final class ProposalTextStorageObservation {
+final class ProposalTextStorageRegistration {
     let storage: NSTextStorage
-    var didProcessCharacterEdit = false
+    let generation: OSAllocatedUnfairLock<UInt64>
+    private var notificationToken: NSObjectProtocol?
 
     init(storage: NSTextStorage) {
         self.storage = storage
+        let generation = OSAllocatedUnfairLock(initialState: UInt64(0))
+        self.generation = generation
+        notificationToken = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification,
+            object: storage,
+            queue: nil
+        ) { notification in
+            guard let storage = notification.object as? NSTextStorage,
+                  storage.editedMask.contains(.editedCharacters) else { return }
+            generation.withLock { $0 &+= 1 }
+        }
+    }
+
+    func invalidate() {
+        guard let notificationToken else { return }
+        NotificationCenter.default.removeObserver(notificationToken)
+        self.notificationToken = nil
+    }
+
+    isolated deinit {
+        invalidate()
+    }
+}
+
+final class ProposalTextStorageObservation {
+    let registration: ProposalTextStorageRegistration
+    let startingGeneration: UInt64
+
+    var storage: NSTextStorage { registration.storage }
+    var didProcessCharacterEdit: Bool {
+        registration.generation.withLock { $0 } != startingGeneration
+    }
+
+    init(registration: ProposalTextStorageRegistration) {
+        self.registration = registration
+        startingGeneration = registration.generation.withLock { $0 }
     }
 }
 
@@ -590,18 +628,15 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         subscribeToAppearanceNotification()
     }
 
-    func beginObservingProposalTextStorage(_ observation: ProposalTextStorageObservation) {
-        let alreadyObserved = activeProposalTextStorageObservations.contains {
-            $0.storage === observation.storage
-        }
+    func beginObservingProposalTextStorage(
+        _ storage: NSTextStorage
+    ) -> ProposalTextStorageObservation {
+        let registration = activeProposalTextStorageObservations.first {
+            $0.storage === storage
+        }?.registration ?? ProposalTextStorageRegistration(storage: storage)
+        let observation = ProposalTextStorageObservation(registration: registration)
         activeProposalTextStorageObservations.append(observation)
-        guard !alreadyObserved else { return }
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleTextStorageDidProcessEditing(_:)),
-            name: NSTextStorage.didProcessEditingNotification,
-            object: observation.storage
-        )
+        return observation
     }
 
     func endObservingProposalTextStorage(_ observation: ProposalTextStorageObservation) {
@@ -612,20 +647,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         guard !activeProposalTextStorageObservations.contains(where: {
             $0.storage === observation.storage
         }) else { return }
-        NotificationCenter.default.removeObserver(
-            self,
-            name: NSTextStorage.didProcessEditingNotification,
-            object: observation.storage
-        )
-    }
-
-    @objc private func handleTextStorageDidProcessEditing(_ notification: Notification) {
-        guard let storage = notification.object as? NSTextStorage,
-              storage.editedMask.contains(.editedCharacters) else { return }
-        for observation in activeProposalTextStorageObservations
-            where observation.storage === storage {
-            observation.didProcessCharacterEdit = true
-        }
+        observation.registration.invalidate()
     }
 
     /// (Re)register the syntax-highlighter appearance observer; idempotent and unsubscribes on nil.

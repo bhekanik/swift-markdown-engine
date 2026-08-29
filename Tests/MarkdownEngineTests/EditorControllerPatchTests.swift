@@ -50,6 +50,16 @@ struct EditorControllerPatchTests {
         func textFinderClientStringWillChange() { onStringWillChange?() }
     }
 
+    // The regression deliberately transfers detached storage between threads,
+    // with the semaphore keeping all access one-thread-at-a-time.
+    nonisolated private final class SerializedTextStorage: @unchecked Sendable {
+        let storage: NSTextStorage
+
+        init(_ storage: NSTextStorage) {
+            self.storage = storage
+        }
+    }
+
     private final class CallbackSyntaxHighlighter: SyntaxHighlighter, @unchecked Sendable {
         var onHighlight: (() -> Void)?
 
@@ -481,6 +491,57 @@ struct EditorControllerPatchTests {
         #expect(coordinator.pendingEditCount == 0)
     }
 
+    @Test("a detached storage processed on a background thread invalidates the proposal")
+    func backgroundProcessedDetachedStorageInvalidatesPendingSingleEdit() throws {
+        var mutations: [MarkdownTextMutation] = []
+        let controller = MarkdownEditorController()
+        let wrapper = NativeTextViewWrapper(
+            text: .constant("abcdef"),
+            controller: controller,
+            onTextMutation: { mutations.append($0) }
+        )
+        let coordinator = wrapper.makeCoordinator()
+        let textView = NativeTextView(
+            frame: NSRect(x: 0, y: 0, width: 600, height: 400)
+        )
+        #expect(coordinator.adopt(textView, text: "abcdef"))
+        let layoutManager = try #require(textView.textLayoutManager)
+        let textContentStorage = try #require(layoutManager.textContentManager)
+        let storage = try #require(textView.textStorage)
+        let transferredStorage = SerializedTextStorage(storage)
+        let responder = TextFinderResponder()
+        responder.onStringWillChange = {
+            storage.beginEditing()
+            storage.replaceCharacters(
+                in: NSRange(location: 0, length: 0),
+                with: "X"
+            )
+            textContentStorage.removeTextLayoutManager(layoutManager)
+
+            let processingFinished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                transferredStorage.storage.endEditing()
+                processingFinished.signal()
+            }
+            processingFinished.wait()
+
+            textContentStorage.addTextLayoutManager(layoutManager)
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 4, length: 1),
+            replacementString: "E"
+        ) == false)
+        #expect(textView.string == "Xabcdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+        #expect(coordinator.activeProposalTextStorageObservations.isEmpty)
+    }
+
     @Test(
         "same-content character operations keep a pending single edit valid",
         arguments: SameContentStorageMutation.allCases
@@ -564,6 +625,45 @@ struct EditorControllerPatchTests {
         #expect(controller.documentRevision == 0)
         #expect(coordinator.pendingTextMutation == nil)
         #expect(coordinator.pendingEditCount == 0)
+        #expect(coordinator.activeProposalTextStorageObservations.isEmpty)
+    }
+
+    @Test("a nested proposal starts at the current storage generation")
+    func nestedProposalDoesNotInheritEarlierCharacterEdit() throws {
+        let (textView, controller, coordinator) = makeEditor("abcdef")
+        let storage = try #require(textView.textStorage)
+        let responder = TextFinderResponder()
+        var nestedAccepted = false
+        var isNested = false
+        responder.onStringWillChange = {
+            guard !isNested else { return }
+            isNested = true
+            storage.replaceCharacters(
+                in: NSRange(location: 0, length: 6),
+                with: "abcdef"
+            )
+            nestedAccepted = coordinator.textView(
+                textView,
+                shouldChangeTextIn: NSRange(location: 1, length: 1),
+                replacementString: "B"
+            )
+            coordinator.discardPendingTextProposal()
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        ))
+        #expect(nestedAccepted)
+        #expect(textView.string == "abcdef")
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == MarkdownTextMutation(
+            range: NSRange(location: 0, length: 1),
+            replacement: "A"
+        ))
+        #expect(coordinator.pendingEditCount == 1)
         #expect(coordinator.activeProposalTextStorageObservations.isEmpty)
     }
 
