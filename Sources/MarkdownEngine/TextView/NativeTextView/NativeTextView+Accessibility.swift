@@ -134,11 +134,19 @@ extension NativeTextView {
         var line = 0
         var cursor = 0
         while cursor < index {
-            let range = text.lineRange(for: NSRange(location: cursor, length: 0))
-            let next = NSMaxRange(range)
-            guard next > cursor, index >= next else { break }
+            var lineEnd = 0
+            var contentsEnd = 0
+            text.getLineStart(
+                nil,
+                end: &lineEnd,
+                contentsEnd: &contentsEnd,
+                for: NSRange(location: cursor, length: 0)
+            )
+            guard lineEnd > cursor,
+                  index > lineEnd || (index == lineEnd && contentsEnd < lineEnd)
+            else { break }
             line += 1
-            cursor = next
+            cursor = lineEnd
         }
         return line
     }

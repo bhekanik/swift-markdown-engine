@@ -181,4 +181,13 @@ struct AccessibilityTests {
             for: NSRange(location: visible.range(of: "beta").location, length: 0)
         ))
     }
+
+    @Test("EOF stays on unterminated lines and advances after a terminator")
+    func lineLookupAtEOF() {
+        let unterminated = view(text: "alpha")
+        #expect(unterminated.accessibilityLine(for: 5) == 0)
+
+        let terminated = view(text: "alpha\n")
+        #expect(terminated.accessibilityLine(for: 6) == 1)
+    }
 }
