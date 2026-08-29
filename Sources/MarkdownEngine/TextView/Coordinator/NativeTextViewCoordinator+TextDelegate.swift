@@ -733,16 +733,13 @@ extension NativeTextViewCoordinator {
         let preTextStorage = textView.textStorage
         let storageObservation = preTextStorage.map(ProposalTextStorageObservation.init(storage:))
         if let storageObservation {
-            activeProposalTextStorageObservations.append(storageObservation)
+            beginObservingProposalTextStorage(storageObservation)
         }
         if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }
-        if let storageObservation,
-           let index = activeProposalTextStorageObservations.lastIndex(where: {
-               $0 === storageObservation
-           }) {
-            activeProposalTextStorageObservations.remove(at: index)
+        if let storageObservation {
+            endObservingProposalTextStorage(storageObservation)
         }
         let hasSuspiciousStorageEdit = storageObservation?.didProcessCharacterEdit == true
             || preTextStorage?.editedMask.contains(.editedCharacters) == true

@@ -514,6 +514,59 @@ struct EditorControllerPatchTests {
         #expect(coordinator.pendingEditCount == 1)
     }
 
+    @Test("an unrelated background text storage never reaches the coordinator")
+    func unrelatedBackgroundTextStorageDoesNotNotifyCoordinator() async {
+        let coordinator = NativeTextViewWrapper(
+            text: .constant("")
+        ).makeCoordinator()
+
+        await Task.detached {
+            _ = NSTextStorage(string: "abc")
+        }.value
+
+        withExtendedLifetime(coordinator) {}
+    }
+
+    @Test("ending a nested proposal keeps the outer storage observation alive")
+    func nestedProposalKeepsOuterStorageObservationAlive() throws {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let storage = try #require(textView.textStorage)
+        let responder = TextFinderResponder()
+        var nestedAccepted = false
+        var isNested = false
+        responder.onStringWillChange = {
+            guard !isNested else { return }
+            isNested = true
+            nestedAccepted = coordinator.textView(
+                textView,
+                shouldChangeTextIn: NSRange(location: 1, length: 1),
+                replacementString: "B"
+            )
+            coordinator.discardPendingTextProposal()
+            storage.replaceCharacters(
+                in: NSRange(location: 2, length: 1),
+                with: "C"
+            )
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        ) == false)
+        #expect(nestedAccepted)
+        #expect(textView.string == "abCdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+        #expect(coordinator.activeProposalTextStorageObservations.isEmpty)
+    }
+
     @Test("batch storage and publication finish before callback reentry")
     func batchCallbackReentryRunsAfterRequestedPatches() {
         var mutations: [MarkdownTextMutation] = []

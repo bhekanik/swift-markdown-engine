@@ -586,14 +586,37 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         self.fontSize = fontSize
         self.lastSyncedText = text.wrappedValue
         super.init()
+        // Init + didSet share this helper so the observer tracks whichever service is current.
+        subscribeToAppearanceNotification()
+    }
+
+    func beginObservingProposalTextStorage(_ observation: ProposalTextStorageObservation) {
+        let alreadyObserved = activeProposalTextStorageObservations.contains {
+            $0.storage === observation.storage
+        }
+        activeProposalTextStorageObservations.append(observation)
+        guard !alreadyObserved else { return }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleTextStorageDidProcessEditing(_:)),
             name: NSTextStorage.didProcessEditingNotification,
-            object: nil
+            object: observation.storage
         )
-        // Init + didSet share this helper so the observer tracks whichever service is current.
-        subscribeToAppearanceNotification()
+    }
+
+    func endObservingProposalTextStorage(_ observation: ProposalTextStorageObservation) {
+        guard let index = activeProposalTextStorageObservations.lastIndex(where: {
+            $0 === observation
+        }) else { return }
+        activeProposalTextStorageObservations.remove(at: index)
+        guard !activeProposalTextStorageObservations.contains(where: {
+            $0.storage === observation.storage
+        }) else { return }
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSTextStorage.didProcessEditingNotification,
+            object: observation.storage
+        )
     }
 
     @objc private func handleTextStorageDidProcessEditing(_ notification: Notification) {
