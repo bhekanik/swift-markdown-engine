@@ -71,6 +71,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// Reserved controller whose public attachment callbacks must wait until
     /// `updateNSView` has synchronized storage, styling, and host callbacks.
     weak var pendingAttachmentAnnouncement: MarkdownEditorController?
+    var hasPendingAttachmentAnnouncement = false
     private weak var reportedAttachedTextView: NSTextView?
     private var didReportAttachment = false
 
@@ -87,7 +88,13 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     }
 
     func reportPendingAttachment(_ textView: NSTextView) {
-        guard let controller = pendingAttachmentAnnouncement else { return }
+        guard hasPendingAttachmentAnnouncement else { return }
+        hasPendingAttachmentAnnouncement = false
+        guard let controller = pendingAttachmentAnnouncement else {
+            guard editorController == nil, !isDetachedFromDocument else { return }
+            reportAttachment(textView)
+            return
+        }
         pendingAttachmentAnnouncement = nil
         guard editorController === controller,
               controller.textView === textView else { return }

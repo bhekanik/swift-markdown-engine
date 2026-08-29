@@ -324,7 +324,7 @@ struct SingleViewTests {
 
     private struct MutableAttachmentHost: View {
         let text: MutableTextBox
-        let controller: MarkdownEditorController
+        let controller: MarkdownEditorController?
         let onMutation: (MarkdownTextMutation) -> Void
         let onAttachmentChange: (NSTextView?) -> Void
 
@@ -341,6 +341,121 @@ struct SingleViewTests {
                 onTextMutation: onMutation
             )
         }
+    }
+
+    @Test("controller-less wrapper publishes edits")
+    func controllerlessWrapperIsLive() throws {
+        _ = NSApplication.shared
+        let text = MutableTextBox("alpha\n")
+        var mutations: [MarkdownTextMutation] = []
+        var attachments = 0
+        let root = MutableAttachmentHost(
+            text: text,
+            controller: nil,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { if $0 != nil { attachments += 1 } }
+        )
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let textView = try #require(textViews(in: host).first)
+        textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        host.rootView = root
+        host.layoutSubtreeIfNeeded()
+
+        #expect(attachments == 1)
+        #expect(text.value == "alpha!\n")
+        #expect(textView.string == "alpha!\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 5, length: 0),
+            replacement: "!"
+        )])
+    }
+
+    @Test("controller-less wrapper becomes live under a controller")
+    func controllerlessWrapperAttachesToFreeController() throws {
+        _ = NSApplication.shared
+        let text = MutableTextBox("alpha\n")
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: nil,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: controller,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { _ in }
+        )
+        host.layoutSubtreeIfNeeded()
+        let textView = try #require(controller.textView)
+        textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        #expect(text.value == "alpha!\n")
+        #expect(textView.string == "alpha!\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 5, length: 0),
+            replacement: "!"
+        )])
+    }
+
+    @Test("refused wrapper becomes live under a free controller")
+    func refusedWrapperAttachesToFreeController() throws {
+        _ = NSApplication.shared
+        let occupied = MarkdownEditorController()
+        let free = MarkdownEditorController()
+        _ = view(on: occupied, text: "alpha\n")
+        let text = MutableTextBox("alpha\n")
+        var mutations: [MarkdownTextMutation] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: occupied,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: free,
+            onMutation: { mutation in
+                mutations.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { _ in }
+        )
+        host.layoutSubtreeIfNeeded()
+        let textView = try #require(free.textView)
+        textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+
+        #expect(text.value == "alpha!\n")
+        #expect(textView.string == "alpha!\n")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 5, length: 0),
+            replacement: "!"
+        )])
     }
 
     @Test("controller onAttach is a post-sync mutable boundary")

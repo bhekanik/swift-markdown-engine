@@ -301,7 +301,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 notifyEmbedder: false
             ) {
             context.coordinator.pendingAttachmentAnnouncement = owner
-        } else {
+            context.coordinator.hasPendingAttachmentAnnouncement = true
+            context.coordinator.isDetachedFromDocument = false
+        } else if controller != nil {
             // Refused above. Ask to be handed the controller when it frees up:
             // SwiftUI builds a remount's replacement before dismantling the
             // original and then sends this view no further update pass, so
@@ -310,6 +312,10 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.isDetachedFromDocument = true
             controller?.awaitSlot(context.coordinator)
             context.coordinator.reportAttachment(nil)
+        } else {
+            context.coordinator.editorController = nil
+            context.coordinator.isDetachedFromDocument = false
+            context.coordinator.hasPendingAttachmentAnnouncement = true
         }
         context.coordinator.onTextMutation = onTextMutation
         context.coordinator.onBuildContextMenu = onBuildContextMenu
@@ -525,7 +531,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         }
         if controllerChanged, let controller {
             context.coordinator.pendingAttachmentAnnouncement = controller
+            context.coordinator.hasPendingAttachmentAnnouncement = true
         }
+        context.coordinator.isDetachedFromDocument = false
         context.coordinator.configuration.undo = configuration.undo
         textView.configuration.undo = configuration.undo
         textView.allowsUndo = configuration.undo == .engine

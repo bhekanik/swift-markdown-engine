@@ -114,6 +114,7 @@ extension NativeTextViewCoordinator {
         ) else { return }
         editorController = controller
         pendingAttachmentAnnouncement = controller
+        hasPendingAttachmentAnnouncement = true
         isDetachedFromDocument = false
 
         // Zeroed on both sides of the move, as in a controller swap: detaching
