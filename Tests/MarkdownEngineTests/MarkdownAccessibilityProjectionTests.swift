@@ -99,6 +99,19 @@ struct MarkdownAccessibilityProjectionTests {
         })
     }
 
+    @Test("escaped image descriptions expose decoded labels")
+    func escapedImageDescriptions() {
+        let source = #"![escaped\*alt](image.png) ![escaped\]alt](image.png) ![slash\\](image.png)"#
+        let projection = project(source)
+
+        #expect(projection.text.string == #"escaped*alt escaped]alt slash\"#)
+        #expect(projection.spans.map(\.role) == [
+            .image(label: "escaped*alt", destination: "image.png"),
+            .image(label: "escaped]alt", destination: "image.png"),
+            .image(label: #"slash\"#, destination: "image.png"),
+        ])
+    }
+
     @Test("raw mode exposes source text without rendered structure")
     func rawModeIsUnstructuredSource() {
         let source = "# [Heading](https://example.com)\n"

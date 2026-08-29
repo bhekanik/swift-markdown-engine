@@ -11,9 +11,9 @@
 //  `GoldenCorpusTests`, except the baseline covers shapes nobody would think to
 //  write by hand.
 //
-//  Re-record it ONLY on a parser that predates the rewrite, otherwise it just
-//  ratifies whatever the rewrite does. It is also a bare hash: when it fails,
-//  diff `String(describing:)` per input against the old parser to see what moved.
+//  Re-record it only for an intentional parser semantic change backed by focused
+//  tree tests. It is also a bare hash: when it fails, diff `String(describing:)`
+//  per input against the old parser to see what moved.
 //
 //  The second half asserts the cost curve is linear in spans rather than
 //  quadratic, so the scans can't quietly come back. It is OPT-IN via
@@ -83,14 +83,15 @@ struct InlineSpanDensityTests {
         return String(fnv, radix: 16)
     }
 
-    @Test("the containment rewrite changes no tree in a 4000-input corpus")
+    @Test("parser trees match the recorded 4000-input corpus")
     func corpusFingerprint() {
         let registry = MarkdownEditorConfiguration(
             extensions: [HighlightExtension(), StrikethroughExtension()]
         ).extensionRegistry
 
-        // The added dialect nodes intentionally reset the semantic baseline.
-        #expect(fingerprint(corpus(4000), registry: registry) == "a857324c96f47fdc")
+        // Escapes in image descriptions and explicit reference labels intentionally
+        // reset the semantic baseline; focused tests pin each changed tree.
+        #expect(fingerprint(corpus(4000), registry: registry) == "970d45f9c52518d2")
     }
 
     // MARK: - Cost curve

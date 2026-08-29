@@ -428,6 +428,49 @@ struct MarkdownASTStylerTests {
     }
 
     @MainActor
+    @Test("escaped image descriptions remain images and hide escape markers")
+    func escapedImageDescriptionsRemainImages() throws {
+        let source = #"![escaped\*alt](image.png)"#
+        let rendered = render(source)
+        let ns = source as NSString
+        expectSourceBytesUnchanged(source, rendered)
+
+        let paragraph = try #require(DocumentAST.parse(source).first)
+        guard case .paragraph(_, let inlines) = paragraph,
+              case .image = inlines.first else {
+            Issue.record("Expected image AST node")
+            return
+        }
+        let escape = ns.range(of: #"\*"#)
+        let escapeFont = try #require(
+            rendered.attribute(.font, at: escape.location, effectiveRange: nil) as? NSFont
+        )
+        #expect(escapeFont.pointSize < 1)
+        #expect((rendered.attribute(.font, at: escape.location + 1, effectiveRange: nil) as? NSFont)?.pointSize == base)
+    }
+
+    @MainActor
+    @Test("escaped reference labels resolve without decoding label identity")
+    func escapedReferenceLabelsPreserveIdentity() throws {
+        let source = #"""
+[foo][ref\[] [bar][foo\!]
+
+[ref\[]: /uri
+[foo!]: /wrong
+"""#
+        let rendered = render(source)
+        let ns = source as NSString
+        expectSourceBytesUnchanged(source, rendered)
+
+        #expect(rendered.attribute(.link, at: ns.range(of: "foo").location, effectiveRange: nil)
+            as? URL == URL(string: "https:///uri"))
+        let unmatchedEscape = ns.range(of: #"\!"#)
+        #expect(try #require(
+            rendered.attribute(.font, at: unmatchedEscape.location, effectiveRange: nil) as? NSFont
+        ).pointSize < 1)
+    }
+
+    @MainActor
     @Test("reference links resolve from full definitions during scoped styling")
     func scopedReferenceLinksUseFullDefinitionMap() throws {
         let source = "[Straße   Note][ STRASSE NOTE ]\n\n[strasse note]: https://example.com \"title\"\n[other]: /two\n"

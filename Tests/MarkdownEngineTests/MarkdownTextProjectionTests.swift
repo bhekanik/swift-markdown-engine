@@ -107,6 +107,20 @@ struct MarkdownTextProjectionTests {
         #expect(!projection.string.contains("example.com"))
     }
 
+    @Test("escaped image descriptions and reference labels preserve visible semantics")
+    func projectsEscapedImageDescriptionsAndReferenceLabels() {
+        let source = #"""
+![escaped\*alt](image.png) ![escaped\]alt](image.png) ![slash\\](image.png)
+[foo][ref\[] [bar][foo\!]
+
+[ref\[]: /uri
+[foo!]: /wrong
+"""#
+        let projection = project(source)
+
+        #expect(projection.string == "escaped*alt escaped]alt slash\\\nfoo [bar][foo!]\n\n")
+    }
+
     @Test("every projected span round-trips across all golden constructs")
     func goldenSpansRoundTrip() {
         for entry in GoldenCorpusTests.corpus {

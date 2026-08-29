@@ -250,7 +250,7 @@ private enum SemanticCollector {
                 result.append(Candidate(
                     range: alt,
                     role: .image(
-                        label: source.substring(with: alt),
+                        label: MarkdownLinkSyntax.unescapedText(in: source, range: alt),
                         destination: MarkdownLinkSyntax.unescapedText(in: source, range: url)
                     )
                 ))

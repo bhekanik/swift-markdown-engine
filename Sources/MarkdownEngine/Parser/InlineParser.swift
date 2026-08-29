@@ -272,10 +272,10 @@ enum InlineParser {
             switch span {
             case .link(_, let textRange, let url, let title, _):
                 allowedRanges = [textRange, url] + (title.map { [$0] } ?? [])
-            case .image(_, _, let url, let title, _):
-                allowedRanges = [url] + (title.map { [$0] } ?? [])
-            case .referenceLink(_, let textRange, _, _):
-                allowedRanges = [textRange]
+            case .image(_, let alt, let url, let title, _):
+                allowedRanges = [alt, url] + (title.map { [$0] } ?? [])
+            case .referenceLink(_, let textRange, let label, _):
+                allowedRanges = [textRange] + (label.map { [$0] } ?? [])
             case .autolink:
                 // Backslashes have no escape semantics inside autolinks, including before `>`.
                 allowedRanges = [span.fullRange]

@@ -43,6 +43,26 @@ struct MarkdownHTMLRendererTests {
             == "<p><a href=\"https://example.com/a&gt;b\" title=\"ti'tle\">reference</a>\n</p>")
     }
 
+    @Test("escaped image descriptions become semantic alt text")
+    func escapedImageDescriptions() {
+        #expect(html(#"![escaped\*alt](image.png)"#)
+            == #"<p><img src="image.png" alt="escaped*alt"></p>"#)
+        #expect(html(#"![escaped\]alt](image.png)"#)
+            == #"<p><img src="image.png" alt="escaped]alt"></p>"#)
+        #expect(html(#"![slash\\](image.png)"#)
+            == #"<p><img src="image.png" alt="slash\"></p>"#)
+        #expect(html(#"""
+[foo][ref\[] [bar][foo\!]
+
+[ref\[]: /uri
+[foo!]: /wrong
+"""#)
+            == #"""
+<p><a href="/uri">foo</a> [bar][foo!]
+</p>
+"""#)
+    }
+
     @Test("fenced code block — language class, no language, html escaping")
     func fencedCode() {
         #expect(html("```swift\nlet x = 1\n```") == "<pre><code class=\"language-swift\">let x = 1</code></pre>")

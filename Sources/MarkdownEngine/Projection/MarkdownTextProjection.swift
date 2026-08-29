@@ -392,12 +392,16 @@ private enum MarkdownTextProjectionBuilder {
 
             case .image(let range, let alt, _, _, _):
                 removals += outside(alt, in: range)
+                removals += MarkdownLinkSyntax.escapeMarkerRanges(in: source, range: alt)
 
             case .referenceLink(let range, let textRange, let label, _, let children):
                 let definitionLabel = label ?? textRange
                 let key = MarkdownLinkSyntax.normalizedLabel(in: source, range: definitionLabel)
                 if referenceDefinitions.contains(key) {
                     removals += outside(textRange, in: range)
+                }
+                if let label {
+                    removals += MarkdownLinkSyntax.escapeMarkerRanges(in: source, range: label)
                 }
                 collect(
                     children,

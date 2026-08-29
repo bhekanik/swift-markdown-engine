@@ -1006,10 +1006,13 @@ enum MarkdownASTStyler {
             case .link(let range, let textRange, let url, let title, let markers, let children):
                 styleLink(range: range, textRange: textRange, url: url, title: title, markers: markers, children: children, font: font, ctx: ctx, into: &attrs)
 
-            case .image(let range, _, let url, let title, let markers):
+            case .image(let range, let alt, let url, let title, let markers):
                 attrs.append((range, [.spellingState: 0]))
                 if ctx.isActive(range) {
                     for marker in markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
+                    for marker in MarkdownLinkSyntax.escapeMarkerRanges(in: ctx.ns, range: alt) {
+                        attrs.append((marker, [.foregroundColor: ctx.theme.mutedText]))
+                    }
                     attrs.append((url, [.foregroundColor: ctx.theme.mutedText]))
                     if let title { attrs.append((title, [.foregroundColor: ctx.theme.mutedText])) }
                 }
@@ -1103,6 +1106,16 @@ enum MarkdownASTStyler {
         ctx: Ctx,
         into attrs: inout [StyledRange]
     ) {
+        if let label {
+            let escapeMarkers = MarkdownLinkSyntax.escapeMarkerRanges(in: ctx.ns, range: label)
+            if ctx.isActive(range) {
+                for marker in escapeMarkers {
+                    attrs.append((marker, [.foregroundColor: ctx.theme.mutedText]))
+                }
+            } else {
+                shrink(escapeMarkers, ctx: ctx, into: &attrs)
+            }
+        }
         guard let definition = ctx.referenceDefinition(textRange: textRange, label: label) else {
             styleInlines(children, font: font, ctx: ctx, into: &attrs)
             return
@@ -1197,9 +1210,14 @@ enum MarkdownASTStyler {
                     hideInlineTarget(markers: markers, ctx: ctx, into: &attrs)
                 }
                 shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
-            case .image(let range, _, _, _, let markers):
+            case .image(let range, let alt, _, _, let markers):
                 if !(forceReveal || ctx.isActive(range)) {
                     shrink(markers, ctx: ctx, into: &attrs)
+                    shrink(
+                        MarkdownLinkSyntax.escapeMarkerRanges(in: ctx.ns, range: alt),
+                        ctx: ctx,
+                        into: &attrs
+                    )
                     hideInlineTarget(markers: markers, ctx: ctx, into: &attrs)
                 }
             case .referenceLink(let range, let textRange, let label, let markers, let children):

@@ -202,6 +202,33 @@ struct InlineParserTests {
         ])
     }
 
+    @Test("image descriptions admit punctuation escapes and preserve source ranges")
+    func escapedImageDescriptions() throws {
+        let cases: [(source: String, label: String)] = [
+            (#"![escaped\*alt](image.png)"#, "escaped*alt"),
+            (#"![escaped\]alt](image.png)"#, "escaped]alt"),
+            (#"![slash\\](image.png)"#, #"slash\"#),
+        ]
+
+        for entry in cases {
+            let node = try #require(InlineParser.parse(entry.source).first)
+            guard case .image(let range, let alt, _, _, _) = node else {
+                Issue.record("Expected image for \(entry.source)")
+                continue
+            }
+            let ns = entry.source as NSString
+            #expect(ns.substring(with: range) == entry.source)
+            #expect(MarkdownLinkSyntax.unescapedText(in: ns, range: alt) == entry.label)
+        }
+
+        for malformed in [#"![escaped\]alt](image.png"#, #"![escaped\]alt(image.png)"#] {
+            #expect(InlineParser.parse(malformed).allSatisfy {
+                if case .image = $0 { return false }
+                return true
+            })
+        }
+    }
+
     @Test("emphasis inside link text")
     func linkContainsEmphasis() {
         #expect(InlineParser.parse("[*x*](u)") == [
@@ -325,6 +352,20 @@ struct InlineParserTests {
                 markers: [r(0, 1), r(3, 1)], children: [.text(r(1, 2))]
             ),
         ])
+    }
+
+    @Test("explicit reference labels admit escapes without decoding normalization")
+    func escapedReferenceLabels() throws {
+        let source = #"[foo][ref\[]"#
+        let node = try #require(InlineParser.parse(source).first)
+        guard case let .referenceLink(_, textRange, label, _, _) = node else {
+            Issue.record("Expected reference link")
+            return
+        }
+        let ns = source as NSString
+        #expect(ns.substring(with: textRange) == "foo")
+        #expect(label.map { ns.substring(with: $0) } == #"ref\["#)
+        #expect(label.map { MarkdownLinkSyntax.normalizedLabel(in: ns, range: $0) } == #"ref\["#)
     }
 
     @Test("footnote references claim the whole bracket run")

@@ -278,12 +278,13 @@ public enum MarkdownHTMLRenderer {
                 " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""
             } ?? ""
             let destination = MarkdownLinkSyntax.unescapedText(in: ns, range: url)
-            return "<img src=\"\(escape(destination))\" alt=\"\(escape(ns.substring(with: alt)))\"\(titleAttribute)>"
+            let label = MarkdownLinkSyntax.unescapedText(in: ns, range: alt)
+            return "<img src=\"\(escape(destination))\" alt=\"\(escape(label))\"\(titleAttribute)>"
 
         case .referenceLink(let range, let textRange, let label, _, let children):
             let key = MarkdownLinkSyntax.normalizedLabel(in: ns, range: label ?? textRange)
             guard let definition = env.definitions[key] else {
-                return escape(ns.substring(with: range))
+                return escape(MarkdownLinkSyntax.unescapedText(in: ns, range: range))
             }
             let titleAttribute = definition.title.map {
                 " title=\"\(escape(MarkdownLinkSyntax.unescapedText(in: ns, range: $0)))\""

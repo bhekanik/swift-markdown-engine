@@ -322,6 +322,22 @@ enum MarkdownLinkSyntax {
         return String(decoding: codeUnits, as: UTF16.self)
     }
 
+    static func escapeMarkerRanges(in ns: NSString, range: NSRange) -> [NSRange] {
+        var result: [NSRange] = []
+        var i = range.location
+        let end = NSMaxRange(range)
+        while i + 1 < end {
+            if ns.character(at: i) == backslash,
+               isAsciiPunctuation(ns.character(at: i + 1)) {
+                result.append(NSRange(location: i, length: 1))
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+        return result
+    }
+
     private static func skipWhitespace(in ns: NSString, index: inout Int, end: Int) {
         while index < end, isWhitespace(ns.character(at: index)) { index += 1 }
     }
