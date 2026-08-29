@@ -10,6 +10,15 @@
 import AppKit
 import SwiftUI
 
+final class ProposalTextStorageObservation {
+    let storage: NSTextStorage
+    var didProcessCharacterEdit = false
+
+    init(storage: NSTextStorage) {
+        self.storage = storage
+    }
+}
+
 /// `NSTextViewDelegate` that bridges ``NativeTextViewWrapper`` and the
 /// underlying `NSTextView`.
 ///
@@ -63,9 +72,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     private var busObservers: [NSObjectProtocol] = []
     private var registeredAppearanceObserverName: Notification.Name?
     weak var textView: NSTextView?
-    /// O(1) boundary token for character edits that bypass the controller's
-    /// completed-mutation revision, such as direct `NSTextStorage` writes.
-    var textStorageMutationGeneration: UInt64 = 0
+    var activeProposalTextStorageObservations: [ProposalTextStorageObservation] = []
     /// The view managed through the public AppKit adopt/detach lifecycle.
     /// SwiftUI owns its separate dismantle path.
     weak var appKitAdoptedTextView: NSTextView?
@@ -591,9 +598,11 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
 
     @objc private func handleTextStorageDidProcessEditing(_ notification: Notification) {
         guard let storage = notification.object as? NSTextStorage,
-              storage === textView?.textStorage,
               storage.editedMask.contains(.editedCharacters) else { return }
-        textStorageMutationGeneration &+= 1
+        for observation in activeProposalTextStorageObservations
+            where observation.storage === storage {
+            observation.didProcessCharacterEdit = true
+        }
     }
 
     /// (Re)register the syntax-highlighter appearance observer; idempotent and unsubscribes on nil.

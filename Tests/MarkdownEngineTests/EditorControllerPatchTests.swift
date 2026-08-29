@@ -16,6 +16,32 @@ import Testing
 @Suite("Editor controller patches")
 struct EditorControllerPatchTests {
 
+    enum SameContentStorageMutation: CaseIterable {
+        case setAttributedString
+        case replaceCharacters
+        case mutableString
+
+        func apply(to storage: NSTextStorage) {
+            switch self {
+            case .setAttributedString:
+                storage.setAttributedString(NSAttributedString(
+                    string: "abcdef",
+                    attributes: [.kern: 1]
+                ))
+            case .replaceCharacters:
+                storage.replaceCharacters(
+                    in: NSRange(location: 0, length: 6),
+                    with: "abcdef"
+                )
+            case .mutableString:
+                storage.mutableString.replaceCharacters(
+                    in: NSRange(location: 0, length: 6),
+                    with: "abcdef"
+                )
+            }
+        }
+    }
+
     private final class TextFinderResponder: MarkdownTextFinderActionResponder {
         var onStringWillChange: (() -> Void)?
 
@@ -419,6 +445,73 @@ struct EditorControllerPatchTests {
         #expect(controller.documentRevision == 0)
         #expect(coordinator.pendingTextMutation == nil)
         #expect(coordinator.pendingEditCount == 0)
+    }
+
+    @Test("a processed edit stays visible after storage detaches and reattaches")
+    func detachedStorageProcessingInvalidatesPendingSingleEdit() throws {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let layoutManager = try #require(textView.textLayoutManager)
+        let textContentStorage = try #require(layoutManager.textContentManager)
+        let storage = try #require(textView.textStorage)
+        let responder = TextFinderResponder()
+        responder.onStringWillChange = {
+            storage.beginEditing()
+            storage.replaceCharacters(
+                in: NSRange(location: 0, length: 0),
+                with: "X"
+            )
+            textContentStorage.removeTextLayoutManager(layoutManager)
+            storage.endEditing()
+            textContentStorage.addTextLayoutManager(layoutManager)
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 4, length: 1),
+            replacementString: "E"
+        ) == false)
+        #expect(textView.string == "Xabcdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+    }
+
+    @Test(
+        "same-content character operations keep a pending single edit valid",
+        arguments: SameContentStorageMutation.allCases
+    )
+    func sameContentStorageMutationKeepsPendingSingleEditValid(
+        _ storageMutation: SameContentStorageMutation
+    ) throws {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let storage = try #require(textView.textStorage)
+        let responder = TextFinderResponder()
+        responder.onStringWillChange = {
+            storageMutation.apply(to: storage)
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        ))
+        #expect(textView.string == "abcdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == MarkdownTextMutation(
+            range: NSRange(location: 0, length: 1),
+            replacement: "A"
+        ))
+        #expect(coordinator.pendingEditCount == 1)
     }
 
     @Test("batch storage and publication finish before callback reentry")

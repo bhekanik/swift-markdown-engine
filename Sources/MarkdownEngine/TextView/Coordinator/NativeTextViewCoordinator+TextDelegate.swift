@@ -731,18 +731,28 @@ extension NativeTextViewCoordinator {
         let preController = editorController
         let preRevision = preController?.documentRevision
         let preTextStorage = textView.textStorage
-        let preStorageGeneration = textStorageMutationGeneration
+        let storageObservation = preTextStorage.map(ProposalTextStorageObservation.init(storage:))
+        if let storageObservation {
+            activeProposalTextStorageObservations.append(storageObservation)
+        }
         if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }
-        // A direct character edit is either still pending in editedMask or has
-        // processed and advanced the generation. Storage identity also matters:
-        // TextKit 2 lets embedders replace the backing content storage.
+        if let storageObservation,
+           let index = activeProposalTextStorageObservations.lastIndex(where: {
+               $0 === storageObservation
+           }) {
+            activeProposalTextStorageObservations.remove(at: index)
+        }
+        let hasSuspiciousStorageEdit = storageObservation?.didProcessCharacterEdit == true
+            || preTextStorage?.editedMask.contains(.editedCharacters) == true
+        // TextKit reports character-edit operations even when their final
+        // content is unchanged. Pay for the old equality check only on that
+        // exceptional path; ordinary keystrokes keep an O(1) boundary.
         guard editorController === preController,
               preController?.documentRevision == preRevision,
               textView.textStorage === preTextStorage,
-              textStorageMutationGeneration == preStorageGeneration,
-              preTextStorage?.editedMask.contains(.editedCharacters) != true else {
+              !hasSuspiciousStorageEdit || textView.string == preText else {
             discardPendingTextProposal()
             return false
         }
