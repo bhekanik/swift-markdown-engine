@@ -316,6 +316,7 @@ struct CommonMarkReferenceConformanceTests {
             "outer <!-- [opaque] --> tail",
             "outer <?test [opaque] ?> tail",
             "outer <!DOCTYPE [opaque]> tail",
+            "outer <!A\n[opaque]> tail",
             "outer <![CDATA[ [opaque] ]]> tail",
         ]
 
@@ -384,6 +385,34 @@ struct CommonMarkReferenceConformanceTests {
                 effectiveRange: nil
             ) != nil)
         }
+
+        let declarationPrefix = #"[outer <!A \> "#
+        let declaration = "\(declarationPrefix)[opaque> tail][ref]\n\n[ref]: /uri\n"
+        let visibleDeclaration = "[outer <!A > opaque> tail\n\n"
+        let visibleLinkRange = (visibleDeclaration as NSString).range(of: "opaque> tail")
+        #expect(linkCounts(in: DocumentAST.parse(declaration)).references == 1)
+        #expect(MarkdownHTMLRenderer.html(from: declaration)
+            .hasPrefix("<p>[outer &lt;!A &gt; <a href=\"/uri\">opaque&gt; tail</a>"))
+        #expect(MarkdownTextProjection.make(markdown: declaration).string == visibleDeclaration)
+
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: declaration)
+        #expect(accessibility.text.string == visibleDeclaration)
+        #expect(accessibility.spans.contains {
+            $0.role == .link(destination: "/uri")
+                && $0.visibleRange == visibleLinkRange
+        })
+
+        let styled = MarkdownRendering.attributedString(
+            for: declaration,
+            fontName: NSFont.systemFont(ofSize: 16).fontName,
+            fontSize: 16
+        )
+        #expect(styled.attribute(.link, at: 1, effectiveRange: nil) == nil)
+        #expect(styled.attribute(
+            .link,
+            at: (declaration as NSString).range(of: "opaque> tail").location,
+            effectiveRange: nil
+        ) != nil)
     }
 
     @Test("unclosed raw HTML terminators are searched once per form")
@@ -396,6 +425,9 @@ struct CommonMarkReferenceConformanceTests {
 
         let cdata = Array(repeating: "<![CDATA[", count: 128).joined()
         #expect(InlineParser.rawHTMLTerminatorSearchCount(in: cdata) == 1)
+
+        let declarations = Array(repeating: "<!A", count: 128).joined()
+        #expect(InlineParser.rawHTMLTerminatorSearchCount(in: declarations) == 1)
     }
 
     @Test("CommonMark 604/605 email autolinks share HTML, styling and accessibility destinations")

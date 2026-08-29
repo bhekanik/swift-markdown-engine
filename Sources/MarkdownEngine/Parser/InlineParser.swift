@@ -203,6 +203,7 @@ enum InlineParser {
         var commentExhausted = false
         var processingInstructionExhausted = false
         var cdataExhausted = false
+        var declarationExhausted = false
         var searchCount = 0
     }
 
@@ -851,9 +852,18 @@ enum InlineParser {
             return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
         }
         if matches(ns, len, at: i, chars: [langle, bang]),
-           let first = peek(ns, i + 2, len), isASCIIAlpha(first),
-           let close = findChar(ns, len, from: i + 3, char: rangle) {
-            return .rawHTML(range: NSRange(location: i, length: close + 1 - i))
+           let first = peek(ns, i + 2, len), isASCIIAlpha(first) {
+            guard !terminators.declarationExhausted else { return nil }
+            terminators.searchCount += 1
+            let close = ns.range(
+                of: ">",
+                range: NSRange(location: i + 3, length: len - i - 3)
+            )
+            guard close.location != NSNotFound else {
+                terminators.declarationExhausted = true
+                return nil
+            }
+            return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
         }
         guard let match = inlineRawHTMLTag.firstMatch(
             in: ns as String,
