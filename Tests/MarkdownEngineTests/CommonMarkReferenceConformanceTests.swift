@@ -304,7 +304,16 @@ struct CommonMarkReferenceConformanceTests {
     }
 
     @Test("all CommonMark inline raw HTML forms are opaque during reference association")
-    func inlineRawHTMLOpacity() {
+    func inlineRawHTMLOpacity() throws {
+        let opaqueRawLabels = [
+            #"outer <x a="\*"> tail"#,
+            "outer </x> tail",
+            #"outer <!-- \* --> tail"#,
+            #"outer <?pi \* ?> tail"#,
+            #"outer <!A \*> tail"#,
+            #"outer <![CDATA[ \* ]]> tail"#,
+            #"outer <!-- `code` \* --> tail"#,
+        ]
         let labels = [
             #"outer <x attr="> ["> tail"#,
             #"outer <x a="["> tail"#,
@@ -312,13 +321,12 @@ struct CommonMarkReferenceConformanceTests {
             "outer <x\na=\"[\"> tail",
             "outer <x\r\na=\"[\"> tail",
             "outer <x\ra=\"[\"> tail",
-            "outer </x> tail",
             "outer <!-- [opaque] --> tail",
             "outer <?test [opaque] ?> tail",
             "outer <!DOCTYPE [opaque]> tail",
             "outer <!A\n[opaque]> tail",
             "outer <![CDATA[ [opaque] ]]> tail",
-        ]
+        ] + opaqueRawLabels
 
         for label in labels {
             let source = "[\(label)][ref]\n\n[ref]: /uri\n"
@@ -340,9 +348,47 @@ struct CommonMarkReferenceConformanceTests {
                 fontName: NSFont.systemFont(ofSize: 16).fontName,
                 fontSize: 16
             )
+            #expect(styled.string == source)
             #expect(styled.attribute(.link, at: 1, effectiveRange: nil) != nil)
             #expect(styled.attribute(.link, at: (label as NSString).length, effectiveRange: nil) != nil)
+
+            if opaqueRawLabels.contains(label) {
+                let nodes = InlineParser.parse(label)
+                #expect(!nodes.contains {
+                    if case .escape = $0 { return true }
+                    return false
+                })
+                #expect(!nodes.contains {
+                    if case .code = $0 { return true }
+                    return false
+                })
+
+                let backslash = (source as NSString).range(of: #"\"#).location
+                if backslash != NSNotFound {
+                    let font = try #require(styled.attribute(
+                        .font,
+                        at: backslash,
+                        effectiveRange: nil
+                    ) as? NSFont)
+                    #expect(font.pointSize == 16)
+                }
+            }
         }
+
+        let escapedOpening = #"\<x a="\*">"#
+        let escapedOpeningNodes = InlineParser.parse(escapedOpening)
+        #expect(escapedOpeningNodes.filter {
+            if case .escape = $0 { return true }
+            return false
+        }.count == 2)
+        #expect(MarkdownTextProjection.make(markdown: escapedOpening).string == #"<x a="*">"#)
+
+        let malformedClosingTag = #"</x \*>"#
+        #expect(InlineParser.parse(malformedClosingTag).contains {
+            if case .escape = $0 { return true }
+            return false
+        })
+        #expect(MarkdownTextProjection.make(markdown: malformedClosingTag).string == "</x *>")
 
         for malformed in [
             "outer <!-- [opaque tail",
@@ -388,11 +434,11 @@ struct CommonMarkReferenceConformanceTests {
 
         let declarationPrefix = #"[outer <!A \> "#
         let declaration = "\(declarationPrefix)[opaque> tail][ref]\n\n[ref]: /uri\n"
-        let visibleDeclaration = "[outer <!A > opaque> tail\n\n"
+        let visibleDeclaration = #"[outer <!A \> opaque> tail"# + "\n\n"
         let visibleLinkRange = (visibleDeclaration as NSString).range(of: "opaque> tail")
         #expect(linkCounts(in: DocumentAST.parse(declaration)).references == 1)
         #expect(MarkdownHTMLRenderer.html(from: declaration)
-            .hasPrefix("<p>[outer &lt;!A &gt; <a href=\"/uri\">opaque&gt; tail</a>"))
+            .hasPrefix(#"<p>[outer &lt;!A \&gt; <a href="/uri">opaque&gt; tail</a>"#))
         #expect(MarkdownTextProjection.make(markdown: declaration).string == visibleDeclaration)
 
         let accessibility = MarkdownAccessibilityProjection.make(markdown: declaration)

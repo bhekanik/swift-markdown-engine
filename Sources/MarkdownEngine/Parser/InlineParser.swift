@@ -353,8 +353,8 @@ enum InlineParser {
                 allowedRanges = [alt] + (label.map { [$0] } ?? [])
             case .referenceLink(_, let textRange, let label, _):
                 allowedRanges = [textRange] + (label.map { [$0] } ?? [])
-            case .autolink:
-                // Backslashes have no escape semantics inside autolinks, including before `>`.
+            case .autolink, .rawHTML:
+                // Backslashes have no escape semantics inside opaque angle spans.
                 allowedRanges = [span.fullRange]
             default:
                 allowedRanges = []
