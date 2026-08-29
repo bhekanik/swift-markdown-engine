@@ -733,8 +733,11 @@ extension NativeTextViewCoordinator {
         if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }
-        guard textView.string == preText,
-              editorController === preController,
+        // Any completed nested text edit advances the controller revision,
+        // including changes without a published mutation. Checking that O(1)
+        // counter preserves stale-edit rejection without comparing the whole
+        // document again on every keystroke.
+        guard editorController === preController,
               preController?.documentRevision == preRevision else {
             discardPendingTextProposal()
             return false

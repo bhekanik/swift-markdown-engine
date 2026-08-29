@@ -247,6 +247,40 @@ struct EditorControllerPatchTests {
         #expect(coordinator.pendingEditCount == 0)
     }
 
+    @Test("a same-length reentrant Finder edit invalidates a pending single edit")
+    func reentrantFinderEditInvalidatesPendingSingleEdit() {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let responder = TextFinderResponder()
+        var didApplyNestedPatch = false
+        responder.onStringWillChange = {
+            guard !didApplyNestedPatch else { return }
+            didApplyNestedPatch = true
+            #expect(controller.applyPatch(
+                range: NSRange(location: 2, length: 1),
+                replacement: "C"
+            ))
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        ) == false)
+
+        #expect(textView.string == "abCdef")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 2, length: 1),
+            replacement: "C"
+        )])
+        #expect(controller.documentRevision == 1)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+    }
+
     @Test("batch storage and publication finish before callback reentry")
     func batchCallbackReentryRunsAfterRequestedPatches() {
         var mutations: [MarkdownTextMutation] = []
