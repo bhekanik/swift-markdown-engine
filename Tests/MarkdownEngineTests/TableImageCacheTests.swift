@@ -66,6 +66,41 @@ struct TableImageCacheTests {
         #expect(first.image === second.image)
     }
 
+    @Test func referenceResolutionUsesADistinctCacheEntry() throws {
+        let source = "| Link |\n|---|\n| [label][id] |"
+        let parsed = try #require(MarkdownStyler.parseTableSource(source))
+        let ctx = makeContext(for: source)
+        let aqua = try #require(NSAppearance(named: .aqua))
+
+        _ = MarkdownStyler.tableImage(
+            for: source,
+            parsed: parsed,
+            ctx: ctx,
+            appearance: aqua,
+            availableWidth: 2000
+        )
+        let resolved = MarkdownStyler.tableImage(
+            for: source,
+            parsed: parsed,
+            ctx: ctx,
+            appearance: aqua,
+            availableWidth: 2000,
+            referenceDefinitions: ["id"]
+        )
+        let cachedResolved = MarkdownStyler.tableImage(
+            for: source,
+            parsed: parsed,
+            ctx: ctx,
+            appearance: aqua,
+            availableWidth: 2000,
+            referenceDefinitions: ["id"]
+        )
+
+        #expect(resolved.rendered)
+        #expect(!cachedResolved.rendered)
+        #expect(resolved.image === cachedResolved.image)
+    }
+
     @Test func appearanceChangeRendersFresh() throws {
         let source = "| gamma | delta |\n|---|---|\n| 3 | 4 |"
         let parsed = try #require(MarkdownStyler.parseTableSource(source))

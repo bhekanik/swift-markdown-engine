@@ -190,15 +190,15 @@ private enum SemanticCollector {
             }
 
         case .table(let range):
-            for (index, row) in MarkdownTableRowSource.rows(in: source, range: range).enumerated()
+            let rows = MarkdownTableRowSource.rows(in: source, range: range)
+            guard let columnCount = MarkdownTableRowSource.renderedColumnCount(in: rows) else { break }
+            for (index, row) in rows.enumerated()
             where index != 1 {
-                for cell in row.cells where !cell.normalizedText.isEmpty {
+                for cell in row.cells.prefix(columnCount) where !cell.normalizedText.isEmpty {
                     let cellSource = cell.normalizedText as NSString
                     var candidates: [Candidate] = []
                     collect(
-                        InlineParser.parse(
-                            cellSource,
-                            range: NSRange(location: 0, length: cellSource.length),
+                        cell.inlineNodes(
                             registry: registry,
                             referenceDefinitions: Set(linkDefinitions.keys)
                         ),

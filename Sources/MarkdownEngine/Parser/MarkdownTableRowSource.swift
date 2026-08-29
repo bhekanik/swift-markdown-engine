@@ -75,12 +75,40 @@ struct MarkdownTableRowSource {
             }
             return lower
         }
+
+        func inlineNodes(
+            registry: ExtensionRegistry,
+            referenceDefinitions: Set<String>
+        ) -> [InlineNode] {
+            MarkdownTableRowSource.inlineNodes(
+                in: normalizedText,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            )
+        }
     }
 
     let lineRange: NSRange
     let contentRange: NSRange
     let delimiters: [Int]
     let cells: [Cell]
+
+    static func renderedColumnCount(in rows: [MarkdownTableRowSource]) -> Int? {
+        guard rows.count >= 2 else { return nil }
+        return max(rows[0].cells.count, rows[1].cells.count)
+    }
+
+    static func inlineNodes(
+        in normalizedText: String,
+        registry: ExtensionRegistry,
+        referenceDefinitions: Set<String>
+    ) -> [InlineNode] {
+        InlineParser.parse(
+            normalizedText,
+            registry: registry,
+            referenceDefinitions: referenceDefinitions
+        )
+    }
 
     static func rows(in source: NSString, range: NSRange) -> [MarkdownTableRowSource] {
         let rangeEnd = NSMaxRange(range)

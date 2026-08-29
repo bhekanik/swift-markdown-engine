@@ -133,14 +133,16 @@ extension MarkdownStyler {
         parsed: ParsedTable,
         ctx: StylingContext,
         appearance: NSAppearance,
-        availableWidth: CGFloat
+        availableWidth: CGFloat,
+        referenceDefinitions: Set<String> = []
     ) -> (image: NSImage, rendered: Bool) {
         let widthKey = Int(availableWidth.rounded())
         // The extension registry is part of the key: `==x==` in a cell renders
         // highlighted under one config and literal under another — those must
         // never share a cached image.
         let extensionKey = ctx.configuration.extensionRegistry.fingerprint
-        let key = (themeKeyPrefix(ctx: ctx, appearance: appearance) + "|x\(extensionKey)|w\(widthKey)|" + source) as NSString
+        let referenceKey = referenceDefinitions.hashValue
+        let key = (themeKeyPrefix(ctx: ctx, appearance: appearance) + "|x\(extensionKey)|r\(referenceKey)|w\(widthKey)|" + source) as NSString
         if let cached = tableImageCache.object(forKey: key) {
             return (cached, false)
         }
@@ -151,13 +153,17 @@ extension MarkdownStyler {
             codeBackgroundColor: ctx.codeBackgroundColor,
             appearance: appearance,
             availableWidth: availableWidth,
-            extensions: ctx.configuration.extensions
+            extensions: ctx.configuration.extensions,
+            referenceDefinitions: referenceDefinitions
         )
         tableImageCache.setObject(image, forKey: key)
         return (image, true)
     }
 
-    static func styleTables(_ ctx: StylingContext) -> [StyledRange] {
+    static func styleTables(
+        _ ctx: StylingContext,
+        referenceDefinitions: Set<String> = []
+    ) -> [StyledRange] {
         var attrs: [StyledRange] = []
         // Per-content occurrence counter so identical tables get distinct sourceIDs.
         var occurrenceByContentHash: [Int: Int] = [:]
@@ -237,7 +243,8 @@ extension MarkdownStyler {
                 parsed: parsed,
                 ctx: ctx,
                 appearance: renderAppearance,
-                availableWidth: containerWidth
+                availableWidth: containerWidth,
+                referenceDefinitions: referenceDefinitions
             )
             if rendered { renderedCount += 1 }
             let imageBounds = CGRect(x: 0, y: 0, width: image.size.width, height: image.size.height)
@@ -283,12 +290,16 @@ extension MarkdownStyler {
         let lines = rawLines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         guard lines.count >= 2 else { return nil }
 
-        let header = parseTableRow(lines[0])
-        let alignments = parseTableAlignments(lines[1])
-        guard !header.isEmpty, !alignments.isEmpty else { return nil }
+        let sourceRows = lines.map(MarkdownTableRowSource.row)
+        let header = sourceRows[0].cells.map(\.normalizedText)
+        let alignments = parseTableAlignments(sourceRows[1])
+        guard !header.isEmpty,
+              !alignments.isEmpty,
+              let columnCount = MarkdownTableRowSource.renderedColumnCount(in: sourceRows) else {
+            return nil
+        }
 
-        let columnCount = max(header.count, alignments.count)
-        let bodyLines = Array(lines.dropFirst(2))
+        let bodyRows = sourceRows.dropFirst(2)
 
         func pad<T>(_ array: [T], to count: Int, with fill: T) -> [T] {
             if array.count == count { return array }
@@ -298,19 +309,18 @@ extension MarkdownStyler {
 
         let paddedHeader = pad(header, to: columnCount, with: "")
         let paddedAlign = pad(alignments, to: columnCount, with: .left)
-        let rows = bodyLines.map { pad(parseTableRow($0), to: columnCount, with: "") }
+        let rows = bodyRows.map {
+            pad($0.cells.map(\.normalizedText), to: columnCount, with: "")
+        }
 
         return ParsedTable(header: paddedHeader, alignments: paddedAlign, rows: rows)
     }
 
-    private static func parseTableRow(_ line: String) -> [String] {
-        MarkdownTableRowSource.row(line).cells.map(\.normalizedText)
-    }
-
-    private static func parseTableAlignments(_ line: String) -> [TableAlignment] {
-        let cells = parseTableRow(line)
-        return cells.map { cell in
-            let trimmed = cell.trimmingCharacters(in: .whitespaces)
+    private static func parseTableAlignments(
+        _ row: MarkdownTableRowSource
+    ) -> [TableAlignment] {
+        row.cells.map { cell in
+            let trimmed = cell.normalizedText.trimmingCharacters(in: .whitespaces)
             let leading = trimmed.hasPrefix(":")
             let trailing = trimmed.hasSuffix(":")
             switch (leading, trailing) {
@@ -340,7 +350,8 @@ extension MarkdownStyler {
         header: Bool,
         theme: MarkdownEditorTheme,
         codeBackgroundColor: NSColor,
-        extensions: [any MarkdownExtension] = []
+        extensions: [any MarkdownExtension] = [],
+        referenceDefinitions: Set<String> = []
     ) -> NSAttributedString {
         let descriptor = baseFont.fontDescriptor
         let pointSize = baseFont.pointSize
@@ -355,7 +366,11 @@ extension MarkdownStyler {
         // string that gets drawn.
         let raw = expandCellLineBreaks(raw)
         appendInlineCell(
-            InlineParser.parse(raw, registry: ExtensionRegistry(extensions: extensions)),
+            MarkdownTableRowSource.inlineNodes(
+                in: raw,
+                registry: ExtensionRegistry(extensions: extensions),
+                referenceDefinitions: referenceDefinitions
+            ),
             in: raw as NSString, into: out,
             font: startFont, baseDescriptor: descriptor, pointSize: pointSize,
             codeFont: codeFont, theme: theme, codeBackgroundColor: codeBackgroundColor,
@@ -378,7 +393,7 @@ extension MarkdownStyler {
         return NSFont(descriptor: baseDescriptor.withSymbolicTraits(traits), size: pointSize) ?? current
     }
 
-    /// Walk the inline AST into marker-stripped runs; links/embeds emitted raw.
+    /// Walk the inline AST into the same marker-stripped text the table displays.
     private static func appendInlineCell(
         _ nodes: [InlineNode],
         in ns: NSString,
@@ -432,9 +447,13 @@ extension MarkdownStyler {
                 out.append(NSAttributedString(string: ns.substring(with: content), attributes: [
                     .font: codeFont, .backgroundColor: codeBackgroundColor, .foregroundColor: theme.bodyText
                 ]))
-            case .link(let range, _, _, _, _, _),
-                 .image(let range, _, _, _, _):
-                appendPlain(range, font)
+            case .link(_, _, _, _, _, let children):
+                recurse(children, font)
+            case .image(_, let alt, _, _, _):
+                out.append(NSAttributedString(
+                    string: MarkdownLinkSyntax.unescapedText(in: ns, range: alt),
+                    attributes: [.font: font, .foregroundColor: theme.bodyText]
+                ))
             case .referenceImage(_, _, _, _, let children):
                 recurse(children, font)
             case .referenceLink(_, _, _, _, let children):
@@ -457,7 +476,8 @@ extension MarkdownStyler {
         codeBackgroundColor: NSColor,
         appearance: NSAppearance,
         availableWidth: CGFloat,
-        extensions: [any MarkdownExtension] = []
+        extensions: [any MarkdownExtension] = [],
+        referenceDefinitions: Set<String> = []
     ) -> NSImage {
         let columnCount = table.alignments.count
         let cellHPadding: CGFloat = 12
@@ -480,7 +500,8 @@ extension MarkdownStyler {
             formattedCellString(
                 $0, baseFont: baseFont, header: true, theme: theme,
                 codeBackgroundColor: codeBackgroundColor,
-                extensions: extensions
+                extensions: extensions,
+                referenceDefinitions: referenceDefinitions
             )
         }
         let bodyCells = table.rows.map { row in
@@ -488,7 +509,8 @@ extension MarkdownStyler {
                 formattedCellString(
                     $0, baseFont: baseFont, header: false, theme: theme,
                     codeBackgroundColor: codeBackgroundColor,
-                    extensions: extensions
+                    extensions: extensions,
+                    referenceDefinitions: referenceDefinitions
                 )
             }
         }

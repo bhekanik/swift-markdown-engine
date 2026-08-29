@@ -554,12 +554,12 @@ private enum MarkdownTextProjectionBuilder {
         replacements: inout [Replacement]
     ) {
         let rows = MarkdownTableRowSource.rows(in: source, range: range)
-        guard rows.count >= 2 else { return }
+        guard let columnCount = MarkdownTableRowSource.renderedColumnCount(in: rows) else { return }
         removals.append(rows[1].lineRange)
 
         for (index, row) in rows.enumerated() where index != 1 {
             let contentEnd = NSMaxRange(row.contentRange)
-            let delimiters = row.delimiters
+            let delimiters = row.delimiters.prefix(columnCount + 1)
             guard delimiters.count >= 2 else { continue }
 
             removals.append(NSRange(
@@ -577,7 +577,7 @@ private enum MarkdownTextProjectionBuilder {
                 length: contentEnd - delimiters.last!
             ))
 
-            for (cell, pair) in zip(row.cells, zip(delimiters, delimiters.dropFirst())) {
+            for (cell, pair) in zip(row.cells.prefix(columnCount), zip(delimiters, delimiters.dropFirst())) {
                 if cell.sourceRange.location > pair.0 + 1 {
                     removals.append(NSRange(
                         location: pair.0 + 1,
@@ -594,9 +594,7 @@ private enum MarkdownTextProjectionBuilder {
                 let normalizedSource = cell.normalizedText as NSString
                 var cellRemovals: [NSRange] = []
                 collect(
-                    InlineParser.parse(
-                        normalizedSource,
-                        range: NSRange(location: 0, length: normalizedSource.length),
+                    cell.inlineNodes(
                         registry: registry,
                         referenceDefinitions: referenceDefinitions
                     ),

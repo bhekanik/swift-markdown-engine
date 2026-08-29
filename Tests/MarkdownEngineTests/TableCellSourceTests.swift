@@ -131,6 +131,83 @@ struct TableCellSourceTests {
         #expect(cell == #"[a|b](https://example.com/a|b)"#)
     }
 
+    @Test func cellsBeyondRenderedWidthStayHiddenFromProjectionAndAccessibility() throws {
+        let source = """
+        | A | B |
+        |---|---|
+        | one | two | [🧑🏽‍💻hidden](https://example.com) | ![also hidden](image.png) |
+        """
+        let projection = MarkdownTextProjection.make(markdown: source)
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+        let ns = source as NSString
+        let hidden = ns.range(of: "[🧑🏽‍💻hidden](https://example.com)")
+        let hiddenImage = ns.range(of: "![also hidden](image.png)")
+        let visibleTwo = ns.range(of: "two")
+
+        #expect(projection.string == "A\tB\none\ttwo")
+        #expect(accessibility.text.string == projection.string)
+        #expect(accessibility.spans.isEmpty)
+        #expect(projection.visibleRange(for: hidden)?.length == 0)
+        #expect(projection.visibleRange(for: hiddenImage)?.length == 0)
+        #expect(!projection.string.contains("hidden"))
+        #expect((projection.string as NSString).range(of: "https://example.com").location == NSNotFound)
+        let projectedTwo = try #require(projection.visibleRange(for: visibleTwo))
+        #expect(projection.sourceRange(for: projectedTwo) == visibleTwo)
+        #expect(!MarkdownHTMLRenderer.html(from: source).contains("hidden"))
+    }
+
+    @Test func directAndReferenceTableMediaUseSemanticVisibleText() throws {
+        let source = """
+        | Link | Image |
+        |---|---|
+        | [direct](https://direct.example) | ![Direct alt](direct.png) |
+        | [reference][link] | ![Reference alt][image] |
+
+        [link]: https://reference.example
+        [image]: reference.png
+        """
+        let parsed = try #require(MarkdownStyler.parseTableSource(
+            source.components(separatedBy: "\n\n")[0]
+        ))
+        let definitions: Set<String> = ["link", "image"]
+        let renderedRows = parsed.rows.map { row in
+            row.map {
+                MarkdownStyler.formattedCellString(
+                    $0,
+                    baseFont: .systemFont(ofSize: 15),
+                    header: false,
+                    theme: MarkdownEditorConfiguration.default.theme,
+                    codeBackgroundColor: .windowBackgroundColor,
+                    referenceDefinitions: definitions
+                ).string
+            }.joined(separator: "\t")
+        }
+        let projection = MarkdownTextProjection.make(markdown: source)
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+
+        #expect(renderedRows == ["direct\tDirect alt", "reference\tReference alt"])
+        #expect(projection.string == "Link\tImage\ndirect\tDirect alt\nreference\tReference alt\n\n")
+        #expect(accessibility.text.string == projection.string)
+        #expect(accessibility.spans.contains {
+            $0.role == .link(destination: "https://reference.example")
+        })
+        #expect(accessibility.spans.contains {
+            $0.role == .image(label: "Reference alt", destination: "reference.png")
+        })
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><a href="https://direct.example">direct</a></td>"#
+        ))
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><img src="direct.png" alt="Direct alt"></td>"#
+        ))
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><a href="https://reference.example">reference</a></td>"#
+        ))
+        #expect(MarkdownHTMLRenderer.html(from: source).contains(
+            #"<td><img src="reference.png" alt="Reference alt"></td>"#
+        ))
+    }
+
     // MARK: - In-cell line breaks
 
     @Test func brRendersAsALineBreakInsteadOfLiteralText() {

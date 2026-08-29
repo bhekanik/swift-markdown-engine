@@ -88,7 +88,7 @@ public enum MarkdownHTMLRenderer {
             return renderCodeBlock(range: range, ns: ns)
 
         case .table(let range):
-            return renderTable(range: range, ns: ns)
+            return renderTable(range: range, ns: ns, env: env)
 
         case .thematicBreak:
             return "<hr>"
@@ -234,14 +234,23 @@ public enum MarkdownHTMLRenderer {
         return String(rest)
     }
 
-    private static func renderTable(range: NSRange, ns: NSString) -> String {
+    private static func renderTable(range: NSRange, ns: NSString, env: Env) -> String {
         let raw = ns.substring(with: range)
         guard let parsed = MarkdownStyler.parseTableSource(raw) else {
             return "<pre>\(escape(raw.trimmingCharacters(in: .newlines)))</pre>"
         }
-        let head = parsed.header.map { "<th>\(escape($0))</th>" }.joined()
+        func renderCell(_ cell: String) -> String {
+            let cellSource = cell as NSString
+            let nodes = MarkdownTableRowSource.inlineNodes(
+                in: cell,
+                registry: env.registry,
+                referenceDefinitions: Set(env.definitions.keys)
+            )
+            return renderInlines(nodes, ns: cellSource, env: env)
+        }
+        let head = parsed.header.map { "<th>\(renderCell($0))</th>" }.joined()
         let body = parsed.rows.map { row in
-            "<tr>" + row.map { "<td>\(escape($0))</td>" }.joined() + "</tr>"
+            "<tr>" + row.map { "<td>\(renderCell($0))</td>" }.joined() + "</tr>"
         }.joined()
         return "<table><thead><tr>\(head)</tr></thead><tbody>\(body)</tbody></table>"
     }

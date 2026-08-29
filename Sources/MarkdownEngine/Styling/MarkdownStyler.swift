@@ -215,6 +215,9 @@ enum MarkdownStyler {
         )
         let codeBackgroundColor = configuration.services.syntaxHighlighter.backgroundColor()
         let hiddenMarkerSize = configuration.markers.hiddenMarkerFontSize
+        let blocks = precomputedBlocks ?? (tokens.contains { $0.kind == .table }
+            ? BlockParser.parse(text, registry: configuration.extensionRegistry)
+            : nil)
         let ctx = StylingContext(
             nsText: nsText,
             tokens: tokens,
@@ -237,7 +240,7 @@ enum MarkdownStyler {
         result += MarkdownASTStyler.styleAttributes(
             text: text, fontName: fontName, fontSize: fontSize,
             caretLocation: caretLocation, selection: selection,
-            scopedRanges: scopedRanges, precomputedBlocks: precomputedBlocks,
+            scopedRanges: scopedRanges, precomputedBlocks: blocks,
             configuration: configuration
         )
         let astMs = Double(DispatchTime.now().uptimeNanoseconds - astT0) / 1_000_000
@@ -245,7 +248,12 @@ enum MarkdownStyler {
         let imgT0 = DispatchTime.now().uptimeNanoseconds
         result += styleImageLinks(ctx)
         let imgMs = Double(DispatchTime.now().uptimeNanoseconds - imgT0) / 1_000_000
-        result += styleTables(ctx)
+        result += styleTables(
+            ctx,
+            referenceDefinitions: blocks.map {
+                DocumentAST.referenceDefinitionLabels(in: $0, nsText)
+            } ?? []
+        )
         PerfTrace.note { "  styleAttributes: ast=\(String(format: "%.2f", astMs))ms img2=\(String(format: "%.2f", imgMs))ms styledRanges=\(result.count)" }
         return result
     }

@@ -219,7 +219,7 @@ a ===kein Highlight=== b
 | 3 | 4 |
 """#,
             baselineHTML: #"""
-<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td>==x==</td></tr><tr><td>3</td><td>4</td></tr></tbody></table>
+<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td><mark>x</mark></td></tr><tr><td>3</td><td>4</td></tr></tbody></table>
 """#
         ),
         GoldenEntry(
@@ -281,7 +281,7 @@ raw ==nicht== markiert
     private static let extensionFixtures: Set<String> = [
         "highlight", "highlight-wraps-emphasis", "emphasis-wraps-highlight",
         "highlight-in-heading", "highlight-in-list", "highlight-adjacent-code",
-        "strikethrough", "mixed-document",
+        "strikethrough", "table", "mixed-document",
     ]
 
     @Test("with both extensions the output matches the pre-seam baseline",
