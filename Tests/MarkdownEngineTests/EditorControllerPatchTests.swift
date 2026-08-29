@@ -309,6 +309,118 @@ struct EditorControllerPatchTests {
         #expect(coordinator.pendingEditCount == 0)
     }
 
+    @Test("a deferred direct storage edit invalidates a pending single edit")
+    func deferredDirectStorageEditInvalidatesPendingSingleEdit() throws {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let storage = try #require(textView.textStorage)
+        let responder = TextFinderResponder()
+        responder.onStringWillChange = {
+            storage.beginEditing()
+            storage.replaceCharacters(
+                in: NSRange(location: 2, length: 1),
+                with: "C"
+            )
+        }
+        controller.textFinderActionResponder = responder
+
+        let accepted = coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        )
+        storage.endEditing()
+
+        #expect(accepted == false)
+        #expect(textView.string == "abCdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+    }
+
+    @Test("a deferred direct storage edit cannot merge into a real user edit")
+    func deferredDirectStorageEditCannotMergeIntoRealUserEdit() throws {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let storage = try #require(textView.textStorage)
+        let responder = TextFinderResponder()
+        var beganDeferredEdit = false
+        responder.onStringWillChange = {
+            guard !beganDeferredEdit else { return }
+            beganDeferredEdit = true
+            storage.beginEditing()
+            storage.replaceCharacters(
+                in: NSRange(location: 2, length: 1),
+                with: "C"
+            )
+        }
+        controller.textFinderActionResponder = responder
+        textView.setSelectedRange(NSRange(location: 0, length: 1))
+
+        textView.insertText("A", replacementRange: NSRange(location: 0, length: 1))
+        storage.endEditing()
+
+        #expect(textView.string == "abCdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+    }
+
+    @Test("an attribute-only reentrant storage edit does not invalidate a pending single edit")
+    func attributeStorageEditDoesNotInvalidatePendingSingleEdit() throws {
+        let (textView, controller, coordinator) = makeEditor("abcdef")
+        let storage = try #require(textView.textStorage)
+        let responder = TextFinderResponder()
+        responder.onStringWillChange = {
+            storage.addAttribute(.kern, value: 1, range: NSRange(location: 2, length: 1))
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        ))
+        #expect(textView.string == "abcdef")
+    }
+
+    @Test("a text storage identity swap invalidates a pending single edit")
+    func textStorageIdentitySwapInvalidatesPendingSingleEdit() throws {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, coordinator) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        let layoutManager = try #require(textView.textLayoutManager)
+        let oldStorage = try #require(layoutManager.textContentManager)
+        let replacementStorage = NSTextContentStorage()
+        replacementStorage.textStorage?.setAttributedString(
+            NSAttributedString(string: "abCdef")
+        )
+        let responder = TextFinderResponder()
+        responder.onStringWillChange = {
+            oldStorage.removeTextLayoutManager(layoutManager)
+            replacementStorage.addTextLayoutManager(layoutManager)
+        }
+        controller.textFinderActionResponder = responder
+
+        #expect(coordinator.textView(
+            textView,
+            shouldChangeTextIn: NSRange(location: 0, length: 1),
+            replacementString: "A"
+        ) == false)
+        #expect(textView.string == "abCdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+    }
+
     @Test("batch storage and publication finish before callback reentry")
     func batchCallbackReentryRunsAfterRequestedPatches() {
         var mutations: [MarkdownTextMutation] = []

@@ -730,15 +730,19 @@ extension NativeTextViewCoordinator {
         }
         let preController = editorController
         let preRevision = preController?.documentRevision
+        let preTextStorage = textView.textStorage
         let preStorageGeneration = textStorageMutationGeneration
         if replacementString != nil, !suppressesTextFinderInvalidation {
             notifyTextFinderClientStringWillChange(in: textView)
         }
-        // The controller revision covers completed engine edits; the storage
-        // generation also covers direct NSTextStorage writes by embedders.
+        // A direct character edit is either still pending in editedMask or has
+        // processed and advanced the generation. Storage identity also matters:
+        // TextKit 2 lets embedders replace the backing content storage.
         guard editorController === preController,
               preController?.documentRevision == preRevision,
-              textStorageMutationGeneration == preStorageGeneration else {
+              textView.textStorage === preTextStorage,
+              textStorageMutationGeneration == preStorageGeneration,
+              preTextStorage?.editedMask.contains(.editedCharacters) != true else {
             discardPendingTextProposal()
             return false
         }
