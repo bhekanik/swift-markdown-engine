@@ -402,6 +402,19 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.requestedControllerWhileDetached === controller
             && controller?.isAttached == false
         let controllerChanged = currentController !== controller || waitingControllerBecameAvailable
+        if let staleBinding = context.coordinator.staleBindingAfterControllerTakeover {
+            if !controllerChanged,
+               staleBinding.controller == controller.map(ObjectIdentifier.init),
+               staleBinding.documentId == documentId {
+                if text == staleBinding.text {
+                    textToSynchronize = textView.string
+                } else {
+                    context.coordinator.staleBindingAfterControllerTakeover = nil
+                }
+            } else {
+                context.coordinator.staleBindingAfterControllerTakeover = nil
+            }
+        }
         var shouldReportDetachedIncoming = false
 
         // Scroll persistence belongs to the SwiftUI wrapper, not the attached
@@ -476,6 +489,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // manager and force a full rebuild — the storage under the view is a
         // different document now, so nothing about the old one is still true.
         if controllerChanged {
+            context.coordinator.staleBindingAfterControllerTakeover = nil
+            textToSynchronize = text
             if let previous = context.coordinator.editorController {
                 // Remember where this window was in the OUTGOING document, so
                 // coming back to it lands the reader where they left.
@@ -528,6 +543,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                     }
                     if targetControllerHadAuthoritativeText {
                         textToSynchronize = textView.string
+                        if textToSynchronize != text {
+                            context.coordinator.staleBindingAfterControllerTakeover = (
+                                ObjectIdentifier(controller),
+                                documentId,
+                                text
+                            )
+                        }
                     }
                     context.coordinator.pendingAttachmentAnnouncement = controller
                     context.coordinator.hasPendingAttachmentAnnouncement = true
@@ -620,7 +642,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // whose two presentations share a font changes nothing else about this
         // pass, and the switch was dropped on the floor.
         if context.coordinator.didInitialFormatting
-            && context.coordinator.lastSyncedText == text
+            && context.coordinator.lastSyncedText == textToSynchronize
             && !fontChanged
             && !controllerChanged
             && !rawSourceModeChanged {
@@ -680,7 +702,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // change is too large to be an edit.
         if !isNodeSwitch, !rawSourceModeChanged, !fontChanged, !controllerChanged,
            context.coordinator.didInitialFormatting,
-           context.coordinator.spliceExternalText(text, in: textView) {
+           context.coordinator.spliceExternalText(textToSynchronize, in: textView) {
             textView.recalcOverscroll(for: nsView)
             (nsView as? ClampedScrollView)?.clampToInsets()
             context.coordinator.onTextMutation = onTextMutation

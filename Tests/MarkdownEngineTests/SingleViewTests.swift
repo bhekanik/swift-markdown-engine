@@ -935,15 +935,18 @@ struct SingleViewTests {
         let targetView = try #require(documentA.textView)
 
         text.value = "bravo\n"
-        host.rootView = MutableAttachmentHost(
-            text: text,
-            controller: documentB,
-            onMutation: { text.apply($0) },
-            onAttachmentChange: { textView in
-                events.append("B:\(textView == nil ? "off" : "on")")
-                if let textView { attachedTexts.append(textView.string) }
-            }
-        )
+        func targetRoot() -> MutableAttachmentHost {
+            MutableAttachmentHost(
+                text: text,
+                controller: documentB,
+                onMutation: { text.apply($0) },
+                onAttachmentChange: { textView in
+                    events.append("B:\(textView == nil ? "off" : "on")")
+                    if let textView { attachedTexts.append(textView.string) }
+                }
+            )
+        }
+        host.rootView = targetRoot()
         host.layoutSubtreeIfNeeded()
 
         #expect(documentA.textView == nil)
@@ -952,6 +955,26 @@ struct SingleViewTests {
         #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
         #expect(targetView.string == "BRAVO\n")
         #expect(text.value == "bravo\n")
+        #expect(attachedTexts == ["BRAVO\n", "BRAVO\n"])
+        #expect(events == ["A:on", "A:off", "B-controller:off", "B-controller:on", "B:on"])
+
+        host.rootView = targetRoot()
+        host.layoutSubtreeIfNeeded()
+
+        #expect(targetView.string == "BRAVO\n")
+        #expect(text.value == "bravo\n")
+        #expect(attachedTexts == ["BRAVO\n", "BRAVO\n"])
+        #expect(events == ["A:on", "A:off", "B-controller:off", "B-controller:on", "B:on"])
+
+        text.value = "BRAVO\n"
+        host.rootView = targetRoot()
+        host.layoutSubtreeIfNeeded()
+        #expect(targetView.string == "BRAVO\n")
+
+        text.value = "BRAVO!\n"
+        host.rootView = targetRoot()
+        host.layoutSubtreeIfNeeded()
+        #expect(targetView.string == "BRAVO!\n")
         #expect(attachedTexts == ["BRAVO\n", "BRAVO\n"])
         #expect(events == ["A:on", "A:off", "B-controller:off", "B-controller:on", "B:on"])
     }

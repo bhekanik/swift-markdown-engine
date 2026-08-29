@@ -138,6 +138,13 @@ extension NativeTextViewCoordinator {
         textView.setSelectedRange(NSRange(location: 0, length: 0))
 
         let authoritative = textView.string
+        if let documentId, authoritative != text {
+            staleBindingAfterControllerTakeover = (
+                ObjectIdentifier(controller),
+                documentId,
+                text
+            )
+        }
         lastSyncedText = authoritative
         previousDisplayLength = (authoritative as NSString).length
         invalidateParseCache()

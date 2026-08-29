@@ -148,6 +148,14 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var isRebuildingDocument = false
     var isNotifyingTextFinderClientStringChange = false
     var lastSyncedText: String
+    /// A controller takeover can expose newer document storage than the
+    /// embedder's binding. Ignore only that captured stale snapshot until the
+    /// binding advances; a different value remains a supported external edit.
+    var staleBindingAfterControllerTakeover: (
+        controller: ObjectIdentifier,
+        documentId: String,
+        text: String
+    )?
     var isProgrammaticEdit: Bool = false
     var isWritingToolsActive: Bool = false
     var wtStartDocumentId: String?
