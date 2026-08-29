@@ -391,6 +391,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             return
         }
         let isNodeSwitch = context.coordinator.documentId != documentId
+        // This snapshot chooses text authority, not admission. A callback may
+        // free the target, but its document storage remains authoritative.
+        let targetControllerHadAuthoritativeText = controller?.isAttached == true
+            && controller?.textView !== textView
+        var textToSynchronize = text
         let currentController = context.coordinator.editorController
             ?? context.coordinator.requestedControllerWhileDetached
         let waitingControllerBecameAvailable =
@@ -521,6 +526,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                     if let layoutManager = textView.textLayoutManager {
                         controller.adopt(layoutManager: layoutManager)
                     }
+                    if targetControllerHadAuthoritativeText {
+                        textToSynchronize = textView.string
+                    }
                     context.coordinator.pendingAttachmentAnnouncement = controller
                     context.coordinator.hasPendingAttachmentAnnouncement = true
                     context.coordinator.isDetachedFromDocument = false
@@ -649,7 +657,10 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.armScrollRestore(for: documentId)
             // Drop the incoming document's undo stack if its text changed while
             // switched away — its recorded ranges are now stale.
-            context.coordinator.invalidateUndoIfContentDiverged(for: documentId, incomingText: text)
+            context.coordinator.invalidateUndoIfContentDiverged(
+                for: documentId,
+                incomingText: textToSynchronize
+            )
             context.coordinator.didInitialFormatting = false
             context.coordinator.didEnsureLayoutForCurrentDocument = false
             // Drop old document's wide-table overlays synchronously.
@@ -700,12 +711,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 to: configuration.rawSourceMode,
                 in: textView,
                 documentId: documentId,
-                text: text
+                text: textToSynchronize
             )
         } else {
             context.coordinator.rebuildTextStorageAndStyle(
                 textView,
-                from: text,
+                from: textToSynchronize,
                 invalidateLayout: isNodeSwitch
             )
         }

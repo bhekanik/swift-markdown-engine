@@ -908,10 +908,16 @@ struct SingleViewTests {
         let documentA = MarkdownEditorController()
         let documentB = MarkdownEditorController()
         let (occupyingView, _) = view(on: documentB, text: "bravo\n")
+        #expect(documentB.applyPatch(
+            range: NSRange(location: 0, length: 5),
+            replacement: "BRAVO"
+        ))
         let text = MutableTextBox("alpha\n")
         var events: [String] = []
+        var attachedTexts: [String] = []
         documentB.onAttach = { textView in
             events.append("B-controller:\(textView == nil ? "off" : "on")")
+            if let textView { attachedTexts.append(textView.string) }
         }
         let host = NSHostingView(rootView: MutableAttachmentHost(
             text: text,
@@ -933,7 +939,10 @@ struct SingleViewTests {
             text: text,
             controller: documentB,
             onMutation: { text.apply($0) },
-            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+            onAttachmentChange: { textView in
+                events.append("B:\(textView == nil ? "off" : "on")")
+                if let textView { attachedTexts.append(textView.string) }
+            }
         )
         host.layoutSubtreeIfNeeded()
 
@@ -941,6 +950,9 @@ struct SingleViewTests {
         #expect(documentB.textView === targetView)
         #expect(targetView.textLayoutManager?.textContentManager === documentB.textContentStorage)
         #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
+        #expect(targetView.string == "BRAVO\n")
+        #expect(text.value == "bravo\n")
+        #expect(attachedTexts == ["BRAVO\n", "BRAVO\n"])
         #expect(events == ["A:on", "A:off", "B-controller:off", "B-controller:on", "B:on"])
     }
 
