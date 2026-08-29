@@ -545,6 +545,69 @@ struct SingleViewTests {
         )])
     }
 
+    @Test("controller-less observer detaches before a free controller attaches")
+    func controllerlessObserverDetachesBeforeFreeController() throws {
+        _ = NSApplication.shared
+        let text = MutableTextBox("alpha\n")
+        let controller = MarkdownEditorController()
+        var events: [String] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: nil,
+            onMutation: { text.apply($0) },
+            onAttachmentChange: { events.append("N:\($0 == nil ? "off" : "on")") }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: controller,
+            onMutation: { text.apply($0) },
+            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+        )
+        host.layoutSubtreeIfNeeded()
+
+        #expect(events == ["N:on", "N:off", "B:on"])
+        #expect(controller.textView === textViews(in: host).first)
+    }
+
+    @Test("controller-less observer detaches before waiting for an occupied controller")
+    func controllerlessObserverDetachesBeforeOccupiedController() throws {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let (occupyingView, _) = view(on: controller, text: "bravo\n")
+        let text = MutableTextBox("alpha\n")
+        var events: [String] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: nil,
+            onMutation: { text.apply($0) },
+            onAttachmentChange: { events.append("N:\($0 == nil ? "off" : "on")") }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let targetView = try #require(textViews(in: host).first)
+
+        text.value = "bravo\n"
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: controller,
+            onMutation: { text.apply($0) },
+            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+        )
+        host.layoutSubtreeIfNeeded()
+
+        #expect(events == ["N:on", "N:off", "B:off"])
+        #expect(controller.textView === occupyingView)
+        #expect(targetView.textLayoutManager?.textContentManager !== controller.textContentStorage)
+
+        controller.detach(textView: occupyingView)
+
+        #expect(controller.textView === targetView)
+        #expect(events == ["N:on", "N:off", "B:off", "B:on"])
+    }
+
     @Test("controller onAttach is a post-sync mutable boundary")
     func controllerOnAttachCanPatchInitialMount() throws {
         _ = NSApplication.shared
@@ -837,6 +900,161 @@ struct SingleViewTests {
 
         #expect(documentB.textView === targetView)
         #expect(targetView.selectedRange() == NSRange(location: 3, length: 0))
+    }
+
+    @Test("outgoing wrapper callback can free the occupied target before admission")
+    func outgoingCallbackCanFreeOccupiedTarget() throws {
+        _ = NSApplication.shared
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        let (occupyingView, _) = view(on: documentB, text: "bravo\n")
+        let text = MutableTextBox("alpha\n")
+        var events: [String] = []
+        documentB.onAttach = { textView in
+            events.append("B-controller:\(textView == nil ? "off" : "on")")
+        }
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: documentA,
+            onMutation: { _ in },
+            onAttachmentChange: { textView in
+                events.append("A:\(textView == nil ? "off" : "on")")
+                if textView == nil {
+                    documentB.detach(textView: occupyingView)
+                }
+            }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let targetView = try #require(documentA.textView)
+
+        text.value = "bravo\n"
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: documentB,
+            onMutation: { text.apply($0) },
+            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+        )
+        host.layoutSubtreeIfNeeded()
+
+        #expect(documentA.textView == nil)
+        #expect(documentB.textView === targetView)
+        #expect(targetView.textLayoutManager?.textContentManager === documentB.textContentStorage)
+        #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
+        #expect(events == ["A:on", "A:off", "B-controller:off", "B-controller:on", "B:on"])
+    }
+
+    @Test("outgoing wrapper callback can occupy a free target before admission")
+    func outgoingCallbackCanOccupyFreeTarget() throws {
+        _ = NSApplication.shared
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        let text = MutableTextBox("alpha\n")
+        var blocker: (NativeTextView, NativeTextViewCoordinator)?
+        var events: [String] = []
+        var mutationsB: [MarkdownTextMutation] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: documentA,
+            onMutation: { _ in },
+            onAttachmentChange: { textView in
+                events.append("A:\(textView == nil ? "off" : "on")")
+                if textView == nil {
+                    blocker = view(on: documentB, text: "bravo\n")
+                }
+            }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let targetView = try #require(documentA.textView)
+
+        text.value = "bravo\n"
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: documentB,
+            onMutation: { mutation in
+                mutationsB.append(mutation)
+                text.apply(mutation)
+            },
+            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+        )
+        host.layoutSubtreeIfNeeded()
+        let blockingView = try #require(blocker?.0)
+
+        #expect(documentA.textView == nil)
+        #expect(documentB.textView === blockingView)
+        #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
+        #expect(targetView.textLayoutManager?.textContentManager !== documentB.textContentStorage)
+        #expect(events == ["A:on", "A:off", "B:off"])
+
+        targetView.insertText("?", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        #expect(text.value == "bravo\n")
+        #expect(blockingView.string == "bravo\n")
+        #expect(mutationsB.isEmpty)
+
+        documentB.detach(textView: blockingView)
+
+        #expect(documentB.textView === targetView)
+        #expect(targetView.string == "bravo\n")
+        #expect(documentB.textContentStorage.textLayoutManagers.count == 1)
+        #expect(events == ["A:on", "A:off", "B:off", "B:on"])
+
+        targetView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        #expect(text.value == "bravo!\n")
+        #expect(mutationsB == [MarkdownTextMutation(
+            range: NSRange(location: 5, length: 0),
+            replacement: "!"
+        )])
+    }
+
+    @Test("a waiter survives one callback reoccupation")
+    func waiterSurvivesCallbackReoccupation() throws {
+        _ = NSApplication.shared
+        let documentA = MarkdownEditorController()
+        let documentB = MarkdownEditorController()
+        let (occupyingView, _) = view(on: documentB, text: "bravo\n")
+        let text = MutableTextBox("alpha\n")
+        var replacement: (NativeTextView, NativeTextViewCoordinator)?
+        var didReoccupy = false
+        var events: [String] = []
+        let host = NSHostingView(rootView: MutableAttachmentHost(
+            text: text,
+            controller: documentA,
+            onMutation: { _ in },
+            onAttachmentChange: { events.append("A:\($0 == nil ? "off" : "on")") }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let targetView = try #require(documentA.textView)
+
+        text.value = "bravo\n"
+        host.rootView = MutableAttachmentHost(
+            text: text,
+            controller: documentB,
+            onMutation: { text.apply($0) },
+            onAttachmentChange: { events.append("B:\($0 == nil ? "off" : "on")") }
+        )
+        host.layoutSubtreeIfNeeded()
+        documentB.onAttach = { textView in
+            if textView == nil && !didReoccupy {
+                didReoccupy = true
+                replacement = view(on: documentB, text: "bravo\n")
+            }
+        }
+
+        documentB.detach(textView: occupyingView)
+        let replacementView = try #require(replacement?.0)
+        #expect(documentB.textView === replacementView)
+        #expect(targetView.textLayoutManager?.textContentManager !== documentB.textContentStorage)
+        #expect(events == ["A:on", "A:off", "B:off"])
+
+        documentB.detach(textView: replacementView)
+
+        #expect(documentB.textView === targetView)
+        #expect(targetView.textLayoutManager?.textContentManager === documentB.textContentStorage)
+        #expect(events == ["A:on", "A:off", "B:off", "B:on"])
     }
 
     @Test("selection-derived callbacks switch before the incoming document rebuilds")

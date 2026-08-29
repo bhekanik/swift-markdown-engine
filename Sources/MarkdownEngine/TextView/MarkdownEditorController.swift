@@ -398,16 +398,28 @@ public final class MarkdownEditorController {
     /// window showing a live editor that reached nothing: no `applyPatch`, no
     /// text-view seam, no find, no typewriter scrolling.
     ///
-    /// One slot rather than a queue. The only case that must recover is the
-    /// remount, where exactly one view is waiting; a second window on one
-    /// document is a composition mistake, and the second-best outcome there is
-    /// an isolated view, not a fair queue.
+    /// One slot rather than a queue. Remounts and controller swaps have one
+    /// replacement view; a second window on one document is a composition
+    /// mistake, and the second-best outcome there is isolation, not a fair queue.
     private weak var waiting: NativeTextViewCoordinator?
 
-    /// Remember a view that was refused, so ``detach(textView:)`` can hand it
-    /// the controller.
-    func awaitSlot(_ coordinator: NativeTextViewCoordinator) {
+    /// Remember a refused view, handing it over immediately when the slot is
+    /// already free so detach-before-wait cannot lose the wake-up.
+    func awaitSlot(
+        _ coordinator: NativeTextViewCoordinator,
+        announceOnImmediateHandoff: Bool = true
+    ) {
         waiting = coordinator
+        handOffWaitingViewIfPossible(announce: announceOnImmediateHandoff)
+    }
+
+    private func handOffWaitingViewIfPossible(announce: Bool = true) {
+        if attachment?.textView == nil { attachment = nil }
+        guard attachment == nil, let waiter = waiting else { return }
+        if waiter.takeOverFreedController(self, announce: announce)
+            || !waiter.isWaiting(for: self) {
+            waiting = nil
+        }
     }
 
     /// Release the attached view, handing the controller to a view that was
@@ -425,10 +437,7 @@ public final class MarkdownEditorController {
         guard wasAttached else { return }
         textProjectionCache = nil
         onAttach?(nil)
-        if let waiter = waiting {
-            waiting = nil
-            waiter.takeOverFreedController(self)
-        }
+        handOffWaitingViewIfPossible()
     }
 
     /// Move a layout manager onto this document's storage, off whatever it was

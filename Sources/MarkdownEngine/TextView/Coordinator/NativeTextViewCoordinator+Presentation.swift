@@ -92,8 +92,8 @@ extension NativeTextViewCoordinator {
 
     /// Take a controller that has just released its view.
     ///
-    /// This view was built while another still held the controller, so it has a
-    /// TextKit stack of its own and reaches nothing. See
+    /// This view requested a controller while another view still held it, so it
+    /// has a TextKit stack of its own and reaches nothing. See
     /// ``MarkdownEditorController/awaitSlot(_:)`` for why the handover is pushed
     /// here rather than retried on a later update pass — for a remount, there is
     /// no later update pass.
@@ -102,10 +102,18 @@ extension NativeTextViewCoordinator {
     /// text this view was built from can be older than what the outgoing view
     /// left behind, and writing it back would revert edits the embedder has
     /// already been told about.
-    func takeOverFreedController(_ controller: MarkdownEditorController) {
+    func isWaiting(for controller: MarkdownEditorController) -> Bool {
+        editorController == nil && requestedControllerWhileDetached === controller
+    }
+
+    @discardableResult
+    func takeOverFreedController(
+        _ controller: MarkdownEditorController,
+        announce: Bool = true
+    ) -> Bool {
         guard let textView,
               editorController == nil,
-              requestedControllerWhileDetached === controller else { return }
+              requestedControllerWhileDetached === controller else { return false }
         // `onAttach` can install Finder and read its client immediately. Reserve
         // the slot now, but announce it only after this view uses the document's
         // authoritative storage instead of its stale SwiftUI snapshot.
@@ -113,7 +121,7 @@ extension NativeTextViewCoordinator {
             textView: textView,
             coordinator: self,
             notifyEmbedder: false
-        ) else { return }
+        ) else { return false }
         editorController = controller
         requestedControllerWhileDetached = nil
         pendingAttachmentAnnouncement = controller
@@ -142,6 +150,9 @@ extension NativeTextViewCoordinator {
             pendingSelectionRestore = nil
         }
         didInitialFormatting = true
-        reportPendingAttachment(textView)
+        if announce {
+            reportPendingAttachment(textView)
+        }
+        return editorController === controller && controller.textView === textView
     }
 }
