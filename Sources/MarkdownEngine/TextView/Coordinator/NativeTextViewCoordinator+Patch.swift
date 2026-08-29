@@ -11,6 +11,12 @@
 
 import AppKit
 
+enum ExternalTextSpliceResult {
+    case applied
+    case declined
+    case invalidated
+}
+
 extension NativeTextViewCoordinator {
     /// Apply one patch through the engine's own edit path.
     /// - Parameter publishesMutation: Pass `false` when the embedder already
@@ -70,22 +76,22 @@ extension NativeTextViewCoordinator {
     /// almost all of those into one patch through `applyProgrammaticPatch`,
     /// which preserves the caret and restyles only the touched paragraphs.
     ///
-    /// - Returns: `false` when the diff is most of the document; the caller
-    ///   then falls back to the full rebuild.
+    /// - Returns: Whether the patch applied, should fall back to a rebuild, or
+    ///   became stale because a synchronous callback changed the document.
     func spliceExternalText(
         _ newText: String,
         in textView: NSTextView,
         publishesMutation: Bool = true
-    ) -> Bool {
+    ) -> ExternalTextSpliceResult {
         let currentDisplay = textView.string
-        guard currentDisplay != newText else { return true }
+        guard currentDisplay != newText else { return .applied }
         var patch = MarkdownTextPatch.diff(from: currentDisplay, to: newText)
 
         // A change spanning nearly the whole document is a different document,
         // not an edit: the rebuild is both cheaper and the correct reset.
         let oldLength = (currentDisplay as NSString).length
         let touched = max(patch.range.length, (patch.replacement as NSString).length)
-        guard oldLength == 0 || touched * 4 < oldLength * 3 else { return false }
+        guard oldLength == 0 || touched * 4 < oldLength * 3 else { return .declined }
 
         var selection = textView.selectedRange()
         let previousSyncedText = lastSyncedText
@@ -99,8 +105,10 @@ extension NativeTextViewCoordinator {
             to: textView,
             publishesMutation: publishesMutation
         )
-        if !applied,
-           textView.string != currentDisplay,
+        let wasInvalidated = textView.string != currentDisplay
+            || editorController !== controllerBeforeEdit
+            || controllerBeforeEdit?.documentRevision != revisionBeforeEdit
+        if !applied, wasInvalidated,
            let controller = controllerBeforeEdit,
            editorController === controller,
            let revisionBeforeEdit,
@@ -116,8 +124,12 @@ extension NativeTextViewCoordinator {
             )
         }
         guard applied else {
+            if wasInvalidated {
+                lastSyncedText = textView.string
+                return .invalidated
+            }
             lastSyncedText = previousSyncedText
-            return false
+            return .declined
         }
         let adjusted = selection
             .adjusting(forReplacementOf: patch.range,
@@ -125,7 +137,7 @@ extension NativeTextViewCoordinator {
             .clamped(toLength: (textView.string as NSString).length)
         textView.setSelectedRange(adjusted)
         lastSyncedText = textView.string
-        return true
+        return .applied
     }
 
     private func discardPendingTextProposal() {
@@ -146,6 +158,10 @@ extension NativeTextViewCoordinator {
         var range = patch.range
         for record in records {
             guard let mutation = record.mutation else { return nil }
+            guard NSMaxRange(mutation.range) < range.location
+                    || NSMaxRange(range) < mutation.range.location else {
+                return nil
+            }
             range = range.adjusting(
                 forReplacementOf: mutation.range,
                 withLength: (mutation.replacement as NSString).length

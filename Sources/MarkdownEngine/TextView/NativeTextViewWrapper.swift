@@ -701,18 +701,23 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // reset the selection to {0, 0}. Falls through to the rebuild when the
         // change is too large to be an edit.
         if !isNodeSwitch, !rawSourceModeChanged, !fontChanged, !controllerChanged,
-           context.coordinator.didInitialFormatting,
-           context.coordinator.spliceExternalText(
-               textToSynchronize,
-               in: textView,
-               publishesMutation: false
-           ) {
-            textView.recalcOverscroll(for: nsView)
-            (nsView as? ClampedScrollView)?.clampToInsets()
-            context.coordinator.onTextMutation = onTextMutation
-            context.coordinator.onBuildContextMenu = onBuildContextMenu
-            context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
-            return
+           context.coordinator.didInitialFormatting {
+            let spliceResult = context.coordinator.spliceExternalText(
+                textToSynchronize,
+                in: textView,
+                publishesMutation: false
+            )
+            switch spliceResult {
+            case .applied, .invalidated:
+                textView.recalcOverscroll(for: nsView)
+                (nsView as? ClampedScrollView)?.clampToInsets()
+                context.coordinator.onTextMutation = onTextMutation
+                context.coordinator.onBuildContextMenu = onBuildContextMenu
+                context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
+                return
+            case .declined:
+                break
+            }
         }
 
         let font = NSFont(name: fontName, size: fontSize) ?? NSFont.systemFont(ofSize: fontSize)

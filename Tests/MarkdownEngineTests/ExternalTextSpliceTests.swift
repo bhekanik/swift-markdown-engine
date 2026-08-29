@@ -39,7 +39,7 @@ struct ExternalTextSpliceTests {
         let under = (textView.string as NSString).substring(with: NSRange(location: 32, length: 6))
 
         #expect(coordinator.spliceExternalText("# Retitled\n\nfirst paragraph\n\nsecond paragraph\n",
-                                               in: textView))
+                                               in: textView) == .applied)
 
         #expect(textView.string.hasPrefix("# Retitled"))
         #expect((textView.string as NSString)
@@ -49,7 +49,7 @@ struct ExternalTextSpliceTests {
     @Test("the storage string is exactly the new text")
     func storageMatchesNewText() {
         let (textView, coordinator) = makeEditor("alpha bravo charlie")
-        #expect(coordinator.spliceExternalText("alpha DELTA charlie", in: textView))
+        #expect(coordinator.spliceExternalText("alpha DELTA charlie", in: textView) == .applied)
         #expect(textView.string == "alpha DELTA charlie")
         #expect(coordinator.lastSyncedText == "alpha DELTA charlie")
     }
@@ -57,14 +57,14 @@ struct ExternalTextSpliceTests {
     @Test("an identical text is a no-op that still reports success")
     func identicalTextIsNoOp() {
         let (textView, coordinator) = makeEditor("alpha")
-        #expect(coordinator.spliceExternalText("alpha", in: textView))
+        #expect(coordinator.spliceExternalText("alpha", in: textView) == .applied)
         #expect(textView.string == "alpha")
     }
 
     @Test("a wholesale replacement declines, so the caller falls back to the rebuild")
     func wholesaleReplacementDeclines() {
         let (textView, coordinator) = makeEditor("alpha bravo charlie delta echo")
-        #expect(coordinator.spliceExternalText("completely different content here", in: textView) == false)
+        #expect(coordinator.spliceExternalText("completely different content here", in: textView) == .declined)
         #expect(textView.string == "alpha bravo charlie delta echo")
     }
 
@@ -75,7 +75,7 @@ struct ExternalTextSpliceTests {
             textView.textStorage?.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
         ).pointSize
 
-        #expect(coordinator.spliceExternalText("## plain line\n\ntrailing\n", in: textView))
+        #expect(coordinator.spliceExternalText("## plain line\n\ntrailing\n", in: textView) == .applied)
 
         let headingFont = try #require(
             textView.textStorage?.attribute(.font, at: 4, effectiveRange: nil) as? NSFont

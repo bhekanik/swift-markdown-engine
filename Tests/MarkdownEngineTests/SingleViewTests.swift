@@ -226,14 +226,14 @@ struct SingleViewTests {
         controller.textFinderActionResponder = responder
 
         text.value = "- item\n"
-        let outerSucceeded = coordinator.spliceExternalText(
+        let outerResult = coordinator.spliceExternalText(
             text.value,
             in: textView,
             publishesMutation: false
         )
         RunLoop.current.run(until: Date().addingTimeInterval(0.02))
 
-        #expect(outerSucceeded)
+        #expect(outerResult == .applied)
         #expect(textView.string == "- Item\n")
         #expect(text.value == "- Item\n")
         #expect(coordinator.lastSyncedText == "- Item\n")
@@ -256,14 +256,14 @@ struct SingleViewTests {
             ))
         }
         text.value = "- Item\n!"
-        let shiftedOuterSucceeded = coordinator.spliceExternalText(
+        let shiftedOuterResult = coordinator.spliceExternalText(
             text.value,
             in: textView,
             publishesMutation: false
         )
         RunLoop.current.run(until: Date().addingTimeInterval(0.02))
 
-        #expect(shiftedOuterSucceeded)
+        #expect(shiftedOuterResult == .applied)
         #expect(textView.string == "# - Item\n!")
         #expect(text.value == "# - Item\n!")
         #expect(coordinator.lastSyncedText == "# - Item\n!")
@@ -281,6 +281,199 @@ struct SingleViewTests {
         #expect(controller.documentRevision == 4)
         #expect(controller.documentMutationDelta == 4)
         #expect(controller.documentPublishedDelta == 2)
+    }
+
+    @Test("an overlapping Finder patch keeps the nested edit authoritative")
+    func bindingSpliceDoesNotOverwriteOverlappingFinderPatch() throws {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let text = MutableTextBox("abc")
+        var mutations: [MarkdownTextMutation] = []
+        func root() -> MutableAttachmentHost {
+            MutableAttachmentHost(
+                text: text,
+                controller: controller,
+                onMutation: { mutation in
+                    mutations.append(mutation)
+                    text.apply(mutation)
+                },
+                onAttachmentChange: { _ in }
+            )
+        }
+        let host = NSHostingView(rootView: root())
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let textView = try #require(controller.textView)
+        let responder = TextFinderResponder()
+        var didApplyNestedPatch = false
+        responder.onStringWillChange = {
+            guard !didApplyNestedPatch else { return }
+            didApplyNestedPatch = true
+            #expect(controller.applyPatch(
+                range: NSRange(location: 1, length: 1),
+                replacement: "B"
+            ))
+        }
+        controller.textFinderActionResponder = responder
+
+        text.value = "axc"
+        host.rootView = root()
+        host.layoutSubtreeIfNeeded()
+
+        #expect(textView.string == "aBc")
+        #expect(text.value == "aBc")
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 1, length: 1),
+            replacement: "B"
+        )])
+        #expect(text.bindingWriteCount == 0)
+        #expect(controller.documentRevision == 1)
+        #expect(controller.documentMutationDelta == 0)
+        #expect(controller.documentPublishedDelta == 0)
+
+        host.rootView = root()
+        host.layoutSubtreeIfNeeded()
+        #expect(textView.string == text.value)
+        #expect(mutations.count == 1)
+    }
+
+    @Test("Finder edits touching a Binding patch boundary defer reconciliation")
+    func bindingSpliceDefersBoundaryConflicts() {
+        func runCase(
+            nestedPatch: MarkdownTextPatch,
+            bindingAfterNestedPatch: String,
+            liveAfterNestedPatch: String,
+            expectedDelta: Int,
+            expectedSelectionAfterNestedPatch: Int,
+            expectedFinalRevision: UInt64
+        ) {
+            let controller = MarkdownEditorController()
+            let text = MutableTextBox("abc")
+            var mutations: [MarkdownTextMutation] = []
+            let wrapper = NativeTextViewWrapper(
+                text: Binding(
+                    get: { text.value },
+                    set: { text.writeFromBinding($0) }
+                ),
+                controller: controller,
+                fontName: "Helvetica",
+                fontSize: 16,
+                onTextMutation: { mutation in
+                    mutations.append(mutation)
+                    text.apply(mutation)
+                }
+            )
+            let coordinator = wrapper.makeCoordinator()
+            let layoutManager = NSTextLayoutManager()
+            let container = NSTextContainer(size: NSSize(width: 600, height: 400))
+            layoutManager.textContainer = container
+            controller.textContentStorage.addTextLayoutManager(layoutManager)
+            let textView = NativeTextView(
+                frame: NSRect(x: 0, y: 0, width: 600, height: 400),
+                textContainer: container
+            )
+            textView.isEditable = true
+            coordinator.adopt(textView, text: text.value)
+            textView.setSelectedRange(NSRange(location: 3, length: 0))
+
+            let responder = TextFinderResponder()
+            var didApplyNestedPatch = false
+            responder.onStringWillChange = {
+                guard !didApplyNestedPatch else { return }
+                didApplyNestedPatch = true
+                #expect(controller.applyPatch(
+                    range: nestedPatch.range,
+                    replacement: nestedPatch.replacement
+                ))
+            }
+            controller.textFinderActionResponder = responder
+
+            text.value = "axc"
+            let firstResult = coordinator.spliceExternalText(
+                text.value,
+                in: textView,
+                publishesMutation: false
+            )
+
+            #expect(firstResult == .invalidated)
+            #expect(textView.string == liveAfterNestedPatch)
+            #expect(text.value == bindingAfterNestedPatch)
+            #expect(coordinator.lastSyncedText == liveAfterNestedPatch)
+            #expect(mutations == [MarkdownTextMutation(
+                range: nestedPatch.range,
+                replacement: nestedPatch.replacement
+            )])
+            #expect(text.bindingWriteCount == 0)
+            #expect(controller.documentRevision == 1)
+            #expect(controller.documentMutationDelta == expectedDelta)
+            #expect(controller.documentPublishedDelta == expectedDelta)
+            #expect(textView.selectedRange() == NSRange(
+                location: expectedSelectionAfterNestedPatch,
+                length: 0
+            ))
+            #expect(coordinator.pendingTextMutation == nil)
+            #expect(coordinator.pendingTextMutationStartLength == nil)
+            #expect(coordinator.pendingEditedRange == nil)
+            #expect(coordinator.pendingEditCount == 0)
+            #expect(coordinator.pendingBacktickWindow == nil)
+            #expect(!coordinator.pendingExtFenceTouched)
+            #expect(!coordinator.pendingListStructureEdit)
+            #expect(coordinator.pendingPreEditActiveTokenIndices == nil)
+
+            let secondResult = coordinator.spliceExternalText(
+                text.value,
+                in: textView,
+                publishesMutation: false
+            )
+
+            #expect(secondResult == .applied)
+            #expect(textView.string == text.value)
+            #expect(coordinator.lastSyncedText == text.value)
+            #expect(mutations.count == 1)
+            #expect(text.bindingWriteCount == 0)
+            #expect(controller.documentRevision == expectedFinalRevision)
+            #expect(controller.documentMutationDelta == expectedDelta)
+            #expect(controller.documentPublishedDelta == expectedDelta)
+            #expect(textView.selectedRange() == NSRange(
+                location: expectedSelectionAfterNestedPatch,
+                length: 0
+            ))
+        }
+
+        _ = NSApplication.shared
+        runCase(
+            nestedPatch: MarkdownTextPatch(
+                range: NSRange(location: 1, length: 1),
+                replacement: "B"
+            ),
+            bindingAfterNestedPatch: "aBc",
+            liveAfterNestedPatch: "aBc",
+            expectedDelta: 0,
+            expectedSelectionAfterNestedPatch: 3,
+            expectedFinalRevision: 1
+        )
+        runCase(
+            nestedPatch: MarkdownTextPatch(
+                range: NSRange(location: 1, length: 0),
+                replacement: "Y"
+            ),
+            bindingAfterNestedPatch: "aYxc",
+            liveAfterNestedPatch: "aYbc",
+            expectedDelta: 1,
+            expectedSelectionAfterNestedPatch: 4,
+            expectedFinalRevision: 2
+        )
+        runCase(
+            nestedPatch: MarkdownTextPatch(
+                range: NSRange(location: 2, length: 1),
+                replacement: ""
+            ),
+            bindingAfterNestedPatch: "ax",
+            liveAfterNestedPatch: "ab",
+            expectedDelta: -1,
+            expectedSelectionAfterNestedPatch: 2,
+            expectedFinalRevision: 2
+        )
     }
 
     @Test("Find invalidates before every projected client-string change")

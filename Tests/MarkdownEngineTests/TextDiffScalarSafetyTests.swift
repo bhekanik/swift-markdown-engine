@@ -64,7 +64,7 @@ struct TextDiffScalarSafetyTests {
     func splicePathIsScalarSafe() throws {
         let (textView, _, coordinator, mutations) = makeEditor("A😀Z and a good deal more text\n")
 
-        #expect(coordinator.spliceExternalText("A😂Z and a good deal more text\n", in: textView))
+        #expect(coordinator.spliceExternalText("A😂Z and a good deal more text\n", in: textView) == .applied)
 
         #expect(textView.string == "A😂Z and a good deal more text\n")
         let published = try #require(mutations().last)
