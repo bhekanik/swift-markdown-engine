@@ -417,6 +417,69 @@ struct CoordinatorAdoptTests {
         #expect(textView.string == "alpha")
     }
 
+    @Test("a refused retry cannot call through a previously configured view")
+    func refusedRetryIsInertAfterReentrantPublicDetach() {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let selectionEvent = Notification.Name("CoordinatorAdoptTests.refusedRetrySelection")
+        var configuration = MarkdownEditorConfiguration.default
+        configuration.services.bus.selectionBoldDidChange = selectionEvent
+        let firstCoordinator = NativeTextViewWrapper(
+            text: .constant("alpha"),
+            configuration: configuration,
+            controller: controller
+        ).makeCoordinator()
+        let first = NSTextView(frame: .zero)
+        var shouldDetach = true
+        controller.onAttach = { textView in
+            guard shouldDetach, let textView else { return }
+            shouldDetach = false
+            #expect(firstCoordinator.detach(textView))
+        }
+
+        #expect(firstCoordinator.adopt(first, text: "alpha") == false)
+        #expect(first.delegate == nil)
+
+        controller.onAttach = nil
+        let ownerCoordinator = NativeTextViewWrapper(
+            text: .constant("alpha"),
+            controller: controller
+        ).makeCoordinator()
+        let owner = NSTextView(frame: .zero)
+        #expect(ownerCoordinator.adopt(owner, text: "alpha"))
+
+        var selectionEvents = 0
+        var nestedResult: Bool?
+        let observer = NotificationCenter.default.addObserver(
+            forName: selectionEvent,
+            object: nil,
+            queue: nil
+        ) { _ in
+            MainActor.assumeIsolated {
+                selectionEvents += 1
+                nestedResult = controller.applyPatch(
+                    range: NSRange(location: 0, length: 1),
+                    replacement: "X"
+                )
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        first.setSelectedRange(NSRange(location: 5, length: 0))
+        selectionEvents = 0
+        #expect(firstCoordinator.adopt(first, text: "replacement") == false)
+
+        #expect(first.string == "replacement")
+        #expect(first.delegate == nil)
+        #expect(selectionEvents == 0)
+        #expect(nestedResult == nil)
+        #expect(owner.string == "alpha")
+        #expect(controller.text == "alpha")
+        #expect(controller.documentRevision == 0)
+        #expect(controller.documentMutationDelta == 0)
+        #expect(controller.documentPublishedDelta == 0)
+    }
+
     @Test("public adoption rejects service mutations during its rebuild")
     func publicAdoptionRejectsServiceReentry() {
         _ = NSApplication.shared

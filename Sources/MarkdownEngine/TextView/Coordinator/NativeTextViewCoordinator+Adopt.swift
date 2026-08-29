@@ -45,12 +45,12 @@ public extension NativeTextViewCoordinator {
                 guard self.textView == nil || self.textView === textView else {
                     return false
                 }
+                isolateRefusedTextView(textView, text: text)
                 self.textView = textView
                 appKitAdoptedTextView = textView
                 editorController = nil
                 requestedControllerWhileDetached = requestedController
                 isDetachedFromDocument = true
-                textView.string = text
                 return false
             }
 
@@ -77,14 +77,10 @@ public extension NativeTextViewCoordinator {
 
             guard editorController === requestedController,
                   requestedController.textView === textView else {
+                isolateRefusedTextView(textView, text: authoritativeText)
                 editorController = nil
                 requestedControllerWhileDetached = requestedController
                 isDetachedFromDocument = true
-                if let layoutManager = textView.textLayoutManager,
-                   layoutManager.textContentManager == nil {
-                    NSTextContentStorage().addTextLayoutManager(layoutManager)
-                }
-                configureAdoptedTextView(textView, text: authoritativeText)
                 return false
             }
             return true
@@ -173,5 +169,21 @@ public extension NativeTextViewCoordinator {
         )
         previousDisplayLength = (textView.string as NSString).length
         didInitialFormatting = true
+    }
+
+    private func isolateRefusedTextView(_ textView: NSTextView, text: String) {
+        // `string =` synchronously resets selection. Disconnect first so that
+        // reset cannot reach the bus or configured styling services.
+        if self.textView === textView { self.textView = nil }
+        if textView.delegate === self { textView.delegate = nil }
+        textView.textLayoutManager?.delegate = nil
+        (textView as? NativeTextView)?.layoutBridge = nil
+        layoutBridge = nil
+        layoutDelegate = nil
+        if let layoutManager = textView.textLayoutManager,
+           layoutManager.textContentManager == nil {
+            NSTextContentStorage().addTextLayoutManager(layoutManager)
+        }
+        textView.string = text
     }
 }
