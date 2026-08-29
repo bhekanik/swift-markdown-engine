@@ -461,6 +461,65 @@ struct CommonMarkReferenceConformanceTests {
         ) != nil)
     }
 
+    @Test("higher-precedence code spans control reference bracket association")
+    func codeSpanOwnsAngleContentBeforeBracketAssociation() {
+        let source = #"[outer `<x a="` ]"> tail][ref]"# + "\n\n[ref]: /uri\n"
+        let visible = #"[outer <x a=" ]"> tail]ref"# + "\n\n"
+        #expect(linkCounts(in: DocumentAST.parse(source)).references == 1)
+
+        let html = MarkdownHTMLRenderer.html(from: source)
+        #expect(!html.hasPrefix("<p><a href=\"/uri\">outer"))
+        #expect(html.contains("<code>&lt;x a=&quot;</code>"))
+        #expect(html.contains("<a href=\"/uri\">ref</a>"))
+        #expect(MarkdownTextProjection.make(markdown: source).string == visible)
+
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+        #expect(accessibility.text.string == visible)
+        let visibleReference = (visible as NSString).range(of: "ref", options: .backwards)
+        #expect(accessibility.spans.filter {
+            $0.role == .link(destination: "/uri") && $0.visibleRange == visibleReference
+        }.count == 1)
+
+        let styled = MarkdownRendering.attributedString(
+            for: source,
+            fontName: NSFont.systemFont(ofSize: 16).fontName,
+            fontSize: 16
+        )
+        #expect(styled.attribute(.link, at: 1, effectiveRange: nil) == nil)
+        let sourceReference = (source as NSString).range(of: "[ref]")
+        #expect(styled.attribute(.link, at: sourceReference.location + 1, effectiveRange: nil) != nil)
+
+        let imageSource = "!\(source)"
+        #expect(semanticInlines(in: DocumentAST.parse(imageSource)).images == 0)
+        #expect(linkCounts(in: DocumentAST.parse(imageSource)).references == 1)
+
+        for angle in ["https://e.test/", "foo@bar.com"] {
+            let crossing = "[outer `<\(angle)`]> tail][ref]\n\n[ref]: /uri\n"
+            let crossingVisible = "[outer <\(angle)]> tail]ref\n\n"
+            #expect(linkCounts(in: DocumentAST.parse(crossing)).references == 1)
+            #expect(MarkdownHTMLRenderer.html(from: crossing).contains(
+                "<code>&lt;\(angle)</code>]&gt; tail]<a href=\"/uri\">ref</a>"
+            ))
+            #expect(MarkdownTextProjection.make(markdown: crossing).string == crossingVisible)
+            let crossingAccessibility = MarkdownAccessibilityProjection.make(markdown: crossing)
+            #expect(crossingAccessibility.text.string == crossingVisible)
+            #expect(crossingAccessibility.spans.filter {
+                $0.role == .link(destination: "/uri")
+            }.count == 1)
+        }
+
+        for label in [
+            #"outer <x a="`code` \*"> tail"#,
+            #"outer `code` <x a="\*"> tail"#,
+            #"outer <x a="\*"> `code` tail"#,
+        ] {
+            let control = "[\(label)][ref]\n\n[ref]: /uri\n"
+            #expect(linkCounts(in: DocumentAST.parse(control)).references == 1)
+            #expect(MarkdownHTMLRenderer.html(from: control)
+                .hasPrefix("<p><a href=\"/uri\">"))
+        }
+    }
+
     @Test("unclosed raw HTML terminators are searched once per form")
     func malformedRawHTMLOperationBound() {
         let comments = Array(repeating: "<!--", count: 128).joined()
@@ -474,6 +533,30 @@ struct CommonMarkReferenceConformanceTests {
 
         let declarations = Array(repeating: "<!A", count: 128).joined()
         #expect(InlineParser.rawHTMLTerminatorSearchCount(in: declarations) == 1)
+
+        let malformedTags = Array(repeating: #"<x a=""#, count: 4_000).joined()
+        #expect(InlineParser.angleSpanInspectionCount(in: malformedTags)
+            < (malformedTags as NSString).length * 8)
+    }
+
+    @Test("inline raw tag grammar accepts only CommonMark tag forms")
+    func inlineRawTagGrammar() {
+        let valid = [
+            "<x>", "</x>", "<x/>", "<x />", "<x disabled>",
+            "<x a=b>", "<x a='b'>", #"<x a="b">"#, "<x a = b>",
+            "<x\ta=b>", "<x\na=b>", "<x\r\na=b>", "<x\ra=b>",
+        ]
+        for source in valid {
+            #expect(InlineParser.isInlineRawHTML(source))
+        }
+
+        let invalid = [
+            "<x\u{00A0}a=b>", "<x\u{000B}a=b>", "<x a=>",
+            #"<x a="b>"#, "<x\n\na=b>", "<x / >",
+        ]
+        for source in invalid {
+            #expect(!InlineParser.isInlineRawHTML(source))
+        }
     }
 
     @Test("CommonMark 604/605 email autolinks share HTML, styling and accessibility destinations")

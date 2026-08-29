@@ -151,6 +151,28 @@ enum InlineParser {
         return terminators.searchCount
     }
 
+    static func angleSpanInspectionCount(in text: String) -> Int {
+        let terminators = RawHTMLTerminatorCache()
+        _ = parse(
+            text,
+            registry: .empty,
+            referenceDefinitions: [],
+            rawHTMLTerminators: terminators
+        )
+        return terminators.angleSpanInspectionCount
+    }
+
+    static func isInlineRawHTML(_ text: String) -> Bool {
+        let ns = text as NSString
+        guard case .rawHTML(let range) = matchInlineRawHTML(
+            ns,
+            ns.length,
+            start: 0,
+            terminators: RawHTMLTerminatorCache()
+        ) else { return false }
+        return range == NSRange(location: 0, length: ns.length)
+    }
+
     /// Parse the inline content of `range` within `ns`, returning nodes in absolute document coordinates.
     static func parse(
         _ ns: NSString,
@@ -204,7 +226,11 @@ enum InlineParser {
         var processingInstructionExhausted = false
         var cdataExhausted = false
         var declarationExhausted = false
+        var singleQuotedAttributeExhausted = false
+        var doubleQuotedAttributeExhausted = false
+        var autolinkExhaustedThrough = 0
         var searchCount = 0
+        var angleSpanInspectionCount = 0
     }
 
     /// The already-claimed ranges, in a form the later passes can consult in
@@ -237,8 +263,13 @@ enum InlineParser {
         }
 
         mutating func contains(_ idx: Int) -> Bool {
+            containingRange(at: idx) != nil
+        }
+
+        mutating func containingRange(at idx: Int) -> NSRange? {
             advance(to: idx)
-            return cursor < ranges.count && NSLocationInRange(idx, ranges[cursor])
+            guard cursor < ranges.count, NSLocationInRange(idx, ranges[cursor]) else { return nil }
+            return ranges[cursor]
         }
 
         mutating func overlaps(_ range: NSRange) -> Bool {
@@ -372,6 +403,7 @@ enum InlineParser {
                 ns,
                 len,
                 at: i,
+                claimed: claimed,
                 registry: registry,
                 referenceDefinitions: referenceDefinitions,
                 rawHTMLTerminators: rawHTMLTerminators
@@ -390,6 +422,7 @@ enum InlineParser {
         _ ns: NSString,
         _ len: Int,
         at i: Int,
+        claimed: ClaimedIndex,
         registry: ExtensionRegistry,
         referenceDefinitions: Set<String>,
         rawHTMLTerminators: RawHTMLTerminatorCache
@@ -398,6 +431,7 @@ enum InlineParser {
             ns,
             len,
             at: i,
+            claimed: claimed,
             registry: registry,
             referenceDefinitions: referenceDefinitions,
             rawHTMLTerminators: rawHTMLTerminators
@@ -417,6 +451,7 @@ enum InlineParser {
         _ ns: NSString,
         _ len: Int,
         at i: Int,
+        claimed: ClaimedIndex,
         registry: ExtensionRegistry,
         referenceDefinitions: Set<String>,
         rawHTMLTerminators: RawHTMLTerminatorCache
@@ -428,6 +463,7 @@ enum InlineParser {
                 ns,
                 len,
                 start: i,
+                claimed: claimed,
                 registry: registry,
                 referenceDefinitions: referenceDefinitions,
                 rawHTMLTerminators: rawHTMLTerminators
@@ -439,6 +475,7 @@ enum InlineParser {
                 ns,
                 len,
                 start: i,
+                claimed: claimed,
                 registry: registry,
                 referenceDefinitions: referenceDefinitions,
                 rawHTMLTerminators: rawHTMLTerminators
@@ -505,6 +542,7 @@ enum InlineParser {
         _ ns: NSString,
         _ len: Int,
         start i: Int,
+        claimed: ClaimedIndex,
         registry: ExtensionRegistry,
         referenceDefinitions: Set<String>,
         rawHTMLTerminators: RawHTMLTerminatorCache
@@ -514,6 +552,7 @@ enum InlineParser {
             in: ns,
             from: altStart,
             end: len,
+            claimed: claimed,
             registry: registry,
             rawHTMLTerminators: rawHTMLTerminators
         ) else {
@@ -581,6 +620,7 @@ enum InlineParser {
         _ ns: NSString,
         _ len: Int,
         start i: Int,
+        claimed: ClaimedIndex,
         registry: ExtensionRegistry,
         referenceDefinitions: Set<String>,
         rawHTMLTerminators: RawHTMLTerminatorCache
@@ -590,6 +630,7 @@ enum InlineParser {
             in: ns,
             from: textStart,
             end: len,
+            claimed: claimed,
             registry: registry,
             rawHTMLTerminators: rawHTMLTerminators
         ),
@@ -663,12 +704,18 @@ enum InlineParser {
         in ns: NSString,
         from start: Int,
         end: Int,
+        claimed: ClaimedIndex,
         registry: ExtensionRegistry,
         rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> Int? {
+        var claimed = claimed
         var depth = 0
         var i = start
         scan: while i < end {
+            if let owner = claimed.containingRange(at: i) {
+                i = NSMaxRange(owner)
+                continue
+            }
             let character = ns.character(at: i)
             if character == newline || character == carriageReturn { return nil }
             if !isEscaped(i, ns) {
@@ -771,21 +818,6 @@ enum InlineParser {
     private static let emailAutolink = try! NSRegularExpression(
         pattern: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"#
     )
-    private static let inlineRawHTMLTag: NSRegularExpression = {
-        let lineEnding = #"(?:\r\n|[\n\r])"#
-        let whitespace = #"(?:[ \t]+|[ \t]*"# + lineEnding + #"[ \t]*)"#
-        let optionalWhitespace = #"[ \t]*(?:"# + lineEnding + #"[ \t]*)?"#
-        let tagName = #"[A-Za-z][A-Za-z0-9-]*"#
-        let attributeName = #"[A-Za-z_:][A-Za-z0-9:._-]*"#
-        let attributeValue = #"(?:[^\"'=<>`\x00-\x20]+|'[^']*'|\"[^\"]*\")"#
-        let attribute = whitespace + attributeName
-            + #"(?:"# + optionalWhitespace + #"="# + optionalWhitespace + attributeValue + #")?"#
-        return try! NSRegularExpression(
-            pattern: #"(?:<"# + tagName + #"(?:"# + attribute + #")*"#
-                + optionalWhitespace + #"/?>|</"# + tagName + optionalWhitespace + #">)"#
-        )
-    }()
-
     private static func matchAngleSpan(
         _ ns: NSString,
         _ len: Int,
@@ -797,7 +829,7 @@ enum InlineParser {
             return matchInlineRawHTML(ns, len, start: i, terminators: terminators)
         }
         return matchInlineRawHTML(ns, len, start: i, terminators: terminators)
-            ?? matchAutolink(ns, len, start: i)
+            ?? matchAutolink(ns, len, start: i, terminators: terminators)
     }
 
     private static func matchInlineRawHTML(
@@ -865,23 +897,182 @@ enum InlineParser {
             }
             return .rawHTML(range: NSRange(location: i, length: NSMaxRange(close) - i))
         }
-        guard let match = inlineRawHTMLTag.firstMatch(
-            in: ns as String,
-            options: .anchored,
-            range: NSRange(location: i, length: len - i)
-        ) else { return nil }
-        return .rawHTML(range: match.range)
+        guard let end = rawHTMLTagEnd(ns, len, start: i, terminators: terminators) else {
+            return nil
+        }
+        return .rawHTML(range: NSRange(location: i, length: end - i))
     }
 
-    private static func matchAutolink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+    private static func rawHTMLTagEnd(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Int? {
+        var cursor = i + 1
+        let closing = peek(ns, cursor, len) == 0x2F
+        if closing { cursor += 1 }
+        guard let first = peek(ns, cursor, len), isASCIIAlpha(first) else { return nil }
+        cursor += 1
+        while cursor < len, isRawHTMLTagNameCharacter(ns.character(at: cursor)) {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+
+        if closing {
+            _ = consumeRawHTMLWhitespace(ns, len, cursor: &cursor, terminators: terminators)
+            guard peek(ns, cursor, len) == rangle else { return nil }
+            return cursor + 1
+        }
+
+        while cursor < len {
+            let hadWhitespace = consumeRawHTMLWhitespace(
+                ns,
+                len,
+                cursor: &cursor,
+                terminators: terminators
+            )
+            guard let character = peek(ns, cursor, len) else { return nil }
+            if character == rangle { return cursor + 1 }
+            if character == 0x2F, peek(ns, cursor + 1, len) == rangle { return cursor + 2 }
+            guard hadWhitespace, isRawHTMLAttributeNameStart(character) else { return nil }
+
+            cursor += 1
+            while cursor < len, isRawHTMLAttributeNameCharacter(ns.character(at: cursor)) {
+                terminators.angleSpanInspectionCount += 1
+                cursor += 1
+            }
+            let endOfName = cursor
+            _ = consumeRawHTMLWhitespace(ns, len, cursor: &cursor, terminators: terminators)
+            guard peek(ns, cursor, len) == 0x3D else {
+                cursor = endOfName
+                continue
+            }
+            cursor += 1
+            _ = consumeRawHTMLWhitespace(ns, len, cursor: &cursor, terminators: terminators)
+            guard consumeRawHTMLAttributeValue(
+                ns,
+                len,
+                cursor: &cursor,
+                terminators: terminators
+            ) else { return nil }
+        }
+        return nil
+    }
+
+    private static func consumeRawHTMLWhitespace(
+        _ ns: NSString,
+        _ len: Int,
+        cursor: inout Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Bool {
+        let start = cursor
+        while cursor < len {
+            let character = ns.character(at: cursor)
+            guard character == 0x20 || character == 0x09 else { break }
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        if cursor < len, ns.character(at: cursor) == carriageReturn {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+            if cursor < len, ns.character(at: cursor) == newline {
+                terminators.angleSpanInspectionCount += 1
+                cursor += 1
+            }
+        } else if cursor < len, ns.character(at: cursor) == newline {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        while cursor < len {
+            let character = ns.character(at: cursor)
+            guard character == 0x20 || character == 0x09 else { break }
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        return cursor > start
+    }
+
+    private static func consumeRawHTMLAttributeValue(
+        _ ns: NSString,
+        _ len: Int,
+        cursor: inout Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Bool {
+        guard let first = peek(ns, cursor, len) else { return false }
+        if first == 0x22 || first == 0x27 {
+            let isDoubleQuoted = first == 0x22
+            if isDoubleQuoted, terminators.doubleQuotedAttributeExhausted { return false }
+            if !isDoubleQuoted, terminators.singleQuotedAttributeExhausted { return false }
+            cursor += 1
+            while cursor < len, ns.character(at: cursor) != first {
+                terminators.angleSpanInspectionCount += 1
+                cursor += 1
+            }
+            guard cursor < len else {
+                if isDoubleQuoted {
+                    terminators.doubleQuotedAttributeExhausted = true
+                } else {
+                    terminators.singleQuotedAttributeExhausted = true
+                }
+                return false
+            }
+            cursor += 1
+            return true
+        }
+
+        let start = cursor
+        while cursor < len, isRawHTMLUnquotedAttributeValueCharacter(ns.character(at: cursor)) {
+            terminators.angleSpanInspectionCount += 1
+            cursor += 1
+        }
+        return cursor > start
+    }
+
+    private static func isRawHTMLTagNameCharacter(_ character: unichar) -> Bool {
+        isASCIIAlpha(character) || (0x30...0x39).contains(character) || character == 0x2D
+    }
+
+    private static func isRawHTMLAttributeNameStart(_ character: unichar) -> Bool {
+        isASCIIAlpha(character) || character == 0x5F || character == 0x3A
+    }
+
+    private static func isRawHTMLAttributeNameCharacter(_ character: unichar) -> Bool {
+        isRawHTMLAttributeNameStart(character)
+            || (0x30...0x39).contains(character)
+            || character == 0x2E
+            || character == 0x2D
+    }
+
+    private static func isRawHTMLUnquotedAttributeValueCharacter(_ character: unichar) -> Bool {
+        character > 0x20
+            && character != 0x22
+            && character != 0x27
+            && character != 0x3D
+            && character != langle
+            && character != rangle
+            && character != backtick
+    }
+
+    private static func matchAutolink(
+        _ ns: NSString,
+        _ len: Int,
+        start i: Int,
+        terminators: RawHTMLTerminatorCache
+    ) -> Span? {
+        guard i >= terminators.autolinkExhaustedThrough else { return nil }
         var close = i + 1
         while close < len,
               ns.character(at: close) != rangle,
               ns.character(at: close) != newline,
               ns.character(at: close) != carriageReturn {
+            terminators.angleSpanInspectionCount += 1
             close += 1
         }
-        guard close < len, ns.character(at: close) == rangle else { return nil }
+        guard close < len, ns.character(at: close) == rangle else {
+            terminators.autolinkExhaustedThrough = close
+            return nil
+        }
         let url = NSRange(location: i + 1, length: close - i - 1)
         guard url.length > 0 else { return nil }
         let value = ns.substring(with: url)
