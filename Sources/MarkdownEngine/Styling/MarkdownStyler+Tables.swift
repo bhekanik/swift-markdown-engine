@@ -303,37 +303,8 @@ extension MarkdownStyler {
         return ParsedTable(header: paddedHeader, alignments: paddedAlign, rows: rows)
     }
 
-    /// Splits on UNESCAPED `|` only. GFM escapes the delimiter as `\\|`, and
-    /// the escape wins over every inline context (a table row is split before
-    /// inline parsing runs) — so a cell holding `` `a \\| b` `` is one cell, not
-    /// two. Splitting on the raw character silently truncated such a row to the
-    /// header's column count.
     private static func parseTableRow(_ line: String) -> [String] {
-        var s = Substring(line.trimmingCharacters(in: .whitespaces))
-        if s.hasPrefix("|") { s = s.dropFirst() }
-        if s.hasSuffix("|"), !s.dropLast().hasSuffix("\\") { s = s.dropLast() }
-
-        var cells: [String] = []
-        var current = ""
-        var escaped = false
-        for ch in s {
-            if escaped {
-                // Only the delimiter escape is resolved here; every other `\x`
-                // stays intact so inline parsing still owns its own escapes.
-                if ch == "|" { current.append("|") } else { current.append("\\"); current.append(ch) }
-                escaped = false
-            } else if ch == "\\" {
-                escaped = true
-            } else if ch == "|" {
-                cells.append(current.trimmingCharacters(in: .whitespaces))
-                current = ""
-            } else {
-                current.append(ch)
-            }
-        }
-        if escaped { current.append("\\") }
-        cells.append(current.trimmingCharacters(in: .whitespaces))
-        return cells
+        MarkdownTableRowSource.row(line).cells.map(\.normalizedText)
     }
 
     private static func parseTableAlignments(_ line: String) -> [TableAlignment] {

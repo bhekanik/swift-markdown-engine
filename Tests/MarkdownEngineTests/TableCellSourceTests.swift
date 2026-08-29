@@ -34,6 +34,73 @@ struct TableCellSourceTests {
         #expect(!row[1].contains("\\|"))
     }
 
+    @Test func escapedPipeInsideCodeMatchesRenderedAndAccessibleText() throws {
+        let source = """
+        | Statement | Verdict |
+        |---|---|
+        | `P(k)` | `Var[x(1) \\| z(1:3)]` |
+        """
+        let expected = "Statement\tVerdict\nP(k)\tVar[x(1) | z(1:3)]"
+        let parsed = try #require(MarkdownStyler.parseTableSource(source))
+        let cell = try #require(parsed.rows.first?.last)
+        let formatted = MarkdownStyler.formattedCellString(
+            cell,
+            baseFont: .systemFont(ofSize: 15),
+            header: false,
+            theme: MarkdownEditorConfiguration.default.theme,
+            codeBackgroundColor: .windowBackgroundColor
+        )
+        let projection = MarkdownTextProjection.make(markdown: source)
+        let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+
+        #expect(formatted.string == "Var[x(1) | z(1:3)]")
+        #expect(projection.string == expected)
+        #expect(accessibility.text.string == expected)
+        #expect(accessibility.spans.isEmpty)
+
+        let ns = source as NSString
+        let marker = ns.range(of: #"\|"#)
+        let pipe = NSRange(location: marker.location + 1, length: 1)
+        let visiblePipe = try #require(projection.visibleRange(for: pipe))
+        #expect((projection.string as NSString).substring(with: visiblePipe) == "|")
+        #expect(projection.visibleRange(for: NSRange(location: marker.location, length: 1))?.length == 0)
+        #expect(projection.sourceRange(for: visiblePipe) == pipe)
+    }
+
+    @Test func escapedPipeNormalizationKeepsBackslashParity() {
+        let row = MarkdownTableRowSource.row(#"\| \\| \\\|"#)
+
+        #expect(row.delimiters.count == 1)
+        #expect(row.cells.map(\.normalizedText) == [#"| \\"#, #"\\|"#])
+        #expect(row.cells.flatMap(\.escapedPipeMarkers).count == 2)
+    }
+
+    @Test func escapedPipeLinkSemanticsUseRenderedCellSource() throws {
+        let source = #"""
+        | Link | Image |
+        |---|---|
+        | [a\|b](https://example.com/a\|b) | ![c\|d](image\|x.png) |
+        """#
+        let projection = MarkdownAccessibilityProjection.make(markdown: source)
+        let link = try #require(projection.spans.first { span in
+            if case .link = span.role { return true }
+            return false
+        })
+        let image = try #require(projection.spans.first { span in
+            if case .image = span.role { return true }
+            return false
+        })
+        let visible = (projection.text.string as NSString).substring(with: link.visibleRange)
+        let parsed = try #require(MarkdownStyler.parseTableSource(source))
+        let cell = try #require(parsed.rows.first?.first)
+
+        #expect(projection.text.string == "Link\tImage\na|b\tc|d")
+        #expect(link.role == .link(destination: "https://example.com/a|b"))
+        #expect(image.role == .image(label: "c|d", destination: "image|x.png"))
+        #expect(visible == "a|b")
+        #expect(cell == #"[a|b](https://example.com/a|b)"#)
+    }
+
     // MARK: - In-cell line breaks
 
     @Test func brRendersAsALineBreakInsteadOfLiteralText() {

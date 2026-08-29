@@ -190,18 +190,31 @@ private enum SemanticCollector {
             }
 
         case .table(let range):
-            collect(
-                InlineParser.parse(
-                    source,
-                    range: range,
-                    registry: registry,
-                    referenceDefinitions: Set(linkDefinitions.keys)
-                ),
-                source: source,
-                linkDefinitions: linkDefinitions,
-                footnoteDefinitions: footnoteDefinitions,
-                into: &result
-            )
+            for (index, row) in MarkdownTableRowSource.rows(in: source, range: range).enumerated()
+            where index != 1 {
+                for cell in row.cells where !cell.normalizedText.isEmpty {
+                    let cellSource = cell.normalizedText as NSString
+                    var candidates: [Candidate] = []
+                    collect(
+                        InlineParser.parse(
+                            cellSource,
+                            range: NSRange(location: 0, length: cellSource.length),
+                            registry: registry,
+                            referenceDefinitions: Set(linkDefinitions.keys)
+                        ),
+                        source: cellSource,
+                        linkDefinitions: linkDefinitions,
+                        footnoteDefinitions: footnoteDefinitions,
+                        into: &candidates
+                    )
+                    result.append(contentsOf: candidates.compactMap { candidate in
+                        guard let range = cell.sourceRange(
+                            forNormalizedRange: candidate.range
+                        ) else { return nil }
+                        return Candidate(range: range, role: candidate.role)
+                    })
+                }
+            }
 
         case .ext(let node):
             collect(

@@ -553,33 +553,18 @@ private enum MarkdownTextProjectionBuilder {
         removals: inout [NSRange],
         replacements: inout [Replacement]
     ) {
-        var lines: [NSRange] = []
-        var cursor = range.location
-        while cursor < NSMaxRange(range) {
-            let line = NSIntersectionRange(
-                source.lineRange(for: NSRange(location: cursor, length: 0)),
-                range
-            )
-            lines.append(line)
-            let next = NSMaxRange(line)
-            guard next > cursor else { break }
-            cursor = next
-        }
-        guard lines.count >= 2 else { return }
-        removals.append(lines[1])
+        let rows = MarkdownTableRowSource.rows(in: source, range: range)
+        guard rows.count >= 2 else { return }
+        removals.append(rows[1].lineRange)
 
-        for (index, line) in lines.enumerated() where index != 1 {
-            let contentEnd = lineContentEnd(line, source: source)
-            let delimiters = tableDelimiters(
-                from: line.location,
-                to: contentEnd,
-                source: source
-            )
+        for (index, row) in rows.enumerated() where index != 1 {
+            let contentEnd = NSMaxRange(row.contentRange)
+            let delimiters = row.delimiters
             guard delimiters.count >= 2 else { continue }
 
             removals.append(NSRange(
-                location: line.location,
-                length: delimiters[0] - line.location + 1
+                location: row.lineRange.location,
+                length: delimiters[0] - row.lineRange.location + 1
             ))
             for delimiter in delimiters.dropFirst().dropLast() {
                 replacements.append(Replacement(
@@ -592,72 +577,58 @@ private enum MarkdownTextProjectionBuilder {
                 length: contentEnd - delimiters.last!
             ))
 
-            for pair in zip(delimiters, delimiters.dropFirst()) {
-                var start = pair.0 + 1
-                var end = pair.1
-                while start < end, isHorizontalWhitespace(source.character(at: start)) {
-                    start += 1
+            for (cell, pair) in zip(row.cells, zip(delimiters, delimiters.dropFirst())) {
+                if cell.sourceRange.location > pair.0 + 1 {
+                    removals.append(NSRange(
+                        location: pair.0 + 1,
+                        length: cell.sourceRange.location - pair.0 - 1
+                    ))
                 }
-                while end > start, isHorizontalWhitespace(source.character(at: end - 1)) {
-                    end -= 1
+                if NSMaxRange(cell.sourceRange) < pair.1 {
+                    removals.append(NSRange(
+                        location: NSMaxRange(cell.sourceRange),
+                        length: pair.1 - NSMaxRange(cell.sourceRange)
+                    ))
                 }
-                if start > pair.0 + 1 {
-                    removals.append(NSRange(location: pair.0 + 1, length: start - pair.0 - 1))
-                }
-                if end < pair.1 {
-                    removals.append(NSRange(location: end, length: pair.1 - end))
-                }
-                guard end > start else { continue }
-                let cell = NSRange(location: start, length: end - start)
+                removals.append(contentsOf: cell.escapedPipeMarkers)
+                let normalizedSource = cell.normalizedText as NSString
+                var cellRemovals: [NSRange] = []
                 collect(
                     InlineParser.parse(
-                        source,
-                        range: cell,
+                        normalizedSource,
+                        range: NSRange(location: 0, length: normalizedSource.length),
                         registry: registry,
                         referenceDefinitions: referenceDefinitions
                     ),
-                    source: source,
+                    source: normalizedSource,
                     referenceDefinitions: referenceDefinitions,
-                    removals: &removals
+                    removals: &cellRemovals
                 )
+                removals.append(contentsOf: cellRemovals.compactMap {
+                    cell.sourceRange(forNormalizedRange: $0)
+                })
                 collectTableBreaks(
                     in: cell,
-                    source: source,
+                    source: normalizedSource,
                     replacements: &replacements
                 )
             }
         }
     }
 
-    private static func tableDelimiters(
-        from start: Int,
-        to end: Int,
-        source: NSString
-    ) -> [Int] {
-        var result: [Int] = []
-        var escaped = false
-        for offset in start..<end {
-            let character = source.character(at: offset)
-            if escaped {
-                escaped = false
-            } else if character == 0x5C {
-                escaped = true
-            } else if character == 0x7C {
-                result.append(offset)
-            }
-        }
-        return result
-    }
-
     private static func collectTableBreaks(
-        in range: NSRange,
+        in cell: MarkdownTableRowSource.Cell,
         source: NSString,
         replacements: inout [Replacement]
     ) {
         guard let expression = tableBreakExpression else { return }
         let text = source as String
+        let range = NSRange(location: 0, length: source.length)
         for match in expression.matches(in: text, range: range) {
-            replacements.append(Replacement(sourceRange: match.range, text: "\n"))
+            guard let sourceRange = cell.sourceRange(forNormalizedRange: match.range) else {
+                continue
+            }
+            replacements.append(Replacement(sourceRange: sourceRange, text: "\n"))
         }
     }
 
