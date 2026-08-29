@@ -469,6 +469,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         let targetControllerHadAuthoritativeText = controller?.isAttached == true
             && controller?.textView !== textView
         var textToSynchronize = text
+        var correctedInexactBindingText: String?
         let currentController = context.coordinator.editorController
             ?? context.coordinator.requestedControllerWhileDetached
         let waitingControllerBecameAvailable =
@@ -763,8 +764,12 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                             from: incomingTextBeforePersistence,
                             to: textView.string
                         )
-                        textToSynchronize = Self.apply(fallbackPatch, onto: textToSynchronize)
-                            ?? textView.string
+                        if let merged = Self.apply(fallbackPatch, onto: textToSynchronize) {
+                            textToSynchronize = merged
+                            correctedInexactBindingText = merged
+                        } else {
+                            textToSynchronize = textView.string
+                        }
                     } else {
                         textToSynchronize = textView.string
                     }
@@ -935,6 +940,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         context.coordinator.onBuildContextMenu = onBuildContextMenu
         context.coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         context.coordinator.didInitialFormatting = true
+        if let correctedInexactBindingText {
+            context.coordinator.scheduleBindingWriteBack(
+                correctedInexactBindingText,
+                from: textView,
+                replacing: text
+            )
+        }
         ControllerlessRemountRegistry.register(
             context.coordinator,
             remountIdentity: controllerlessRemountIdentity,

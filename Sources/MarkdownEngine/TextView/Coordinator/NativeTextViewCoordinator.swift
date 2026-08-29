@@ -268,15 +268,20 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     private var pendingBindingWrite: PendingBindingWrite?
     var lastSyncedText: String
 
-    func scheduleBindingWriteBack(_ newText: String, from textView: NSTextView) {
+    func scheduleBindingWriteBack(
+        _ newText: String,
+        from textView: NSTextView,
+        replacing bindingText: String? = nil
+    ) {
         bindingWritebackGeneration &+= 1
         let generation = bindingWritebackGeneration
+        let previousText = bindingText ?? text
         pendingBindingWrite = PendingBindingWrite(
             generation: generation,
             textView: ObjectIdentifier(textView),
             controller: editorController.map(ObjectIdentifier.init),
             documentId: documentId,
-            previousText: text,
+            previousText: previousText,
             text: newText
         )
         DispatchQueue.main.async { [weak self, weak textView] in
@@ -284,7 +289,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
             _ = self.commitPendingBindingWrite(
                 generation: generation,
                 from: textView,
-                bindingText: self.text
+                bindingText: bindingText ?? self.text
             )
         }
     }
