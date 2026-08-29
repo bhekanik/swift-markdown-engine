@@ -89,6 +89,13 @@ extension NativeTextViewCoordinator {
 
     public func textDidChange(_ notification: Notification) {
         guard let tv = notification.object as? NSTextView else { return }
+        beginMutationTransaction()
+        var internalMutationTransactionIsOpen = true
+        defer {
+            if internalMutationTransactionIsOpen {
+                endMutationTransaction()
+            }
+        }
         PerfTrace.checkpoint("didIn")
         let completedTextMutation = pendingEditCount == 1
             ? pendingTextMutation
@@ -124,15 +131,14 @@ extension NativeTextViewCoordinator {
                 bottomTextView.recalcOverscroll(for: scrollView, debugTag: "textDidChange")
                 (scrollView as? ClampedScrollView)?.clampToInsets()
             }
-            editorController?.recordDocumentMutation(
+            internalMutationTransactionIsOpen = false
+            endMutationTransaction()
+            recordAndPublishCompletedMutation(
                 completedTextMutation,
                 mutationDelta: completedMutationDelta,
                 documentLength: currentDocumentLength
             )
             previousDisplayLength = currentDocumentLength
-            if let completedTextMutation {
-                publish(completedTextMutation)
-            }
             return
         }
         // External controller patches still complete and publish while a
@@ -351,14 +357,13 @@ extension NativeTextViewCoordinator {
             }
         }
         previousActiveTokenIndices = activeTokenIndices
-        editorController?.recordDocumentMutation(
+        internalMutationTransactionIsOpen = false
+        endMutationTransaction()
+        recordAndPublishCompletedMutation(
             completedTextMutation,
             mutationDelta: completedMutationDelta,
             documentLength: fullLength
         )
-        if let completedTextMutation {
-            publish(completedTextMutation)
-        }
         PerfTrace.end()
     }
 
@@ -653,11 +658,17 @@ extension NativeTextViewCoordinator {
         shouldChangeTextInRanges affectedRanges: [NSValue],
         replacementStrings: [String]?
     ) -> Bool {
+        let admittedByMutationTransaction = consumeAdmittedMutationProposal()
+        guard admittedByMutationTransaction || !rejectsReentrantMutation else {
+            discardPendingTextProposal()
+            return false
+        }
         if affectedRanges.count == 1 {
-            return self.textView(
+            return shouldChangeSingleTextRange(
                 textView,
-                shouldChangeTextIn: affectedRanges[0].rangeValue,
-                replacementString: replacementStrings?.first
+                range: affectedRanges[0].rangeValue,
+                replacement: replacementStrings?.first,
+                admittedByMutationTransaction: admittedByMutationTransaction
             )
         }
         let preText = textView.string
@@ -686,6 +697,24 @@ extension NativeTextViewCoordinator {
     }
 
     public func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        shouldChangeSingleTextRange(
+            textView,
+            range: affectedCharRange,
+            replacement: replacementString,
+            admittedByMutationTransaction: consumeAdmittedMutationProposal()
+        )
+    }
+
+    private func shouldChangeSingleTextRange(
+        _ textView: NSTextView,
+        range affectedCharRange: NSRange,
+        replacement replacementString: String?,
+        admittedByMutationTransaction: Bool
+    ) -> Bool {
+        guard admittedByMutationTransaction || !rejectsReentrantMutation else {
+            discardPendingTextProposal()
+            return false
+        }
         // ONE bridge of the pre-edit text — every `textView.string` read is an
         // O(doc) copy of the mutable backing store; this function used to take
         // four of them per keystroke.

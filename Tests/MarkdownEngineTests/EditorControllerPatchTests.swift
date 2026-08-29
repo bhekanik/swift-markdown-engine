@@ -24,15 +24,38 @@ struct EditorControllerPatchTests {
         func textFinderClientStringWillChange() { onStringWillChange?() }
     }
 
+    private final class CallbackSyntaxHighlighter: SyntaxHighlighter, @unchecked Sendable {
+        var onHighlight: (() -> Void)?
+
+        func codeFont(size: CGFloat) -> PlatformFont {
+            PlainTextSyntaxHighlighter().codeFont(size: size)
+        }
+
+        func backgroundColor() -> PlatformColor {
+            PlainTextSyntaxHighlighter().backgroundColor()
+        }
+
+        func highlight(code: String, language: String?) -> NSAttributedString? {
+            onHighlight?()
+            return nil
+        }
+
+        var appearanceDidChangeNotification: Notification.Name? { nil }
+    }
+
     private func makeEditor(
         _ text: String,
         undo: UndoPolicy = .engine,
+        syntaxHighlighter: (any SyntaxHighlighter)? = nil,
         onTextMutation: @escaping (MarkdownTextMutation) -> Void = { _ in }
     ) -> (NativeTextView, MarkdownEditorController, NativeTextViewCoordinator) {
         _ = NSApplication.shared
         let controller = MarkdownEditorController()
         var configuration = MarkdownEditorConfiguration.default
         configuration.undo = undo
+        if let syntaxHighlighter {
+            configuration.services.syntaxHighlighter = syntaxHighlighter
+        }
         let wrapper = NativeTextViewWrapper(
             text: .constant(text),
             configuration: configuration,
@@ -260,6 +283,117 @@ struct EditorControllerPatchTests {
         textView.isEditable = true
         undoManager.undo()
         #expect(textView.string == "abcdef")
+    }
+
+    @Test("batch commit rejects edits from styling and selection callbacks")
+    func batchRejectsConfiguredCallbackReentry() throws {
+        let source = "prefix\n```swift\nabc\n```\nsuffix\n"
+        let highlighter = CallbackSyntaxHighlighter()
+        var mutations: [MarkdownTextMutation] = []
+        var binding = source
+        let (textView, controller, coordinator) = makeEditor(
+            source,
+            syntaxHighlighter: highlighter
+        ) { mutation in
+            mutations.append(mutation)
+            binding = (binding as NSString).replacingCharacters(
+                in: mutation.range,
+                with: mutation.replacement
+            )
+        }
+        let undoManager = try #require(coordinator.undoManager(for: textView))
+        undoManager.removeAllActions()
+        textView.setSelectedRange(NSRange(location: (source as NSString).length, length: 0))
+
+        var highlighterResults: [Bool] = []
+        var highlighterIsArmed = true
+        highlighter.onHighlight = {
+            guard highlighterIsArmed else { return }
+            highlighterIsArmed = false
+            highlighterResults.append(controller.applyPatch(
+                range: NSRange(location: 0, length: (controller.text as NSString).length),
+                replacement: ""
+            ))
+            highlighterResults.append(controller.applyPatches([
+                MarkdownTextPatch(range: NSRange(location: 0, length: 1), replacement: "X"),
+                MarkdownTextPatch(range: NSRange(location: 2, length: 1), replacement: "Y"),
+            ]))
+        }
+        var codeSelectionResults: [Bool] = []
+        var codeSelectionIsArmed = true
+        coordinator.onCodeBlockSelectionChange = { _ in
+            guard codeSelectionIsArmed else { return }
+            codeSelectionIsArmed = false
+            codeSelectionResults.append(controller.applyPatch(
+                range: NSRange(location: 0, length: 1),
+                replacement: "Z"
+            ))
+        }
+
+        let codeRange = (source as NSString).range(of: "abc")
+        #expect(controller.applyPatches([
+            MarkdownTextPatch(range: NSRange(location: 0, length: 1), replacement: "P"),
+            MarkdownTextPatch(range: codeRange, replacement: "ABC"),
+        ], actionName: "Batch", registersUndo: true))
+
+        let expected = "Prefix\n```swift\nABC\n```\nsuffix\n"
+        #expect(textView.string == expected)
+        #expect(binding == expected)
+        #expect(highlighterResults == [false, false])
+        #expect(codeSelectionResults == [false])
+        #expect(mutations == [
+            MarkdownTextMutation(range: codeRange, replacement: "ABC"),
+            MarkdownTextMutation(range: NSRange(location: 0, length: 1), replacement: "P"),
+        ])
+        #expect(textView.selectedRange() == NSRange(location: (expected as NSString).length, length: 0))
+        #expect(controller.documentRevision == 2)
+        #expect(controller.documentMutationDelta == 0)
+        #expect(controller.documentPublishedDelta == 0)
+        #expect(coordinator.pendingTextMutation == nil)
+        #expect(coordinator.pendingEditCount == 0)
+        #expect(undoManager.canUndo)
+
+        undoManager.undo()
+        #expect(textView.string == source)
+    }
+
+    @Test("styling callbacks cannot reenter single or user edits")
+    func stylingCallbacksCannotReenterOtherEdits() {
+        let source = "```swift\nabc\n```\n"
+        let highlighter = CallbackSyntaxHighlighter()
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, _) = makeEditor(
+            source,
+            syntaxHighlighter: highlighter
+        ) { mutations.append($0) }
+        var nestedResults: [Bool] = []
+        var callbackIsArmed = true
+        highlighter.onHighlight = {
+            guard callbackIsArmed else { return }
+            callbackIsArmed = false
+            nestedResults.append(controller.applyPatch(
+                range: NSRange(location: 0, length: (controller.text as NSString).length),
+                replacement: ""
+            ))
+        }
+
+        let codeEnd = NSMaxRange((source as NSString).range(of: "abc"))
+        textView.insertText("!", replacementRange: NSRange(location: codeEnd, length: 0))
+        #expect(nestedResults == [false])
+        #expect(textView.string == "```swift\nabc!\n```\n")
+
+        callbackIsArmed = true
+        #expect(controller.applyPatch(
+            range: NSRange(location: codeEnd, length: 1),
+            replacement: "?"
+        ))
+        #expect(nestedResults == [false, false])
+        #expect(textView.string == "```swift\nabc?\n```\n")
+        #expect(mutations == [
+            MarkdownTextMutation(range: NSRange(location: codeEnd, length: 0), replacement: "!"),
+            MarkdownTextMutation(range: NSRange(location: codeEnd, length: 1), replacement: "?"),
+        ])
+        #expect(controller.documentRevision == 2)
     }
 
     @Test("a read-only view refuses a batch before commit")

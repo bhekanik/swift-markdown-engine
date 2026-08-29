@@ -28,8 +28,10 @@ extension NativeTextViewCoordinator {
         to textView: NSTextView,
         actionName: String? = nil,
         registersUndo: Bool = false,
-        publishesMutation: Bool = true
+        publishesMutation: Bool = true,
+        admittedByMutationTransaction: Bool = false
     ) -> Bool {
+        guard admittedByMutationTransaction || !rejectsReentrantMutation else { return false }
         let sourceText = textView.string
         let length = (sourceText as NSString).length
         guard patch.range.location != NSNotFound, patch.range.location >= 0,
@@ -47,7 +49,15 @@ extension NativeTextViewCoordinator {
         isProgrammaticEdit = true
         defer { isProgrammaticEdit = false }
 
-        guard textView.shouldChangeText(in: patch.range, replacementString: patch.replacement) else {
+        if admittedByMutationTransaction {
+            admitNextMutationProposal()
+        }
+        let accepted = textView.shouldChangeText(
+            in: patch.range,
+            replacementString: patch.replacement
+        )
+        discardAdmittedMutationProposal()
+        guard accepted else {
             return false
         }
         guard textView.string == sourceText,
@@ -73,7 +83,10 @@ extension NativeTextViewCoordinator {
         registersUndo: Bool = false
     ) -> Bool {
         let descending = patches.sorted { $0.range.location > $1.range.location }
-        guard textView.isEditable else { return false }
+        guard textView.isEditable, !rejectsReentrantMutation else { return false }
+        let sourceText = textView.string
+        let sourceController = editorController
+        let sourceRevision = sourceController?.documentRevision
         textView.breakUndoCoalescing()
         isProgrammaticEdit = true
         defer { isProgrammaticEdit = false }
@@ -87,39 +100,62 @@ extension NativeTextViewCoordinator {
                 return false
             }
             discardPendingTextProposal()
+            guard textView.string == sourceText,
+                  editorController === sourceController,
+                  sourceController?.documentRevision == sourceRevision else {
+                return false
+            }
         }
 
-        let undoManager = textView.undoManager
-        if registersUndo { undoManager?.beginUndoGrouping() }
+        // Commit one storage transition and restyle once. Public listeners still
+        // receive the original descending patches after internal styling finishes.
+        let resultingText = NSMutableString(string: sourceText)
+        var resultingLength = resultingText.length
+        var batchMutations: [ProgrammaticBatchMutation] = []
+        for patch in descending {
+            resultingText.replaceCharacters(in: patch.range, with: patch.replacement)
+            resultingLength += (patch.replacement as NSString).length - patch.range.length
+            batchMutations.append(ProgrammaticBatchMutation(
+                mutation: MarkdownTextMutation(
+                    range: patch.range,
+                    replacement: patch.replacement
+                ),
+                documentLength: resultingLength
+            ))
+        }
+        let combinedPatch = MarkdownTextPatch.diff(
+            from: sourceText,
+            to: resultingText as String
+        )
         beginDeferringPublicMutations()
         beginSuppressingTextFinderInvalidation()
+        beginMutationTransaction()
+        activeProgrammaticBatchMutations = batchMutations
         var selection = textView.selectedRange()
-        for patch in descending {
-            let applied = applyProgrammaticPatch(
-                patch,
-                to: textView,
-                registersUndo: registersUndo
-            )
-            precondition(
-                applied,
-                "A stable, preflighted programmatic batch must not fail during commit"
-            )
-            selection = selection.adjusting(
-                forReplacementOf: patch.range,
-                withLength: (patch.replacement as NSString).length
-            )
-        }
-        textView.setSelectedRange(
-            selection.clamped(toLength: (textView.string as NSString).length)
+        let applied = applyProgrammaticPatch(
+            combinedPatch,
+            to: textView,
+            actionName: actionName,
+            registersUndo: registersUndo,
+            admittedByMutationTransaction: true
         )
-        endSuppressingTextFinderInvalidation()
-        if registersUndo {
-            undoManager?.endUndoGrouping()
-            if let actionName { undoManager?.setActionName(actionName) }
+        if applied {
+            for patch in descending {
+                selection = selection.adjusting(
+                    forReplacementOf: patch.range,
+                    withLength: (patch.replacement as NSString).length
+                )
+            }
+            textView.setSelectedRange(
+                selection.clamped(toLength: (textView.string as NSString).length)
+            )
         }
+        activeProgrammaticBatchMutations = nil
+        endMutationTransaction()
+        endSuppressingTextFinderInvalidation()
         textView.breakUndoCoalescing()
         flushDeferredPublicMutations()
-        return true
+        return applied
     }
 
     /// Reconcile an externally changed `text` binding by splicing the single

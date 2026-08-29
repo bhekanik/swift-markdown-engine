@@ -197,6 +197,61 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     func endSuppressingTextFinderInvalidation() {
         textFinderInvalidationSuppressionDepth = max(0, textFinderInvalidationSuppressionDepth - 1)
     }
+    struct ProgrammaticBatchMutation {
+        let mutation: MarkdownTextMutation
+        let documentLength: Int
+    }
+    var activeProgrammaticBatchMutations: [ProgrammaticBatchMutation]?
+    private var mutationTransactionDepth = 0
+    var rejectsReentrantMutation: Bool {
+        mutationTransactionDepth > 0
+    }
+    func beginMutationTransaction() {
+        mutationTransactionDepth += 1
+    }
+    func endMutationTransaction() {
+        mutationTransactionDepth = max(0, mutationTransactionDepth - 1)
+    }
+    // Consumed at delegate entry, before Finder or service callbacks run, so
+    // reentrant proposals cannot inherit the batch commit's one admission.
+    private var hasAdmittedMutationProposal = false
+    func admitNextMutationProposal() {
+        hasAdmittedMutationProposal = true
+    }
+    func consumeAdmittedMutationProposal() -> Bool {
+        guard hasAdmittedMutationProposal else { return false }
+        hasAdmittedMutationProposal = false
+        return true
+    }
+    func discardAdmittedMutationProposal() {
+        hasAdmittedMutationProposal = false
+    }
+    func recordAndPublishCompletedMutation(
+        _ mutation: MarkdownTextMutation?,
+        mutationDelta: Int,
+        documentLength: Int
+    ) {
+        if let batch = activeProgrammaticBatchMutations {
+            for item in batch {
+                editorController?.recordDocumentMutation(
+                    item.mutation,
+                    mutationDelta: (item.mutation.replacement as NSString).length
+                        - item.mutation.range.length,
+                    documentLength: item.documentLength
+                )
+                publish(item.mutation)
+            }
+            return
+        }
+        editorController?.recordDocumentMutation(
+            mutation,
+            mutationDelta: mutationDelta,
+            documentLength: documentLength
+        )
+        if let mutation {
+            publish(mutation)
+        }
+    }
     /// Main-queue Binding writes must not outlive a newer edit or rebuild.
     private var bindingWritebackGeneration: UInt64 = 0
     private struct PendingBindingWrite {
