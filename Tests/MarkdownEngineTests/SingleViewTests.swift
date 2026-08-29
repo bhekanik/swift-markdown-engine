@@ -2092,6 +2092,75 @@ struct SingleViewTests {
         #expect(incomingText.bindingWriteCount == 0)
     }
 
+    @Test("detached controller storage survives a switch back until its Binding advances")
+    func detachedControllerPreservesPendingLocalText() async throws {
+        _ = NSApplication.shared
+        let firstText = MutableTextBox("alpha")
+        let secondText = MutableTextBox("bravo")
+        let first = MarkdownEditorController()
+        let second = MarkdownEditorController()
+        let host = NSHostingView(rootView: MutablePersistenceReentryHost(
+            text: firstText,
+            documentId: "A",
+            controller: first,
+            onMutation: { firstText.apply($0) },
+            persist: { _, _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        func showFirst() {
+            host.rootView = MutablePersistenceReentryHost(
+                text: firstText,
+                documentId: "A",
+                controller: first,
+                onMutation: { firstText.apply($0) },
+                persist: { _, _ in }
+            )
+            host.layoutSubtreeIfNeeded()
+        }
+
+        func showSecond() {
+            host.rootView = MutablePersistenceReentryHost(
+                text: secondText,
+                documentId: "B",
+                controller: second,
+                onMutation: { _ in },
+                persist: { _, _ in }
+            )
+            host.layoutSubtreeIfNeeded()
+        }
+
+        showSecond()
+        showFirst()
+        showSecond()
+
+        let secondView = try #require(second.textView)
+        secondView.insertText(
+            "!",
+            replacementRange: NSRange(location: (secondView.string as NSString).length, length: 0)
+        )
+        #expect(second.text == "bravo!")
+        #expect(secondText.value == "bravo")
+        showFirst()
+        #expect(second.textContentStorage.textStorage?.string == "bravo!")
+
+        showSecond()
+        #expect(second.text == "bravo!")
+        #expect(try #require(second.textView).string == "bravo!")
+
+        await drainMainQueue()
+        #expect(secondText.value == "bravo")
+        #expect(secondText.bindingWriteCount == 0)
+        #expect(second.text == "bravo!")
+
+        showFirst()
+        secondText.value = "remote"
+        showSecond()
+        #expect(second.text == "remote")
+        #expect(try #require(second.textView).string == "remote")
+    }
+
     @Test("persistence callback authority stays with the document it mutates")
     func persistenceReentryControls() {
         _ = NSApplication.shared

@@ -465,10 +465,11 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 && context.coordinator.requestedControllerWhileDetached == nil
         )
         let isNodeSwitch = context.coordinator.documentId != documentId
-        // This snapshot chooses text authority, not admission. A callback may
-        // free the target, but its document storage remains authoritative.
-        let targetControllerHadAuthoritativeText = controller?.isAttached == true
-            && controller?.textView !== textView
+        // Attachment tracks occupancy, not whether the controller's document
+        // storage is newer than the last Binding value it accepted.
+        let targetControllerHadAuthoritativeText = controller?.textView !== textView
+            && (controller?.isAttached == true
+                || controller?.storageIsAuthoritative(over: text) == true)
         var textToSynchronize = text
         var correctedInexactBindingText: String?
         let currentController = context.coordinator.editorController
@@ -561,6 +562,14 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             // session ends. WT sessions are transient and height-mode switches
             // during one are not a supported use case.
             return
+        }
+
+        defer {
+            if let controller,
+               context.coordinator.editorController === controller,
+               !context.coordinator.isDetachedFromDocument {
+                controller.recordAcceptedBindingText(text)
+            }
         }
 
         textView.isCursorExcluded = isCursorExcluded

@@ -401,7 +401,7 @@ enum InlineParser {
             )
         }
         if c == langle {
-            return matchAutolink(ns, len, start: i) ?? matchRawHTMLTag(ns, len, start: i)
+            return matchAutolink(ns, len, start: i) ?? matchInlineRawHTML(ns, len, start: i)
         }
         return nil
     }
@@ -627,7 +627,7 @@ enum InlineParser {
                 }
                 if character == langle,
                    let angleSpan = matchAutolink(ns, end, start: i)
-                    ?? matchRawHTMLTag(ns, end, start: i) {
+                    ?? matchInlineRawHTML(ns, end, start: i) {
                     i = NSMaxRange(angleSpan.fullRange)
                     continue
                 } else if character == lbracket {
@@ -714,12 +714,12 @@ enum InlineParser {
     private static let emailAutolink = try! NSRegularExpression(
         pattern: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"#
     )
-    private static let rawHTMLTag = try! NSRegularExpression(
-        pattern: #"<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*[ \t]*/?>"#
+    private static let inlineRawHTML = try! NSRegularExpression(
+        pattern: #"(?:<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][A-Za-z0-9:._-]*(?:\s*=\s*(?:[^\"'=<>`\x00-\x20]+|'[^']*'|\"[^\"]*\"))?)*\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>|<!-->|<!--->|<!--[\s\S]*?-->|<[?][\s\S]*?[?]>|<![A-Za-z]+[^>]*>|<!\[CDATA\[[\s\S]*?\]\]>)"#
     )
 
-    private static func matchRawHTMLTag(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
-        guard let match = rawHTMLTag.firstMatch(
+    private static func matchInlineRawHTML(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+        guard let match = inlineRawHTML.firstMatch(
             in: ns as String,
             options: .anchored,
             range: NSRange(location: i, length: len - i)

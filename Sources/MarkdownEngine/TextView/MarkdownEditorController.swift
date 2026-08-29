@@ -107,6 +107,7 @@ public final class MarkdownEditorController {
     /// AppKit adoption uses this to distinguish first load from a later view
     /// taking over the same authoritative storage.
     private(set) var hasLoadedDocument = false
+    private var lastAcceptedBindingText: String?
 
     private struct TextProjectionCacheKey: Equatable {
         let textView: ObjectIdentifier
@@ -363,6 +364,15 @@ public final class MarkdownEditorController {
 
     func markDocumentLoaded() {
         hasLoadedDocument = true
+    }
+
+    func storageIsAuthoritative(over bindingText: String) -> Bool {
+        hasLoadedDocument && lastAcceptedBindingText == bindingText
+    }
+
+    func recordAcceptedBindingText(_ text: String) {
+        hasLoadedDocument = true
+        lastAcceptedBindingText = text
     }
 
     func notifyEmbedderOfAttachment(_ textView: NSTextView) {

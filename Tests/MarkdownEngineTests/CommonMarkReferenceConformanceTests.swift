@@ -303,6 +303,52 @@ struct CommonMarkReferenceConformanceTests {
         }
     }
 
+    @Test("all CommonMark inline raw HTML forms are opaque during reference association")
+    func inlineRawHTMLOpacity() {
+        let labels = [
+            #"outer <x attr="> ["> tail"#,
+            "outer </x> tail",
+            "outer <!-- [opaque] --> tail",
+            "outer <?test [opaque] ?> tail",
+            "outer <!DOCTYPE [opaque]> tail",
+            "outer <![CDATA[ [opaque] ]]> tail",
+        ]
+
+        for label in labels {
+            let source = "[\(label)][ref]\n\n[ref]: /uri\n"
+            #expect(linkCounts(in: DocumentAST.parse(source)).references == 1)
+            #expect(MarkdownHTMLRenderer.html(from: source)
+                .replacingOccurrences(of: "\n</p>", with: "</p>")
+                == "<p><a href=\"/uri\">\(escapedHTML(label))</a></p>")
+            #expect(MarkdownTextProjection.make(markdown: source).string == "\(label)\n\n")
+
+            let accessibility = MarkdownAccessibilityProjection.make(markdown: source)
+            #expect(accessibility.text.string == "\(label)\n\n")
+            #expect(accessibility.spans.contains {
+                $0.role == .link(destination: "/uri")
+                    && $0.visibleRange == NSRange(location: 0, length: (label as NSString).length)
+            })
+
+            let styled = MarkdownRendering.attributedString(
+                for: source,
+                fontName: NSFont.systemFont(ofSize: 16).fontName,
+                fontSize: 16
+            )
+            #expect(styled.attribute(.link, at: 1, effectiveRange: nil) != nil)
+            #expect(styled.attribute(.link, at: (label as NSString).length, effectiveRange: nil) != nil)
+        }
+
+        for malformed in [
+            "outer <!-- [opaque tail",
+            "outer <?test [opaque tail",
+            "outer <![CDATA[ [opaque tail",
+        ] {
+            let source = "[\(malformed)][ref]\n\n[ref]: /uri\n"
+            #expect(!MarkdownHTMLRenderer.html(from: source)
+                .hasPrefix("<p><a href=\"/uri\">outer"))
+        }
+    }
+
     @Test("CommonMark 604/605 email autolinks share HTML, styling and accessibility destinations")
     func semanticAutolinkDestinations() {
         let cases = [
