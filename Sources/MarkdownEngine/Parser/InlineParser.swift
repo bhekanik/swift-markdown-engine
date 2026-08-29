@@ -151,6 +151,7 @@ enum InlineParser {
         case footnoteReference(range: NSRange, label: NSRange, markers: [NSRange])
         case hardBreak(range: NSRange, marker: NSRange)
         case autolink(range: NSRange, url: NSRange, markers: [NSRange])
+        case rawHTML(range: NSRange)
         case escape(range: NSRange, character: NSRange, marker: NSRange)
         case ext(id: String, range: NSRange, contentRange: NSRange, markers: [NSRange], parsesContent: Bool)
 
@@ -161,6 +162,7 @@ enum InlineParser {
                  .referenceLink(let r, _, _, _),
                  .footnoteReference(let r, _, _), .hardBreak(let r, _),
                  .autolink(let r, _, _),
+                 .rawHTML(let r),
                  .escape(let r, _, _),
                  .ext(_, let r, _, _, _):
                 return r
@@ -356,6 +358,7 @@ enum InlineParser {
             ns,
             len,
             at: i,
+            registry: registry,
             referenceDefinitions: referenceDefinitions
         ) { return span }
         // Extensions match after every built-in, in registration order.
@@ -373,18 +376,33 @@ enum InlineParser {
         _ ns: NSString,
         _ len: Int,
         at i: Int,
+        registry: ExtensionRegistry,
         referenceDefinitions: Set<String>
     ) -> Span? {
         let c = ns.character(at: i)
         let c1 = peek(ns, i + 1, len)
         if c == bang, c1 == lbracket {
-            return matchImage(ns, len, start: i, referenceDefinitions: referenceDefinitions)
+            return matchImage(
+                ns,
+                len,
+                start: i,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            )
         }
         if c == lbracket, c1 == caret { return matchFootnoteReference(ns, len, start: i) }
         if c == lbracket {
-            return matchLink(ns, len, start: i, referenceDefinitions: referenceDefinitions)
+            return matchLink(
+                ns,
+                len,
+                start: i,
+                registry: registry,
+                referenceDefinitions: referenceDefinitions
+            )
         }
-        if c == langle { return matchAutolink(ns, len, start: i) }
+        if c == langle {
+            return matchAutolink(ns, len, start: i) ?? matchRawHTMLTag(ns, len, start: i)
+        }
         return nil
     }
 
@@ -439,10 +457,16 @@ enum InlineParser {
         _ ns: NSString,
         _ len: Int,
         start i: Int,
+        registry: ExtensionRegistry,
         referenceDefinitions: Set<String>
     ) -> Span? {
         let altStart = i + 2
-        guard let closeBracket = closingLinkTextBracket(in: ns, from: altStart, end: len) else {
+        guard let closeBracket = closingLinkTextBracket(
+            in: ns,
+            from: altStart,
+            end: len,
+            registry: registry
+        ) else {
             return nil
         }
         let alt = NSRange(location: altStart, length: closeBracket - altStart)
@@ -507,10 +531,16 @@ enum InlineParser {
         _ ns: NSString,
         _ len: Int,
         start i: Int,
+        registry: ExtensionRegistry,
         referenceDefinitions: Set<String>
     ) -> Span? {
         let textStart = i + 1
-        guard let closeBracket = closingLinkTextBracket(in: ns, from: textStart, end: len),
+        guard let closeBracket = closingLinkTextBracket(
+            in: ns,
+            from: textStart,
+            end: len,
+            registry: registry
+        ),
               closeBracket > textStart else { return nil }
         let textRange = NSRange(location: textStart, length: closeBracket - textStart)
 
@@ -580,15 +610,33 @@ enum InlineParser {
     private static func closingLinkTextBracket(
         in ns: NSString,
         from start: Int,
-        end: Int
+        end: Int,
+        registry: ExtensionRegistry
     ) -> Int? {
         var depth = 0
         var i = start
-        while i < end {
+        scan: while i < end {
             let character = ns.character(at: i)
             if character == newline || character == carriageReturn { return nil }
             if !isEscaped(i, ns) {
-                if character == lbracket {
+                for entry in registry.entries where entry.open.first == character {
+                    if let span = matchExtensionSpan(ns, end, start: i, entry: entry) {
+                        i = NSMaxRange(span.fullRange)
+                        continue scan
+                    }
+                }
+                if character == langle {
+                    var angleClose = i + 1
+                    while angleClose < end {
+                        let angleCharacter = ns.character(at: angleClose)
+                        if angleCharacter == newline || angleCharacter == carriageReturn { break }
+                        if angleCharacter == rangle {
+                            i = angleClose + 1
+                            continue scan
+                        }
+                        angleClose += 1
+                    }
+                } else if character == lbracket {
                     depth += 1
                 } else if character == rbracket {
                     if depth == 0 { return i }
@@ -672,6 +720,18 @@ enum InlineParser {
     private static let emailAutolink = try! NSRegularExpression(
         pattern: #"^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"#
     )
+    private static let rawHTMLTag = try! NSRegularExpression(
+        pattern: #"<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][A-Za-z0-9_.:-]*(?:[ \t]*=[ \t]*(?:[^ \t\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*[ \t]*/?>"#
+    )
+
+    private static func matchRawHTMLTag(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
+        guard let match = rawHTMLTag.firstMatch(
+            in: ns as String,
+            options: .anchored,
+            range: NSRange(location: i, length: len - i)
+        ) else { return nil }
+        return .rawHTML(range: match.range)
+    }
 
     private static func matchAutolink(_ ns: NSString, _ len: Int, start i: Int) -> Span? {
         var close = i + 1
@@ -934,6 +994,8 @@ enum InlineParser {
                 result.append(.hardBreak(range: range, marker: marker))
             case .autolink(let range, let url, let markers):
                 result.append(.autolink(range: range, url: url, markers: markers))
+            case .rawHTML(let range):
+                result.append(.text(range))
             case .escape(let range, let character, let marker):
                 result.append(.escape(range: range, character: character, marker: marker))
             case .ext(let id, let range, let contentRange, let markers, let parsesContent):

@@ -186,6 +186,67 @@ struct CommonMarkReferenceConformanceTests {
         }
     }
 
+    @Test("CommonMark 536–538 keep opaque inline brackets out of reference association")
+    func opaqueInlineBrackets() {
+        let cases: [(source: String, html: String, visible: String, destination: String?, styledDestination: String?)] = [
+            (
+                "[foo <bar attr=\"][ref]\">\n\n[ref]: /uri\n",
+                "<p>[foo &lt;bar attr=&quot;][ref]&quot;&gt;</p>",
+                "[foo <bar attr=\"][ref]\">\n\n",
+                nil,
+                nil
+            ),
+            (
+                "[foo`][ref]`\n\n[ref]: /uri\n",
+                "<p>[foo<code>][ref]</code></p>",
+                "[foo][ref]\n\n",
+                nil,
+                nil
+            ),
+            (
+                "[foo<https://example.com/?search=][ref]>\n\n[ref]: /uri\n",
+                "<p>[foo<a href=\"https://example.com/?search=][ref]\">https://example.com/?search=][ref]</a></p>",
+                "[foohttps://example.com/?search=][ref]\n\n",
+                "https://example.com/?search=][ref]",
+                "https://example.com/?search=%5D%5Bref%5D"
+            ),
+        ]
+
+        for entry in cases {
+            let rendered = MarkdownHTMLRenderer.html(from: entry.source)
+                .replacingOccurrences(of: "\n</p>", with: "</p>")
+            #expect(rendered == entry.html)
+
+            let ast = DocumentAST.parse(entry.source)
+            let counts = linkCounts(in: ast)
+            #expect(counts.references == 0)
+            #expect(counts.autolinks == (entry.destination == nil ? 0 : 1))
+
+            #expect(MarkdownTextProjection.make(markdown: entry.source).string == entry.visible)
+            let accessibility = MarkdownAccessibilityProjection.make(markdown: entry.source)
+            #expect(accessibility.text.string == entry.visible)
+            let destinations = accessibility.spans.compactMap { span -> String? in
+                guard case .link(let destination) = span.role else { return nil }
+                return destination
+            }
+            #expect(destinations == entry.destination.map { [$0] } ?? [])
+
+            let styled = MarkdownRendering.attributedString(
+                for: entry.source,
+                fontName: NSFont.systemFont(ofSize: 16).fontName,
+                fontSize: 16
+            )
+            var styledDestinations: [String] = []
+            styled.enumerateAttribute(.link, in: NSRange(location: 0, length: styled.length)) { value, _, _ in
+                if let url = value as? URL { styledDestinations.append(url.absoluteString) }
+            }
+            #expect(styledDestinations == entry.styledDestination.map { [$0] } ?? [])
+        }
+
+        let escapedAngle = #"[foo \<bar][ref]"# + "\n\n[ref]: /uri\n"
+        #expect(MarkdownHTMLRenderer.html(from: escapedAngle).contains("href=\"/uri\""))
+    }
+
     @Test("CommonMark 604/605 email autolinks share HTML, styling and accessibility destinations")
     func semanticAutolinkDestinations() {
         let cases = [
@@ -277,6 +338,32 @@ struct CommonMarkReferenceConformanceTests {
             }
         }
         return (links, images)
+    }
+
+    private func linkCounts(in blocks: [BlockNode]) -> (references: Int, autolinks: Int) {
+        var references = 0
+        var autolinks = 0
+        func visit(_ nodes: [InlineNode]) {
+            for node in nodes {
+                switch node {
+                case .referenceLink(_, _, _, _, let children):
+                    references += 1
+                    visit(children)
+                case .autolink:
+                    autolinks += 1
+                case .emphasis(_, _, _, let children):
+                    visit(children)
+                case .ext(let node):
+                    visit(node.children)
+                default:
+                    break
+                }
+            }
+        }
+        for block in blocks {
+            if case .paragraph(_, let nodes) = block { visit(nodes) }
+        }
+        return (references, autolinks)
     }
 
 }

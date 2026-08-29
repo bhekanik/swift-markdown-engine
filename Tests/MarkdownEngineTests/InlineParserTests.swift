@@ -401,6 +401,39 @@ struct InlineParserTests {
         }
     }
 
+    @Test("extension spans keep their brackets out of reference association")
+    func extensionBracketsDoNotCloseLinks() {
+        let registry = ExtensionRegistry(extensions: [HighlightExtension()])
+        let opaque = InlineParser.parse(
+            "[foo ==][ref]==",
+            registry: registry,
+            referenceDefinitions: ["ref"]
+        )
+        #expect(opaque.allSatisfy {
+            if case .referenceLink = $0 { return false }
+            return true
+        })
+        #expect(opaque.contains {
+            if case .ext = $0 { return true }
+            return false
+        })
+
+        let contained = InlineParser.parse(
+            "[foo ==bar==][ref]",
+            registry: registry,
+            referenceDefinitions: ["ref"]
+        )
+        #expect(contained.count == 1)
+        guard case .referenceLink(_, _, _, _, let children) = contained[0] else {
+            Issue.record("Expected reference link")
+            return
+        }
+        #expect(children.contains {
+            if case .ext = $0 { return true }
+            return false
+        })
+    }
+
     @Test("footnote references claim the whole bracket run")
     func footnoteReference() {
         #expect(InlineParser.parse("[^note]") == [
