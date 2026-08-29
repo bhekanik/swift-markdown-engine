@@ -747,6 +747,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 // so it can see what the snapshot above was taken too early to know.
                 let incomingController = context.coordinator.editorController
                 let incomingRevision = incomingController?.documentRevision
+                let incomingTextBeforePersistence = textView.string
                 onPersistScrollOffset?(outgoingId, offsetY)
                 if controllerChanged,
                    incomingController === controller,
@@ -757,6 +758,13 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                        let records = incomingController.documentMutationRecords(after: incomingRevision),
                        let replayed = Self.replayDocumentMutations(records, onto: textToSynchronize) {
                         textToSynchronize = replayed
+                    } else if !targetControllerHadAuthoritativeText {
+                        let fallbackPatch = MarkdownTextPatch.diff(
+                            from: incomingTextBeforePersistence,
+                            to: textView.string
+                        )
+                        textToSynchronize = Self.apply(fallbackPatch, onto: textToSynchronize)
+                            ?? textView.string
                     } else {
                         textToSynchronize = textView.string
                     }
@@ -944,19 +952,36 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         _ records: [MarkdownDocumentMutationRecord],
         onto text: String
     ) -> String? {
+        // A changed revision without a record cannot prove how the source changed.
+        guard !records.isEmpty else { return nil }
         let result = NSMutableString(string: text)
         for record in records {
-            guard let mutation = record.mutation else { continue }
-            let length = result.length
-            guard mutation.range.location >= 0,
-                  mutation.range.location <= length,
-                  mutation.range.length >= 0,
-                  mutation.range.length <= length - mutation.range.location else {
+            guard let mutation = record.mutation else { return nil }
+            guard apply(
+                MarkdownTextPatch(range: mutation.range, replacement: mutation.replacement),
+                to: result
+            ) else {
                 return nil
             }
-            result.replaceCharacters(in: mutation.range, with: mutation.replacement)
         }
         return result as String
+    }
+
+    private static func apply(_ patch: MarkdownTextPatch, onto text: String) -> String? {
+        let result = NSMutableString(string: text)
+        return apply(patch, to: result) ? result as String : nil
+    }
+
+    private static func apply(_ patch: MarkdownTextPatch, to text: NSMutableString) -> Bool {
+        let length = text.length
+        guard patch.range.location >= 0,
+              patch.range.location <= length,
+              patch.range.length >= 0,
+              patch.range.length <= length - patch.range.location else {
+            return false
+        }
+        text.replaceCharacters(in: patch.range, with: patch.replacement)
+        return true
     }
 
     public func makeCoordinator() -> Coordinator {

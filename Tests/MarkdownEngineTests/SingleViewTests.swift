@@ -1850,6 +1850,59 @@ struct SingleViewTests {
         #expect(mutations.count == 1)
     }
 
+    @Test("an inexact persistence mutation falls back to live incoming text")
+    func persistenceReentryPreservesInexactMutation() throws {
+        _ = NSApplication.shared
+        let first = MarkdownEditorController()
+        let second = MarkdownEditorController()
+        var didMutate = false
+        var mutations: [MarkdownTextMutation] = []
+        let host = NSHostingView(rootView: PersistenceReentryHost(
+            text: "alpha",
+            documentId: "A",
+            controller: first,
+            onMutation: { _ in },
+            onAttachmentChange: { _ in },
+            persist: { _, _ in }
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+
+        func secondRoot() -> PersistenceReentryHost {
+            PersistenceReentryHost(
+                text: "bravo",
+                documentId: "B",
+                controller: second,
+                onMutation: { mutations.append($0) },
+                onAttachmentChange: { _ in },
+                persist: { _, _ in
+                    guard !didMutate, let textView = second.textView else { return }
+                    didMutate = true
+                    textView.textStorage?.replaceCharacters(
+                        in: NSRange(location: 0, length: 0),
+                        with: "X"
+                    )
+                    textView.didChangeText()
+                }
+            )
+        }
+
+        host.rootView = secondRoot()
+        host.layoutSubtreeIfNeeded()
+        let secondView = try #require(second.textView)
+        #expect(secondView.string == "Xbravo")
+        #expect(second.text == "Xbravo")
+        #expect(second.documentRevision == 1)
+        #expect(second.documentPublishedDelta == 0)
+        #expect(mutations.isEmpty)
+
+        host.rootView = secondRoot()
+        host.layoutSubtreeIfNeeded()
+        #expect(second.text == "Xbravo")
+        #expect(second.documentRevision == 1)
+        #expect(mutations.isEmpty)
+    }
+
     @Test("persistence callback authority stays with the document it mutates")
     func persistenceReentryControls() {
         _ = NSApplication.shared
