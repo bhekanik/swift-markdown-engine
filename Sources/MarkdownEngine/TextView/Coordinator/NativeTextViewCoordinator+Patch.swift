@@ -73,6 +73,7 @@ extension NativeTextViewCoordinator {
         registersUndo: Bool = false
     ) -> Bool {
         let descending = patches.sorted { $0.range.location > $1.range.location }
+        guard textView.isEditable else { return false }
         textView.breakUndoCoalescing()
         isProgrammaticEdit = true
         defer { isProgrammaticEdit = false }
@@ -90,23 +91,19 @@ extension NativeTextViewCoordinator {
 
         let undoManager = textView.undoManager
         if registersUndo { undoManager?.beginUndoGrouping() }
-        defer {
-            if registersUndo {
-                undoManager?.endUndoGrouping()
-                if let actionName { undoManager?.setActionName(actionName) }
-            }
-            textView.breakUndoCoalescing()
-        }
-
+        beginDeferringPublicMutations()
         beginSuppressingTextFinderInvalidation()
-        defer { endSuppressingTextFinderInvalidation() }
         var selection = textView.selectedRange()
         for patch in descending {
-            guard applyProgrammaticPatch(
+            let applied = applyProgrammaticPatch(
                 patch,
                 to: textView,
                 registersUndo: registersUndo
-            ) else { return false }
+            )
+            precondition(
+                applied,
+                "A stable, preflighted programmatic batch must not fail during commit"
+            )
             selection = selection.adjusting(
                 forReplacementOf: patch.range,
                 withLength: (patch.replacement as NSString).length
@@ -115,6 +112,13 @@ extension NativeTextViewCoordinator {
         textView.setSelectedRange(
             selection.clamped(toLength: (textView.string as NSString).length)
         )
+        endSuppressingTextFinderInvalidation()
+        if registersUndo {
+            undoManager?.endUndoGrouping()
+            if let actionName { undoManager?.setActionName(actionName) }
+        }
+        textView.breakUndoCoalescing()
+        flushDeferredPublicMutations()
         return true
     }
 

@@ -51,6 +51,10 @@ struct SingleViewTests {
         }
     }
 
+    private final class MutationBox {
+        var values: [MarkdownTextMutation] = []
+    }
+
 
     private final class TextFinderResponder: MarkdownTextFinderActionResponder {
         var performed: [NSTextFinder.Action] = []
@@ -751,6 +755,204 @@ struct SingleViewTests {
         await runCase(rawSourceMode: true)
     }
 
+    @Test("pending local edits survive mounted rebuild barriers")
+    func pendingLocalEditSurvivesMountedRebuilds() async throws {
+        @MainActor
+        func runCase(
+            change: (inout MarkdownEditorConfiguration, inout CGFloat) -> Void
+        ) async throws {
+            let controller = MarkdownEditorController()
+            let text = MutableTextBox("alpha")
+            let mutations = MutationBox()
+            var configuration = MarkdownEditorConfiguration.default
+            var fontSize: CGFloat = 16
+            func root() -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: controller,
+                    configuration: configuration,
+                    fontSize: fontSize,
+                    onMutation: { mutations.values.append($0) },
+                    onAttachmentChange: { _ in }
+                )
+            }
+
+            let host = NSHostingView(rootView: root())
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let textView = try #require(controller.textView as? NativeTextView)
+            let coordinator = try #require(textView.delegate as? NativeTextViewCoordinator)
+
+            textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+            #expect(textView.string == "alpha!")
+            #expect(text.value == "alpha")
+            #expect(coordinator.lastSyncedText == "alpha")
+            #expect(textView.selectedRange() == NSRange(location: 6, length: 0))
+
+            change(&configuration, &fontSize)
+            host.rootView = root()
+            host.layoutSubtreeIfNeeded()
+
+            #expect(textView.string == "alpha!")
+            #expect(text.value == "alpha")
+            #expect(coordinator.lastSyncedText == "alpha")
+            #expect(text.bindingWriteCount == 0)
+            #expect(textView.selectedRange() == NSRange(location: 6, length: 0))
+            #expect(mutations.values == [MarkdownTextMutation(
+                range: NSRange(location: 5, length: 0),
+                replacement: "!"
+            )])
+
+            await drainMainQueue()
+            #expect(text.value == "alpha!")
+            #expect(coordinator.lastSyncedText == "alpha!")
+            #expect(text.bindingWriteCount == 1)
+        }
+
+        _ = NSApplication.shared
+        try await runCase { _, fontSize in fontSize = 17 }
+        try await runCase { configuration, _ in configuration.rawSourceMode = true }
+        try await runCase { configuration, _ in
+            configuration.extensions = [HighlightExtension()]
+        }
+
+        if #available(macOS 15.0, *) {
+            let controller = MarkdownEditorController()
+            let text = MutableTextBox("alpha")
+            var configuration = MarkdownEditorConfiguration.default
+            func root() -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: controller,
+                    configuration: configuration,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root())
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let textView = try #require(controller.textView)
+            let coordinator = try #require(textView.delegate as? NativeTextViewCoordinator)
+            coordinator.textViewWritingToolsWillBegin(textView)
+            #expect(textView.shouldChangeText(
+                in: NSRange(location: 5, length: 0),
+                replacementString: "!"
+            ))
+            textView.textStorage?.replaceCharacters(
+                in: NSRange(location: 5, length: 0),
+                with: "!"
+            )
+            textView.didChangeText()
+            coordinator.textViewWritingToolsDidEnd(textView)
+            #expect(text.value == "alpha")
+
+            configuration.extensions = [HighlightExtension()]
+            host.rootView = root()
+            host.layoutSubtreeIfNeeded()
+            #expect(textView.string == "alpha!")
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+
+            await drainMainQueue()
+            #expect(text.value == "alpha!")
+            #expect(text.bindingWriteCount == 1)
+        }
+    }
+
+    @Test("pending local authority stays with its mounted identity")
+    func pendingLocalEditDoesNotCrossMountedIdentity() async throws {
+        _ = NSApplication.shared
+
+        do {
+            let controller = MarkdownEditorController()
+            let text = MutableTextBox("alpha")
+            func root(identity: Int) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: controller,
+                    identity: identity,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root(identity: 1))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let outgoing = try #require(controller.textView)
+            outgoing.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+
+            host.rootView = root(identity: 2)
+            host.layoutSubtreeIfNeeded()
+            let replacement = try #require(controller.textView)
+            #expect(replacement !== outgoing)
+            #expect(replacement.string == "alpha!")
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+
+            await drainMainQueue()
+            #expect(text.value == "alpha")
+            #expect(text.bindingWriteCount == 0)
+        }
+
+        do {
+            let first = MarkdownEditorController()
+            let second = MarkdownEditorController()
+            let text = MutableTextBox("alpha")
+            func root(controller: MarkdownEditorController, documentId: String) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: controller,
+                    documentId: documentId,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root(controller: first, documentId: "first"))
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let textView = try #require(first.textView)
+            textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+            text.value = "alpha!"
+
+            host.rootView = root(controller: second, documentId: "second")
+            host.layoutSubtreeIfNeeded()
+            #expect(second.textView?.string == "alpha!")
+
+            await drainMainQueue()
+            #expect(text.value == "alpha!")
+            #expect(text.bindingWriteCount == 0)
+        }
+
+        do {
+            let controller = MarkdownEditorController()
+            let text = MutableTextBox("alpha")
+            func root(fontSize: CGFloat = 16) -> MutableAttachmentHost {
+                MutableAttachmentHost(
+                    text: text,
+                    controller: controller,
+                    fontSize: fontSize,
+                    onMutation: { _ in },
+                    onAttachmentChange: { _ in }
+                )
+            }
+            let host = NSHostingView(rootView: root())
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+            host.layoutSubtreeIfNeeded()
+            let textView = try #require(controller.textView)
+            textView.insertText("!", replacementRange: NSRange(location: 5, length: 0))
+            text.value = "omega"
+
+            host.rootView = root(fontSize: 17)
+            host.layoutSubtreeIfNeeded()
+            #expect(textView.string == "omega")
+
+            await drainMainQueue()
+            #expect(text.value == "omega")
+            #expect(text.bindingWriteCount == 0)
+        }
+    }
+
     @Test("Find invalidates before every projected client-string change")
     func findInvalidatesAllProjectionChanges() {
         let controller = MarkdownEditorController()
@@ -900,6 +1102,10 @@ struct SingleViewTests {
     private struct MutableAttachmentHost: View {
         let text: MutableTextBox
         let controller: MarkdownEditorController?
+        var configuration: MarkdownEditorConfiguration = .default
+        var fontSize: CGFloat = 16
+        var documentId = "default"
+        var identity: Int?
         let onMutation: (MarkdownTextMutation) -> Void
         let onAttachmentChange: (NSTextView?) -> Void
 
@@ -909,12 +1115,15 @@ struct SingleViewTests {
                     get: { text.value },
                     set: { text.writeFromBinding($0) }
                 ),
+                configuration: configuration,
                 controller: controller,
                 fontName: "Helvetica",
-                fontSize: 16,
+                fontSize: fontSize,
+                documentId: documentId,
                 onAttachmentChange: onAttachmentChange,
                 onTextMutation: onMutation
             )
+            .id(identity)
         }
     }
 

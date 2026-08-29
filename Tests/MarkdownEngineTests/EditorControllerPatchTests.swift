@@ -183,6 +183,102 @@ struct EditorControllerPatchTests {
         #expect(coordinator.pendingEditCount == 0)
     }
 
+    @Test("batch storage and publication finish before callback reentry")
+    func batchCallbackReentryRunsAfterRequestedPatches() {
+        var mutations: [MarkdownTextMutation] = []
+        var binding = "abcdef"
+        var nestedBatchReturned = false
+        var controller: MarkdownEditorController!
+        var textView: NativeTextView!
+        (textView, controller, _) = makeEditor("abcdef") { mutation in
+            mutations.append(mutation)
+            binding = (binding as NSString).replacingCharacters(
+                in: mutation.range,
+                with: mutation.replacement
+            )
+            guard mutations.count == 1 else { return }
+            #expect(controller.applyPatches([
+                MarkdownTextPatch(
+                    range: NSRange(location: 0, length: 2),
+                    replacement: ""
+                ),
+            ]))
+            #expect(mutations.count == 1)
+            nestedBatchReturned = true
+            textView.setSelectedRange(NSRange(location: 1, length: 0))
+        }
+        textView.setSelectedRange(NSRange(location: 3, length: 0))
+
+        #expect(controller.applyPatches([
+            MarkdownTextPatch(range: NSRange(location: 0, length: 1), replacement: "A"),
+            MarkdownTextPatch(range: NSRange(location: 5, length: 1), replacement: "F"),
+        ]))
+
+        #expect(textView.string == "cdeF")
+        #expect(binding == "cdeF")
+        #expect(nestedBatchReturned)
+        #expect(textView.selectedRange() == NSRange(location: 1, length: 0))
+        #expect(mutations == [
+            MarkdownTextMutation(range: NSRange(location: 5, length: 1), replacement: "F"),
+            MarkdownTextMutation(range: NSRange(location: 0, length: 1), replacement: "A"),
+            MarkdownTextMutation(range: NSRange(location: 0, length: 2), replacement: ""),
+        ])
+        #expect(controller.documentRevision == 3)
+    }
+
+    @Test("callback state changes cannot split a batch")
+    func batchCallbackCannotRefuseRemainingPatch() throws {
+        var mutations: [MarkdownTextMutation] = []
+        var binding = "abcdef"
+        var textView: NativeTextView!
+        let editor = makeEditor("abcdef") { mutation in
+            mutations.append(mutation)
+            binding = (binding as NSString).replacingCharacters(
+                in: mutation.range,
+                with: mutation.replacement
+            )
+            if mutations.count == 1 {
+                textView.isEditable = false
+            }
+        }
+        textView = editor.0
+        let controller = editor.1
+        let undoManager = try #require(editor.2.undoManager(for: textView))
+        undoManager.removeAllActions()
+
+        #expect(controller.applyPatches([
+            MarkdownTextPatch(range: NSRange(location: 0, length: 1), replacement: "A"),
+            MarkdownTextPatch(range: NSRange(location: 5, length: 1), replacement: "F"),
+        ], actionName: "Batch", registersUndo: true))
+        #expect(textView.string == "AbcdeF")
+        #expect(binding == "AbcdeF")
+        #expect(mutations == [
+            MarkdownTextMutation(range: NSRange(location: 5, length: 1), replacement: "F"),
+            MarkdownTextMutation(range: NSRange(location: 0, length: 1), replacement: "A"),
+        ])
+
+        textView.isEditable = true
+        undoManager.undo()
+        #expect(textView.string == "abcdef")
+    }
+
+    @Test("a read-only view refuses a batch before commit")
+    func readOnlyBatchIsRefusedAtomically() {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, _) = makeEditor("abcdef") {
+            mutations.append($0)
+        }
+        textView.isEditable = false
+
+        #expect(controller.applyPatches([
+            MarkdownTextPatch(range: NSRange(location: 0, length: 1), replacement: "A"),
+            MarkdownTextPatch(range: NSRange(location: 5, length: 1), replacement: "F"),
+        ]) == false)
+        #expect(textView.string == "abcdef")
+        #expect(mutations.isEmpty)
+        #expect(controller.documentRevision == 0)
+    }
+
     @Test("overlapping patches are refused before anything is applied")
     func overlappingPatchesRefused() {
         let (textView, controller, _) = makeEditor("one two three")

@@ -133,6 +133,43 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     /// controller frees or the wrapper selects another available target.
     var isDetachedFromDocument = false
     var onTextMutation: ((MarkdownTextMutation) -> Void)?
+    private struct DeferredPublicMutation {
+        let mutation: MarkdownTextMutation
+        let callback: ((MarkdownTextMutation) -> Void)?
+    }
+    private var deferredPublicMutations: [DeferredPublicMutation]?
+    private var isFlushingPublicMutations = false
+
+    func beginDeferringPublicMutations() {
+        if deferredPublicMutations == nil {
+            deferredPublicMutations = []
+        }
+    }
+
+    func flushDeferredPublicMutations() {
+        guard !isFlushingPublicMutations, deferredPublicMutations != nil else { return }
+        isFlushingPublicMutations = true
+        var index = 0
+        // A callback may apply another batch. Its storage lands immediately,
+        // but its callback joins the tail so listeners receive every admitted
+        // pre-edit batch mutation before mutations addressed to the new text.
+        while let mutations = deferredPublicMutations, index < mutations.count {
+            let deferred = mutations[index]
+            index += 1
+            deferred.callback?(deferred.mutation)
+        }
+        deferredPublicMutations = nil
+        isFlushingPublicMutations = false
+    }
+
+    func deferPublicMutation(_ mutation: MarkdownTextMutation) -> Bool {
+        guard deferredPublicMutations != nil else { return false }
+        deferredPublicMutations?.append(DeferredPublicMutation(
+            mutation: mutation,
+            callback: onTextMutation
+        ))
+        return true
+    }
     /// Embedder hook to build the right-click menu (the engine ships none). Gets the
     /// default menu + current selection range, returns the menu to show.
     var onBuildContextMenu: ((NSMenu, NSRange) -> NSMenu)?
@@ -161,24 +198,94 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     }
     /// Main-queue Binding writes must not outlive a newer edit or rebuild.
     private var bindingWritebackGeneration: UInt64 = 0
+    private struct PendingBindingWrite {
+        let generation: UInt64
+        let textView: ObjectIdentifier
+        let controller: ObjectIdentifier?
+        let documentId: String?
+        let previousText: String
+        let text: String
+    }
+    private var pendingBindingWrite: PendingBindingWrite?
     var lastSyncedText: String
 
     func scheduleBindingWriteBack(_ newText: String, from textView: NSTextView) {
         bindingWritebackGeneration &+= 1
         let generation = bindingWritebackGeneration
+        pendingBindingWrite = PendingBindingWrite(
+            generation: generation,
+            textView: ObjectIdentifier(textView),
+            controller: editorController.map(ObjectIdentifier.init),
+            documentId: documentId,
+            previousText: text,
+            text: newText
+        )
         DispatchQueue.main.async { [weak self, weak textView] in
-            guard let self, let textView,
-                  generation == self.bindingWritebackGeneration,
-                  self.textView === textView,
-                  textView.string == newText else { return }
-            self.lastSyncedText = newText
-            guard self.text != newText else { return }
-            self.writeBindingBack(newText)
+            guard let self, let textView else { return }
+            _ = self.commitPendingBindingWrite(
+                generation: generation,
+                from: textView,
+                bindingText: self.text
+            )
         }
     }
 
-    func synchronizeWithoutBindingWrite(_ newText: String) {
+    func commitPendingBindingWrite(
+        generation: UInt64? = nil,
+        from textView: NSTextView,
+        bindingText: String
+    ) -> String? {
+        guard let pending = validPendingBindingWrite(
+            generation: generation,
+            from: textView,
+            bindingText: bindingText
+        ) else { return nil }
+        pendingBindingWrite = nil
         bindingWritebackGeneration &+= 1
+        lastSyncedText = pending.text
+        if bindingText != pending.text {
+            writeBindingBack(pending.text)
+        }
+        return pending.text
+    }
+
+    func pendingBindingWriteAuthority(
+        from textView: NSTextView,
+        bindingText: String
+    ) -> String? {
+        validPendingBindingWrite(from: textView, bindingText: bindingText)?.text
+    }
+
+    private func validPendingBindingWrite(
+        generation: UInt64? = nil,
+        from textView: NSTextView,
+        bindingText: String
+    ) -> PendingBindingWrite? {
+        guard let pending = pendingBindingWrite,
+              generation == nil || generation == pending.generation,
+              pending.generation == bindingWritebackGeneration else { return nil }
+        guard
+              pending.textView == ObjectIdentifier(textView),
+              self.textView === textView,
+              pending.controller == editorController.map(ObjectIdentifier.init),
+              pending.documentId == documentId,
+              textView.string == pending.text,
+              bindingText == pending.previousText || bindingText == pending.text,
+              !isDetachedFromDocument else {
+            pendingBindingWrite = nil
+            bindingWritebackGeneration &+= 1
+            return nil
+        }
+        return pending
+    }
+
+    func synchronizeWithoutBindingWrite(
+        _ newText: String,
+        preservingPendingBindingWrite: Bool = false
+    ) {
+        if preservingPendingBindingWrite { return }
+        bindingWritebackGeneration &+= 1
+        pendingBindingWrite = nil
         lastSyncedText = newText
     }
     /// A controller takeover can expose newer document storage than the

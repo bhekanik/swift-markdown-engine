@@ -45,7 +45,8 @@ extension NativeTextViewCoordinator {
         to rawSourceMode: Bool,
         in textView: NSTextView,
         documentId: String,
-        text: String
+        text: String,
+        preservingPendingBindingWrite: Bool = false
     ) {
         let sourceText = textView.string
         let sourceController = editorController
@@ -70,7 +71,8 @@ extension NativeTextViewCoordinator {
             textView,
             from: authoritativeText,
             invalidateLayout: true,
-            notifyTextFinder: false
+            notifyTextFinder: false,
+            preservingPendingBindingWrite: preservingPendingBindingWrite
         )
 
         if !rawSourceMode {
@@ -87,6 +89,7 @@ extension NativeTextViewCoordinator {
     /// into the undo tree and the sync outbox.
     func publish(_ mutation: MarkdownTextMutation) {
         guard !isDetachedFromDocument else { return }
+        if deferPublicMutation(mutation) { return }
         onTextMutation?(mutation)
     }
 

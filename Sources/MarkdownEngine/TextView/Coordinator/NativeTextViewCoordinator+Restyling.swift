@@ -17,7 +17,8 @@ extension NativeTextViewCoordinator {
         _ textView: NSTextView,
         from text: String,
         invalidateLayout: Bool = false,
-        notifyTextFinder: Bool = true
+        notifyTextFinder: Bool = true,
+        preservingPendingBindingWrite: Bool = false
     ) {
         // Suppress the re-entrant textViewDidChangeSelection that `textView.string =`
         // and the setAttributedString transfer below fire synchronously (71ms of
@@ -53,7 +54,10 @@ extension NativeTextViewCoordinator {
                 displayText = textView.string
             }
         }
-        synchronizeWithoutBindingWrite(displayText)
+        synchronizeWithoutBindingWrite(
+            displayText,
+            preservingPendingBindingWrite: preservingPendingBindingWrite
+        )
         previousDisplayLength = (displayText as NSString).length
         let nsDisplay = displayText as NSString
         // Fresh document baseline: drop the incremental parse state and reseed

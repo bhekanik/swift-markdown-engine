@@ -402,6 +402,17 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.requestedControllerWhileDetached === controller
             && controller?.isAttached == false
         let controllerChanged = currentController !== controller || waitingControllerBecameAvailable
+        let pendingBindingWriteIsAuthoritative: Bool
+        if !isNodeSwitch, !controllerChanged,
+           let pendingText = context.coordinator.pendingBindingWriteAuthority(
+               from: textView,
+               bindingText: text
+           ) {
+            textToSynchronize = pendingText
+            pendingBindingWriteIsAuthoritative = true
+        } else {
+            pendingBindingWriteIsAuthoritative = false
+        }
         if let staleBinding = context.coordinator.staleBindingAfterControllerTakeover {
             if !controllerChanged,
                staleBinding.controller == controller.map(ObjectIdentifier.init),
@@ -702,6 +713,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // change is too large to be an edit.
         if !isNodeSwitch, !rawSourceModeChanged, !fontChanged, !controllerChanged,
            context.coordinator.didInitialFormatting {
+            if pendingBindingWriteIsAuthoritative {
+                return
+            }
             let spliceResult = context.coordinator.spliceExternalText(
                 textToSynchronize,
                 in: textView,
@@ -742,13 +756,15 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 to: configuration.rawSourceMode,
                 in: textView,
                 documentId: documentId,
-                text: textToSynchronize
+                text: textToSynchronize,
+                preservingPendingBindingWrite: pendingBindingWriteIsAuthoritative
             )
         } else {
             context.coordinator.rebuildTextStorageAndStyle(
                 textView,
                 from: textToSynchronize,
-                invalidateLayout: isNodeSwitch
+                invalidateLayout: isNodeSwitch,
+                preservingPendingBindingWrite: pendingBindingWriteIsAuthoritative
             )
         }
         textView.recalcOverscroll(for: nsView)
