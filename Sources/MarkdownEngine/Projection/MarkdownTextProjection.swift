@@ -572,9 +572,18 @@ private enum MarkdownTextProjectionBuilder {
                     text: "\t"
                 ))
             }
+            let visibleCellCount = min(row.cells.count, columnCount)
+            let missingCellCount = columnCount - visibleCellCount
+            let replacedClosingDelimiterLength = missingCellCount > 0 ? 1 : 0
+            if missingCellCount > 0 {
+                replacements.append(Replacement(
+                    sourceRange: NSRange(location: delimiters.last!, length: 1),
+                    text: String(repeating: "\t", count: missingCellCount)
+                ))
+            }
             removals.append(NSRange(
-                location: delimiters.last!,
-                length: contentEnd - delimiters.last!
+                location: delimiters.last! + replacedClosingDelimiterLength,
+                length: contentEnd - delimiters.last! - replacedClosingDelimiterLength
             ))
 
             for (cell, pair) in zip(row.cells.prefix(columnCount), zip(delimiters, delimiters.dropFirst())) {

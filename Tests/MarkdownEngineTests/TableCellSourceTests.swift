@@ -156,6 +156,53 @@ struct TableCellSourceTests {
         #expect(!MarkdownHTMLRenderer.html(from: source).contains("hidden"))
     }
 
+    @Test func missingCellsPreserveRenderedWidthAndClosingPipeAffinity() throws {
+        let cases = [
+            (
+                source: "| A | B |\n|---|---|\n| one |",
+                visible: "A\tB\none\t"
+            ),
+            (
+                source: "| A | B | C | D |\n|---|---|---|---|\n| 🧑🏽‍💻 |",
+                visible: "A\tB\tC\tD\n🧑🏽‍💻\t\t\t"
+            ),
+            (
+                source: "| A | B | C |\n|---|---|---|\n| |",
+                visible: "A\tB\tC\n\t\t"
+            ),
+            (
+                source: "| A | B |\r\n|---|---|\r\n| one |",
+                visible: "A\tB\r\none\t"
+            ),
+        ]
+
+        for entry in cases {
+            let projection = MarkdownTextProjection.make(markdown: entry.source)
+            let accessibility = MarkdownAccessibilityProjection.make(markdown: entry.source)
+            let parsed = try #require(MarkdownStyler.parseTableSource(entry.source))
+            let body = try #require(parsed.rows.first)
+            let rendered = "\(parsed.header.joined(separator: "\t"))\n\(body.joined(separator: "\t"))"
+            let expectedRendered = entry.visible.replacingOccurrences(of: "\r\n", with: "\n")
+            let source = entry.source as NSString
+            let closingPipe = source.range(of: "|", options: .backwards)
+            let projectedPipe = try #require(projection.visibleRange(for: closingPipe))
+            let bodyHTML = "<tr>" + body.map { "<td>\($0)</td>" }.joined() + "</tr>"
+
+            #expect(projection.string == entry.visible)
+            #expect(accessibility.text.string == entry.visible)
+            #expect(rendered == expectedRendered)
+            #expect(MarkdownHTMLRenderer.html(from: entry.source).contains(bodyHTML))
+            #expect((projection.string as NSString).substring(with: projectedPipe).allSatisfy { $0 == "\t" })
+            #expect(projection.sourceRange(for: projectedPipe) == closingPipe)
+            #expect(projection.visibleRange(for: NSRange(location: closingPipe.location, length: 0))
+                == NSRange(location: projectedPipe.location, length: 0))
+            #expect(projection.sourceRange(for: NSRange(location: projectedPipe.location, length: 0))
+                == NSRange(location: closingPipe.location, length: 0))
+            #expect(projection.sourceRange(for: NSRange(location: NSMaxRange(projectedPipe), length: 0))
+                == NSRange(location: NSMaxRange(closingPipe), length: 0))
+        }
+    }
+
     @Test func directAndReferenceTableMediaUseSemanticVisibleText() throws {
         let source = """
         | Link | Image |
