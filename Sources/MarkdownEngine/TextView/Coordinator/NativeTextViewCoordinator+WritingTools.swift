@@ -81,6 +81,7 @@ extension NativeTextViewCoordinator {
         rebuildTextStorageAndStyle(textView, from: sourceText)
         lastSyncedText = sourceText
         textView.setSelectedRange(acceptedSelection)
+        scheduleBindingWriteBack(sourceText, from: textView)
         if let sourceBeforeWritingTools, sourceBeforeWritingTools != sourceText {
             let mutation: MarkdownTextMutation
             if let startRevision,
@@ -107,7 +108,6 @@ extension NativeTextViewCoordinator {
             }
             publish(mutation)
         }
-        scheduleBindingWriteBack(sourceText, from: textView)
     }
 
     private func rebasedWritingToolsMutation(

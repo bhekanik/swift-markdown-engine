@@ -38,7 +38,7 @@ regexes are gone, replaced by hand-written scanners and a real syntax tree.
 2. **`InlineParser`** turns a single inline-bearing block's text into an inline
    AST (`[InlineNode]`) with correct CommonMark precedence: code spans →
    escapes → link family (`![…](…)`, `[…](…)`, `~~…~~`,
-   `$…$`) → emphasis (`*`/`_` delimiter runs) → `buildTree`. Each pass claims
+   `==…==`) → emphasis (`*`/`_` delimiter runs) → `buildTree`. Each pass claims
    spans only in regions not already claimed, so there are never partial
    overlaps and the tree is a clean containment tree. That invariant is also
    what keeps the pass linear in span count: claimed ranges are consulted

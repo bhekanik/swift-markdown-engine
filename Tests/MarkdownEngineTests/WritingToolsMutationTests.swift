@@ -11,13 +11,41 @@ import Testing
 @MainActor
 @Suite("Writing Tools mutation reporting")
 struct WritingToolsMutationTests {
+    private final class MutableTextBox {
+        var value: String
+        private(set) var writes: [String] = []
+
+        init(_ value: String) {
+            self.value = value
+        }
+
+        var binding: Binding<String> {
+            Binding(
+                get: { self.value },
+                set: {
+                    self.value = $0
+                    self.writes.append($0)
+                }
+            )
+        }
+    }
+
+    private func drainMainQueue() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+
     private func makeAttachedView(
         text: String,
         controller: MarkdownEditorController,
+        binding: Binding<String>? = nil,
         onTextMutation: @escaping (MarkdownTextMutation) -> Void
     ) -> (NativeTextView, NativeTextViewCoordinator) {
         let wrapper = NativeTextViewWrapper(
-            text: .constant(text),
+            text: binding ?? .constant(text),
             controller: controller,
             fontName: "Helvetica",
             fontSize: 16,
@@ -61,6 +89,123 @@ struct WritingToolsMutationTests {
             result.replaceCharacters(in: mutation.range, with: mutation.replacement)
         }
         return result as String
+    }
+
+    @available(macOS 15.0, *)
+    @Test("a reentrant mutation supersedes Writing Tools binding authority")
+    func reentrantMutationSupersedesWritingToolsBindingWrite() async throws {
+        _ = NSApplication.shared
+        let before = "The quik fox.\n"
+        let accepted = "The quick fox.\n"
+        let final = "The quick fox.\n!"
+        let box = MutableTextBox(before)
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        var reentered = false
+        var nestedPatchResult: Bool?
+        let (textView, coordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            binding: box.binding,
+            onTextMutation: { mutation in
+                mutations.append(mutation)
+                guard !reentered else { return }
+                reentered = true
+                nestedPatchResult = controller.applyPatch(
+                    range: NSRange(location: (accepted as NSString).length, length: 0),
+                    replacement: "!"
+                )
+            }
+        )
+
+        coordinator.textViewWritingToolsWillBegin(textView)
+        textView.string = accepted
+        coordinator.textViewWritingToolsDidEnd(textView)
+
+        #expect(nestedPatchResult == true)
+        #expect(textView.string == final)
+        #expect(coordinator.pendingBindingWriteAuthority(
+            from: textView,
+            bindingText: box.value
+        ) == final)
+
+        await drainMainQueue()
+
+        #expect(textView.string == final)
+        #expect(controller.text == final)
+        #expect(box.value == final)
+        #expect(box.writes == [final])
+        #expect(coordinator.lastSyncedText == final)
+        #expect(coordinator.pendingBindingWriteAuthority(
+            from: textView,
+            bindingText: box.value
+        ) == nil)
+        #expect(mutations == [
+            MarkdownTextMutation(range: NSRange(location: 7, length: 0), replacement: "c"),
+            MarkdownTextMutation(
+                range: NSRange(location: (accepted as NSString).length, length: 0),
+                replacement: "!"
+            ),
+        ])
+        #expect(applying(mutations, to: before) == final)
+    }
+
+    @available(macOS 15.0, *)
+    @Test("an accepted session writes its binding once without reentry")
+    func acceptedSessionWritesBindingOnce() async {
+        _ = NSApplication.shared
+        let before = "The quik fox.\n"
+        let accepted = "The quick fox.\n"
+        let box = MutableTextBox(before)
+        let controller = MarkdownEditorController()
+        let (textView, coordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            binding: box.binding,
+            onTextMutation: { _ in }
+        )
+
+        coordinator.textViewWritingToolsWillBegin(textView)
+        textView.string = accepted
+        coordinator.textViewWritingToolsDidEnd(textView)
+        await drainMainQueue()
+
+        #expect(textView.string == accepted)
+        #expect(controller.text == accepted)
+        #expect(box.value == accepted)
+        #expect(box.writes == [accepted])
+        #expect(coordinator.lastSyncedText == accepted)
+    }
+
+    @available(macOS 15.0, *)
+    @Test("host binding authority invalidates a queued Writing Tools write")
+    func hostBindingChangeInvalidatesWritingToolsBindingWrite() async {
+        _ = NSApplication.shared
+        let before = "The quik fox.\n"
+        let accepted = "The quick fox.\n"
+        let external = "Remote text.\n"
+        let box = MutableTextBox(before)
+        let controller = MarkdownEditorController()
+        let (textView, coordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            binding: box.binding,
+            onTextMutation: { _ in box.value = external }
+        )
+
+        coordinator.textViewWritingToolsWillBegin(textView)
+        textView.string = accepted
+        coordinator.textViewWritingToolsDidEnd(textView)
+        await drainMainQueue()
+
+        #expect(textView.string == accepted)
+        #expect(controller.text == accepted)
+        #expect(box.value == external)
+        #expect(box.writes.isEmpty)
+        #expect(coordinator.pendingBindingWriteAuthority(
+            from: textView,
+            bindingText: box.value
+        ) == nil)
     }
 
     /// Several edits landing in the storage before a single `didChangeText` —

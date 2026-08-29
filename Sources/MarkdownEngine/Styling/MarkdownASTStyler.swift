@@ -9,13 +9,6 @@
 //  overwriting each other (the flaw in the flat 18-pass styler, e.g. the
 //  shrinking bold in `# **n*o*des**`).
 //
-//  Built incrementally behind the existing styler; not wired until complete
-//  and visually verified. Covered so far: heading/paragraph/blockquote blocks;
-//  inline emphasis (font composition), strikethrough, inline code, markdown
-//  links. Still TODO: images, escapes,
-//  autolinks, marker-shrinking, paragraph styles, code/table blocks,
-//  bullets, task checkboxes, horizontal rules.
-//
 
 import AppKit
 import Foundation
