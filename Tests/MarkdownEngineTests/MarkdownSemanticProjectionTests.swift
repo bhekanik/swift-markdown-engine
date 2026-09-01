@@ -40,6 +40,20 @@ struct MarkdownSemanticProjectionTests {
             #expect(span?.range == NSRange(location: 0, length: (source as NSString).length))
             #expect(span.map { NSLocationInRange((source as NSString).range(of: "let value").location, $0.contentRange) } == true)
         }
+
+        for source in [">     let value", "-     let value", "1.     let value"] {
+            let span = MarkdownSemanticProjection.make(
+                markdown: source,
+                intersecting: (source as NSString).range(of: "let value")
+            ).spans.first
+            #expect(span?.kind == .codeBlock)
+            #expect(span.map {
+                NSLocationInRange(
+                    (source as NSString).range(of: "let value").location,
+                    $0.contentRange
+                )
+            } == true)
+        }
     }
 
     @Test("container fences are block code and suppress inline semantics")
@@ -154,5 +168,6 @@ struct MarkdownSemanticProjectionTests {
         )
         #expect(eofProjection.spans.map(\.kind) == [.codeBlock])
         #expect(eofProjection.spans.first?.markerRanges.count == 1)
+
     }
 }

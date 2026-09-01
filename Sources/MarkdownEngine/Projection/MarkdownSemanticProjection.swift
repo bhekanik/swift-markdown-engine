@@ -81,17 +81,34 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
     ) -> MarkdownSemanticProjection {
         let source = markdown as NSString
         var spans: [MarkdownSemanticSpan] = []
-        for block in DocumentAST.parse(
-            markdown,
-            scopedRanges: scopedRanges,
-            registry: configuration.extensionRegistry
-        ) {
-            collect(
-                block,
-                source: source,
-                registry: configuration.extensionRegistry,
-                into: &spans
-            )
+        if let line = localLineScope(in: source, scopedRanges: scopedRanges) {
+            let localSource = source.substring(with: line) as NSString
+            var localSpans: [MarkdownSemanticSpan] = []
+            for block in DocumentAST.parse(
+                localSource as String,
+                registry: configuration.extensionRegistry
+            ) {
+                collect(
+                    block,
+                    source: localSource,
+                    registry: configuration.extensionRegistry,
+                    into: &localSpans
+                )
+            }
+            spans.append(contentsOf: localSpans.map { shifted($0, by: line.location) })
+        } else {
+            for block in DocumentAST.parse(
+                markdown,
+                scopedRanges: scopedRanges,
+                registry: configuration.extensionRegistry
+            ) {
+                collect(
+                    block,
+                    source: source,
+                    registry: configuration.extensionRegistry,
+                    into: &spans
+                )
+            }
         }
         for block in MarkdownCodeBlockSyntax.fencedBlocks(in: source) where scopedRanges?.contains(where: {
                 intersects($0, block.range)
@@ -110,6 +127,21 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
                 markerRanges: [block.openFence, block.closeFence].compactMap { $0 }
             ))
         }
+        for block in MarkdownCodeBlockSyntax.containerIndentedBlocks(
+            in: source,
+            intersecting: scopedRanges
+        ) {
+            spans.removeAll { span in
+                span.range.location >= block.range.location
+                    && NSMaxRange(span.range) <= NSMaxRange(block.range)
+            }
+            spans.append(MarkdownSemanticSpan(
+                kind: .codeBlock,
+                range: block.range,
+                contentRange: block.content,
+                markerRanges: []
+            ))
+        }
         if let scopedRanges {
             spans.removeAll { span in
                 !scopedRanges.contains { intersects($0, span.range) }
@@ -121,6 +153,97 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
                 : $0.range.location < $1.range.location
         }
         return MarkdownSemanticProjection(spans: spans)
+    }
+
+    private static func localLineScope(
+        in source: NSString,
+        scopedRanges: [NSRange]?
+    ) -> NSRange? {
+        guard let scopedRanges, scopedRanges.count == 1,
+              let scope = scopedRanges.first,
+              source.length > 0 else { return nil }
+        let first = source.lineRange(for: NSRange(
+            location: min(scope.location, source.length - 1),
+            length: 0
+        ))
+        let last = source.lineRange(for: NSRange(
+            location: min(max(scope.location, NSMaxRange(scope) - 1), source.length - 1),
+            length: 0
+        ))
+        guard first == last,
+              !hasSemanticDelimiterOutsideLine(first, in: source) else { return nil }
+        return first
+    }
+
+    private static func hasSemanticDelimiterOutsideLine(
+        _ line: NSRange,
+        in source: NSString
+    ) -> Bool {
+        var cursor = line.location
+        while cursor > 0 {
+            var previousLocation = cursor - 1
+            while previousLocation > 0,
+                  (source.character(at: previousLocation) == 10
+                    || source.character(at: previousLocation) == 13) {
+                previousLocation -= 1
+            }
+            let previous = source.lineRange(for: NSRange(location: previousLocation, length: 0))
+            if isBlank(previous, in: source) { break }
+            if containsSemanticDelimiter(previous, in: source) { return true }
+            cursor = previous.location
+        }
+
+        cursor = NSMaxRange(line)
+        while cursor < source.length {
+            let next = source.lineRange(for: NSRange(location: cursor, length: 0))
+            if isBlank(next, in: source) { break }
+            if containsSemanticDelimiter(next, in: source) { return true }
+            cursor = NSMaxRange(next)
+        }
+        return false
+    }
+
+    private static func isBlank(_ range: NSRange, in source: NSString) -> Bool {
+        for index in range.location..<NSMaxRange(range) {
+            switch source.character(at: index) {
+            case 9, 10, 13, 32:
+                continue
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func containsSemanticDelimiter(
+        _ range: NSRange,
+        in source: NSString
+    ) -> Bool {
+        for index in range.location..<NSMaxRange(range) {
+            switch source.character(at: index) {
+            case 42, 95, 96, 126:
+                return true
+            default:
+                continue
+            }
+        }
+        return false
+    }
+
+    private static func shifted(
+        _ span: MarkdownSemanticSpan,
+        by offset: Int
+    ) -> MarkdownSemanticSpan {
+        MarkdownSemanticSpan(
+            kind: span.kind,
+            range: shifted(span.range, by: offset),
+            contentRange: shifted(span.contentRange, by: offset),
+            markerRanges: span.markerRanges.map { shifted($0, by: offset) }
+        )
+    }
+
+    private static func shifted(_ range: NSRange, by offset: Int) -> NSRange {
+        NSRange(location: range.location + offset, length: range.length)
     }
 
     private static func intersects(_ lhs: NSRange, _ rhs: NSRange) -> Bool {

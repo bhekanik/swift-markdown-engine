@@ -14,6 +14,11 @@ enum MarkdownCodeBlockSyntax {
         let closeFence: NSRange?
     }
 
+    struct IndentedBlock {
+        let range: NSRange
+        let content: NSRange
+    }
+
     private struct Fence {
         let character: unichar
         let length: Int
@@ -73,6 +78,28 @@ enum MarkdownCodeBlockSyntax {
             lineIndex = closingIndex.map { $0 + 1 } ?? terminationIndex ?? lines.count
         }
         return blocks
+    }
+
+    static func containerIndentedBlocks(
+        in source: NSString,
+        intersecting scopedRanges: [NSRange]?
+    ) -> [IndentedBlock] {
+        var lines: [NSRange] = []
+        if let scopedRanges {
+            for scope in scopedRanges where source.length > 0 {
+                let location = min(scope.location, source.length - 1)
+                let line = source.lineRange(for: NSRange(location: location, length: 0))
+                if lines.last != line { lines.append(line) }
+            }
+        } else {
+            var cursor = 0
+            while cursor < source.length {
+                let line = source.lineRange(for: NSRange(location: cursor, length: 0))
+                lines.append(line)
+                cursor = NSMaxRange(line)
+            }
+        }
+        return lines.compactMap { containerIndentedBlock(in: source, lineRange: $0) }
     }
 
     static func parts(in source: NSString, range: NSRange) -> Parts {
@@ -335,6 +362,47 @@ enum MarkdownCodeBlockSyntax {
         guard cursor < end,
               source.character(at: cursor) == 32 || source.character(at: cursor) == 9 else { return nil }
         return cursor
+    }
+
+    private static func containerIndentedBlock(
+        in source: NSString,
+        lineRange: NSRange
+    ) -> IndentedBlock? {
+        let end = contentEnd(of: lineRange, in: source)
+        var cursor = lineRange.location
+        var leading = 0
+        while cursor < end, leading < 4, source.character(at: cursor) == 32 {
+            cursor += 1
+            leading += 1
+        }
+        guard leading <= 3 else { return nil }
+
+        while cursor < end {
+            if source.character(at: cursor) == 62 {
+                cursor += 1
+            } else if let markerEnd = listMarkerEnd(in: source, start: cursor, end: end) {
+                cursor = markerEnd
+            } else {
+                return nil
+            }
+            if cursor < end,
+               source.character(at: cursor) == 32 || source.character(at: cursor) == 9 {
+                cursor += 1
+            }
+            var indentation = 0
+            while cursor < end, indentation < 4, source.character(at: cursor) == 32 {
+                cursor += 1
+                indentation += 1
+            }
+            if indentation == 4 {
+                guard cursor < end else { return nil }
+                return IndentedBlock(
+                    range: lineRange,
+                    content: NSRange(location: cursor, length: end - cursor)
+                )
+            }
+        }
+        return nil
     }
 
     private static func contentEnd(of lineRange: NSRange, in source: NSString) -> Int {
