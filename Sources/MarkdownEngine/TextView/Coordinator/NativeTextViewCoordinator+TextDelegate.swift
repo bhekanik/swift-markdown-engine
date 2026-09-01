@@ -123,7 +123,7 @@ extension NativeTextViewCoordinator {
             pendingEditCount = 0
             pendingEditedRange = nil
             guard !tv.hasMarkedText() else { return }
-            if tv.string != lastSyncedText {
+            if !tv.string.hasSameUTF16(as: lastSyncedText) {
                 scheduleBindingWriteBack(tv.string, from: tv)
             }
             if let bottomTextView = tv as? NativeTextView,
@@ -205,7 +205,7 @@ extension NativeTextViewCoordinator {
             parseGeneration &+= 1
         }
 
-        if !wtActive, tv.string != lastSyncedText {
+        if !wtActive, !tv.string.hasSameUTF16(as: lastSyncedText) {
             scheduleBindingWriteBack(tv.string, from: tv)
         }
 

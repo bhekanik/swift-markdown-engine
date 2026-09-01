@@ -38,7 +38,7 @@ extension NativeTextViewCoordinator {
         // ensureLayout IS that one-shot per-document layout.
         didEnsureLayoutForCurrentDocument = true
         var displayText = text
-        if textView.string != text {
+        if !textView.string.hasSameUTF16(as: text) {
             let sourceText = textView.string
             let sourceController = editorController
             let sourceRevision = sourceController?.documentRevision

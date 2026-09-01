@@ -902,6 +902,30 @@ struct EditorControllerPatchTests {
         #expect(textView.string == "alpha")
     }
 
+    @Test(
+        "applyText preserves exact UTF-16 across canonical Unicode forms",
+        arguments: [
+            ("😀 caf\u{00E9}\r\nsecond\n", "😀 cafe\u{0301}\r\nsecond\n"),
+            ("😀 cafe\u{0301}\r\nsecond\n", "😀 caf\u{00E9}\r\nsecond\n"),
+        ]
+    )
+    func applyTextCanonicalUnicodeForms(old: String, new: String) {
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, controller, _) = makeEditor(old) { mutations.append($0) }
+        let oldSecond = (old as NSString).range(of: "second").location
+        let newSecond = (new as NSString).range(of: "second").location
+        textView.setSelectedRange(NSRange(location: oldSecond, length: 0))
+
+        #expect(controller.applyText(new))
+
+        #expect((textView.string as NSString).isEqual(to: new))
+        #expect(textView.selectedRange() == NSRange(location: newSecond, length: 0))
+        #expect(mutations == [MarkdownTextMutation(
+            range: NSRange(location: 6, length: oldSecond < newSecond ? 1 : 2),
+            replacement: oldSecond < newSecond ? "e\u{0301}" : "\u{00E9}"
+        )])
+    }
+
     // MARK: - Undo
 
     @Test("an external patch registers no undo action by default")

@@ -304,7 +304,7 @@ public final class MarkdownEditorController {
     ) -> Bool {
         guard let textView else { return false }
         let old = textView.string
-        guard old != text else { return true }
+        guard !old.hasSameUTF16(as: text) else { return true }
         let patch = MarkdownTextPatch.diff(from: old, to: text)
         return applyPatch(range: patch.range, replacement: patch.replacement,
                           actionName: actionName, registersUndo: registersUndo)
@@ -367,7 +367,7 @@ public final class MarkdownEditorController {
     }
 
     func storageIsAuthoritative(over bindingText: String) -> Bool {
-        hasLoadedDocument && lastAcceptedBindingText == bindingText
+        hasLoadedDocument && lastAcceptedBindingText?.hasSameUTF16(as: bindingText) == true
     }
 
     func recordAcceptedBindingText(_ text: String) {

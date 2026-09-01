@@ -7,6 +7,14 @@
 
 import Foundation
 
+extension String {
+    /// Document synchronization is UTF-16-exact; canonically equivalent Unicode
+    /// can still have different UTF-16 ranges for later patches.
+    func hasSameUTF16(as other: String) -> Bool {
+        (self as NSString).isEqual(to: other)
+    }
+}
+
 public extension MarkdownTextPatch {
     /// The single contiguous run that differs between `old` and `new`.
     ///

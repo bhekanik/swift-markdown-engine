@@ -493,7 +493,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             if !controllerChanged,
                staleBinding.controller == controller.map(ObjectIdentifier.init),
                staleBinding.documentId == documentId {
-                if text == staleBinding.text {
+                if text.hasSameUTF16(as: staleBinding.text) {
                     textToSynchronize = textView.string
                 } else {
                     context.coordinator.staleBindingAfterControllerTakeover = nil
@@ -638,7 +638,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                     }
                     if targetControllerHadAuthoritativeText {
                         textToSynchronize = textView.string
-                        if textToSynchronize != text {
+                        if !textToSynchronize.hasSameUTF16(as: text) {
                             context.coordinator.staleBindingAfterControllerTakeover = (
                                 ObjectIdentifier(controller),
                                 documentId,
@@ -737,7 +737,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // whose two presentations share a font changes nothing else about this
         // pass, and the switch was dropped on the floor.
         if context.coordinator.didInitialFormatting
-            && context.coordinator.lastSyncedText == textToSynchronize
+            && context.coordinator.lastSyncedText.hasSameUTF16(as: textToSynchronize)
             && !fontChanged
             && !controllerChanged
             && !rawSourceModeChanged {
@@ -783,7 +783,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                     } else {
                         textToSynchronize = textView.string
                     }
-                    if let controller, textToSynchronize != text {
+                    if let controller, !textToSynchronize.hasSameUTF16(as: text) {
                         context.coordinator.staleBindingAfterControllerTakeover = (
                             ObjectIdentifier(controller),
                             documentId,
