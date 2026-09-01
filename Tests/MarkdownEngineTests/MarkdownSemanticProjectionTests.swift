@@ -129,4 +129,30 @@ struct MarkdownSemanticProjectionTests {
             (source as NSString).range(of: "strike"),
         ])
     }
+
+    @Test("scoped projection returns only intersecting semantics")
+    func scopedProjection() {
+        let source = "**one** plain **two**\n\n```\ncode\n```"
+        let two = (source as NSString).range(of: "two")
+        let scoped = MarkdownSemanticProjection.make(
+            markdown: source,
+            intersecting: two
+        )
+        #expect(scoped.spans.map(\.range) == [(source as NSString).range(of: "**two**")])
+
+        let code = (source as NSString).range(of: "code")
+        #expect(MarkdownSemanticProjection.make(
+            markdown: source,
+            intersecting: code
+        ).spans.map(\.kind) == [.codeBlock])
+
+        let unclosed = "```\ncode"
+        let eof = NSRange(location: (unclosed as NSString).length, length: 0)
+        let eofProjection = MarkdownSemanticProjection.make(
+            markdown: unclosed,
+            intersecting: eof
+        )
+        #expect(eofProjection.spans.map(\.kind) == [.codeBlock])
+        #expect(eofProjection.spans.first?.markerRanges.count == 1)
+    }
 }

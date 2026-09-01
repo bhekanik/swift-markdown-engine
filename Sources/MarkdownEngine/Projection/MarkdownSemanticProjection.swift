@@ -43,10 +43,47 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
         markdown: String,
         configuration: MarkdownEditorConfiguration = .default
     ) -> MarkdownSemanticProjection {
+        make(markdown: markdown, scopedRanges: nil, configuration: configuration)
+    }
+
+    public static func make(
+        markdown: String,
+        intersecting range: NSRange,
+        configuration: MarkdownEditorConfiguration = .default
+    ) -> MarkdownSemanticProjection {
+        let length = (markdown as NSString).length
+        guard range.location != NSNotFound,
+              range.location >= 0,
+              range.length >= 0,
+              NSMaxRange(range) <= length else {
+            return MarkdownSemanticProjection(spans: [])
+        }
+        let scope = if range.length > 0 {
+            range
+        } else if range.location < length {
+            NSRange(location: range.location, length: 1)
+        } else if length > 0 {
+            NSRange(location: length - 1, length: 1)
+        } else {
+            NSRange(location: 0, length: 0)
+        }
+        return make(
+            markdown: markdown,
+            scopedRanges: scope.length > 0 ? [scope] : [],
+            configuration: configuration
+        )
+    }
+
+    private static func make(
+        markdown: String,
+        scopedRanges: [NSRange]?,
+        configuration: MarkdownEditorConfiguration
+    ) -> MarkdownSemanticProjection {
         let source = markdown as NSString
         var spans: [MarkdownSemanticSpan] = []
         for block in DocumentAST.parse(
             markdown,
+            scopedRanges: scopedRanges,
             registry: configuration.extensionRegistry
         ) {
             collect(
@@ -56,7 +93,12 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
                 into: &spans
             )
         }
-        for block in MarkdownCodeBlockSyntax.fencedBlocks(in: source) {
+        for block in MarkdownCodeBlockSyntax.fencedBlocks(in: source) where scopedRanges?.contains(where: {
+                intersects($0, block.range)
+                    || ($0.location == source.length
+                        && block.closeFence == nil
+                        && NSMaxRange(block.range) == source.length)
+            }) ?? true {
             spans.removeAll { span in
                 span.range.location >= block.range.location
                     && NSMaxRange(span.range) <= NSMaxRange(block.range)
@@ -68,12 +110,21 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
                 markerRanges: [block.openFence, block.closeFence].compactMap { $0 }
             ))
         }
+        if let scopedRanges {
+            spans.removeAll { span in
+                !scopedRanges.contains { intersects($0, span.range) }
+            }
+        }
         spans.sort {
             $0.range.location == $1.range.location
                 ? $0.range.length > $1.range.length
                 : $0.range.location < $1.range.location
         }
         return MarkdownSemanticProjection(spans: spans)
+    }
+
+    private static func intersects(_ lhs: NSRange, _ rhs: NSRange) -> Bool {
+        lhs.location < NSMaxRange(rhs) && NSMaxRange(lhs) > rhs.location
     }
 
     private static func collect(
