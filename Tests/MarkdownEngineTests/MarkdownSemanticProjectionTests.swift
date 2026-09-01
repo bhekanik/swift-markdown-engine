@@ -135,6 +135,29 @@ struct MarkdownSemanticProjectionTests {
         }
     }
 
+    @Test("scoped projection preserves reference and table context")
+    func scopedReferenceAndTableContext() {
+        for source in [
+            "*[foo*][ref]\n\n[ref]: /uri",
+            "[foo *bar][ref]*\n\n[ref]: /uri",
+            "[ref]: /uri\n\n*[foo*][ref]",
+            "| A | B |\n| --- | --- |\n| *inside | other* |",
+            "| A | B |\n| --- | --- |\n| `inside | other` |",
+        ] {
+            let selection = (source as NSString).range(of: "inside").location == NSNotFound
+                ? (source as NSString).range(of: "foo")
+                : (source as NSString).range(of: "inside")
+            let full = MarkdownSemanticProjection.make(markdown: source)
+            let scoped = MarkdownSemanticProjection.make(
+                markdown: source,
+                intersecting: selection
+            )
+            #expect(scoped.spans == full.spans.filter {
+                NSIntersectionRange($0.range, selection).length > 0
+            })
+        }
+    }
+
     @Test("container fences are block code and suppress inline semantics")
     func containerCodeRanges() {
         for source in [

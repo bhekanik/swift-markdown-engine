@@ -181,10 +181,11 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
         ))
         guard first == last,
               !startsWithIndentation(first, in: source),
+              !containsContextSensitiveInlineSyntax(first, in: source),
               !(BlockParser.frontmatterRange(in: source).map {
                   intersects(scope, $0)
               } ?? false),
-              !hasSemanticDelimiterOutsideLine(first, in: source) else { return nil }
+              !hasInlineContextOutsideLine(first, in: source) else { return nil }
         return first
     }
 
@@ -194,15 +195,30 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
         return first == 9 || first == 32
     }
 
-    private static func hasSemanticDelimiterOutsideLine(
+    private static func containsContextSensitiveInlineSyntax(
         _ line: NSRange,
         in source: NSString
     ) -> Bool {
-        containsSemanticDelimiterBefore(line.location, in: source)
-            || containsSemanticDelimiterAfter(NSMaxRange(line), in: source)
+        for index in line.location..<NSMaxRange(line) {
+            switch source.character(at: index) {
+            case 91, 93, 124:
+                return true
+            default:
+                continue
+            }
+        }
+        return false
     }
 
-    private static func containsSemanticDelimiterBefore(
+    private static func hasInlineContextOutsideLine(
+        _ line: NSRange,
+        in source: NSString
+    ) -> Bool {
+        containsInlineContextBefore(line.location, in: source)
+            || containsInlineContextAfter(NSMaxRange(line), in: source)
+    }
+
+    private static func containsInlineContextBefore(
         _ end: Int,
         in source: NSString
     ) -> Bool {
@@ -220,13 +236,13 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
                 lineHasContent = false
             } else if character != 9, character != 32 {
                 lineHasContent = true
-                if isSemanticDelimiter(character) { return true }
+                if isInlineContextCharacter(character) { return true }
             }
         }
         return false
     }
 
-    private static func containsSemanticDelimiterAfter(
+    private static func containsInlineContextAfter(
         _ start: Int,
         in source: NSString
     ) -> Bool {
@@ -245,7 +261,7 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
                 lineHasContent = false
             } else if character != 9, character != 32 {
                 lineHasContent = true
-                if isSemanticDelimiter(character) { return true }
+                if isInlineContextCharacter(character) { return true }
             }
         }
         return false
@@ -270,8 +286,10 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
         character == 10 || character == 13
     }
 
-    private static func isSemanticDelimiter(_ character: unichar) -> Bool {
-        character == 42 || character == 95 || character == 96 || character == 126
+    private static func isInlineContextCharacter(_ character: unichar) -> Bool {
+        character == 42 || character == 91 || character == 93
+            || character == 95 || character == 96 || character == 124
+            || character == 126
     }
 
     private static func containsFenceCandidate(in source: NSString) -> Bool {
