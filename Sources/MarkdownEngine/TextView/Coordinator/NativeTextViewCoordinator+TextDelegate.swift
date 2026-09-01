@@ -59,7 +59,8 @@ extension NativeTextViewCoordinator {
     /// content. Returns `true` if a stack was cleared.
     @discardableResult
     func invalidateUndoIfContentDiverged(for documentId: String, incomingText: String) -> Bool {
-        guard let snapshot = undoContentSnapshots[documentId], snapshot != incomingText else {
+        guard let snapshot = undoContentSnapshots[documentId],
+              !snapshot.hasSameUTF16(as: incomingText) else {
             return false
         }
         undoManagers[documentId]?.removeAllActions()

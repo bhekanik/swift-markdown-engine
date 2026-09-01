@@ -57,6 +57,23 @@ struct PerDocumentUndoTests {
         #expect(!m.canUndo) // diverged → dropped
     }
 
+    @Test(
+        "Canonically equivalent UTF-16 changes drop stale undo ranges",
+        arguments: [
+            ("😀 caf\u{00E9}\r\nsecond\n", "😀 cafe\u{0301}\r\nsecond\n"),
+            ("😀 cafe\u{0301}\r\nsecond\n", "😀 caf\u{00E9}\r\nsecond\n"),
+        ]
+    )
+    func canonicalUnicodeChangeInvalidatesUndo(snapshot: String, incoming: String) {
+        let c = makeCoordinator()
+        let m = populatedManager()
+        c.undoManagers["A"] = m
+        c.undoContentSnapshots["A"] = snapshot
+
+        #expect(c.invalidateUndoIfContentDiverged(for: "A", incomingText: incoming))
+        #expect(!m.canUndo)
+    }
+
     @Test("No snapshot (first visit) never clears")
     func noSnapshotNeverClears() {
         let c = makeCoordinator()
