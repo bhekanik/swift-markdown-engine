@@ -81,7 +81,11 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
     ) -> MarkdownSemanticProjection {
         let source = markdown as NSString
         var spans: [MarkdownSemanticSpan] = []
-        if let line = localLineScope(in: source, scopedRanges: scopedRanges) {
+        if let line = localLineScope(
+            in: source,
+            scopedRanges: scopedRanges,
+            hasBlockExtensions: !configuration.extensionRegistry.blockEntries.isEmpty
+        ) {
             let localSource = source.substring(with: line) as NSString
             var localSpans: [MarkdownSemanticSpan] = []
             for block in DocumentAST.parse(
@@ -160,9 +164,11 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
 
     private static func localLineScope(
         in source: NSString,
-        scopedRanges: [NSRange]?
+        scopedRanges: [NSRange]?,
+        hasBlockExtensions: Bool
     ) -> NSRange? {
-        guard let scopedRanges, scopedRanges.count == 1,
+        guard !hasBlockExtensions,
+              let scopedRanges, scopedRanges.count == 1,
               let scope = scopedRanges.first,
               source.length > 0 else { return nil }
         let first = source.lineRange(for: NSRange(

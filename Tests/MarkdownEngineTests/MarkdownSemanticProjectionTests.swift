@@ -91,6 +91,29 @@ struct MarkdownSemanticProjectionTests {
         }
     }
 
+    @Test("scoped projection preserves registered block extensions")
+    func scopedBlockExtensions() {
+        let configuration = MarkdownEditorConfiguration(extensions: [ContainerExtension()])
+        for source in [":::\ninside\n:::", ":::\ninside", ":::\r\ninside\r\n:::"] {
+            let selection = (source as NSString).range(of: "inside")
+            let full = MarkdownSemanticProjection.make(
+                markdown: source,
+                configuration: configuration
+            )
+            let scoped = MarkdownSemanticProjection.make(
+                markdown: source,
+                intersecting: selection,
+                configuration: configuration
+            )
+            #expect(scoped.spans == full.spans.filter {
+                NSIntersectionRange($0.range, selection).length > 0
+            })
+            #expect(scoped.spans.map(\.kind) == [
+                .blockExtension(identifier: ContainerExtension.identifier),
+            ])
+        }
+    }
+
     @Test("container fences are block code and suppress inline semantics")
     func containerCodeRanges() {
         for source in [
