@@ -59,7 +59,8 @@ extension NativeTextViewCoordinator {
     /// content. Returns `true` if a stack was cleared.
     @discardableResult
     func invalidateUndoIfContentDiverged(for documentId: String, incomingText: String) -> Bool {
-        guard let snapshot = undoContentSnapshots[documentId], snapshot != incomingText else {
+        guard let snapshot = undoContentSnapshots[documentId],
+              !snapshot.hasSameUTF16(as: incomingText) else {
             return false
         }
         undoManagers[documentId]?.removeAllActions()
@@ -123,7 +124,7 @@ extension NativeTextViewCoordinator {
             pendingEditCount = 0
             pendingEditedRange = nil
             guard !tv.hasMarkedText() else { return }
-            if tv.string != lastSyncedText {
+            if !tv.string.hasSameUTF16(as: lastSyncedText) {
                 scheduleBindingWriteBack(tv.string, from: tv)
             }
             if let bottomTextView = tv as? NativeTextView,
@@ -205,7 +206,7 @@ extension NativeTextViewCoordinator {
             parseGeneration &+= 1
         }
 
-        if !wtActive, tv.string != lastSyncedText {
+        if !wtActive, !tv.string.hasSameUTF16(as: lastSyncedText) {
             scheduleBindingWriteBack(tv.string, from: tv)
         }
 

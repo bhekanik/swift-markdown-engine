@@ -149,7 +149,7 @@ extension NativeTextViewCoordinator {
         textView.setSelectedRange(NSRange(location: 0, length: 0))
 
         let authoritative = textView.string
-        if let documentId, authoritative != text {
+        if let documentId, !authoritative.hasSameUTF16(as: text) {
             staleBindingAfterControllerTakeover = (
                 ObjectIdentifier(controller),
                 documentId,

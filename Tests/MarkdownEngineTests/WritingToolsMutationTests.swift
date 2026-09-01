@@ -318,6 +318,33 @@ struct WritingToolsMutationTests {
     }
 
     @available(macOS 15.0, *)
+    @Test(
+        "canonical Unicode changes publish exact Writing Tools mutations",
+        arguments: [
+            ("😀 caf\u{00E9}\r\nsecond\n", "😀 cafe\u{0301}\r\nsecond\n"),
+            ("😀 cafe\u{0301}\r\nsecond\n", "😀 caf\u{00E9}\r\nsecond\n"),
+        ]
+    )
+    func canonicalUnicodePublishesMutation(before: String, after: String) {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        var mutations: [MarkdownTextMutation] = []
+        let (textView, coordinator) = makeAttachedView(
+            text: before,
+            controller: controller,
+            onTextMutation: { mutations.append($0) }
+        )
+
+        coordinator.textViewWritingToolsWillBegin(textView)
+        textView.string = after
+        coordinator.textViewWritingToolsDidEnd(textView)
+
+        #expect(mutations.count == 1)
+        #expect((applying(mutations, to: before) as NSString).isEqual(to: after))
+        #expect((textView.string as NSString).isEqual(to: after))
+    }
+
+    @available(macOS 15.0, *)
     @Test("an external controller patch and Writing Tools publish each character change once")
     func controllerPatchDuringSessionIsNotRepublished() throws {
         _ = NSApplication.shared

@@ -354,7 +354,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
         pendingBindingWrite = nil
         bindingWritebackGeneration &+= 1
         lastSyncedText = pending.text
-        if bindingText != pending.text {
+        if !bindingText.hasSameUTF16(as: pending.text) {
             writeBindingBack(pending.text)
         }
         return pending.text
@@ -375,8 +375,8 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
               ),
               let replacementTextView = replacement.textView,
               replacement.documentId == pending.documentId,
-              replacement.text == pending.previousText,
-              replacementTextView.string == pending.previousText else {
+              replacement.text.hasSameUTF16(as: pending.previousText),
+              replacementTextView.string.hasSameUTF16(as: pending.previousText) else {
             invalidatePendingBindingWrite()
             return
         }
@@ -410,8 +410,9 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
               self.textView === textView,
               pending.controller == editorController.map(ObjectIdentifier.init),
               pending.documentId == documentId,
-              textView.string == pending.text,
-              bindingText == pending.previousText || bindingText == pending.text,
+              textView.string.hasSameUTF16(as: pending.text),
+              bindingText.hasSameUTF16(as: pending.previousText)
+                  || bindingText.hasSameUTF16(as: pending.text),
               !isDetachedFromDocument else {
             pendingBindingWrite = nil
             bindingWritebackGeneration &+= 1

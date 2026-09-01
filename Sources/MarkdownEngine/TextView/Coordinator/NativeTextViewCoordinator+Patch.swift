@@ -178,7 +178,7 @@ extension NativeTextViewCoordinator {
         if !publishesMutation {
             synchronizeWithoutBindingWrite(newText)
         }
-        guard currentDisplay != newText else { return .applied }
+        guard !currentDisplay.hasSameUTF16(as: newText) else { return .applied }
         var patch = MarkdownTextPatch.diff(from: currentDisplay, to: newText)
 
         // A change spanning nearly the whole document is a different document,
