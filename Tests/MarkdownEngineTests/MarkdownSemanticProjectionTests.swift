@@ -114,6 +114,27 @@ struct MarkdownSemanticProjectionTests {
         }
     }
 
+    @Test("scoped projection preserves multiline block context")
+    func scopedMultilineBlockContext() {
+        for separator in ["\n", "\r\n"] {
+            for source in [
+                "---\(separator)title: **inside**\(separator)---",
+                "- first\(separator)    **inside**",
+                "[^1]: first\(separator)    **inside**",
+            ] {
+                let selection = (source as NSString).range(of: "inside")
+                let full = MarkdownSemanticProjection.make(markdown: source)
+                let scoped = MarkdownSemanticProjection.make(
+                    markdown: source,
+                    intersecting: selection
+                )
+                #expect(scoped.spans == full.spans.filter {
+                    NSIntersectionRange($0.range, selection).length > 0
+                })
+            }
+        }
+    }
+
     @Test("container fences are block code and suppress inline semantics")
     func containerCodeRanges() {
         for source in [

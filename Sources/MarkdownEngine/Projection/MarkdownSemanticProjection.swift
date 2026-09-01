@@ -180,8 +180,18 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
             length: 0
         ))
         guard first == last,
+              !startsWithIndentation(first, in: source),
+              !(BlockParser.frontmatterRange(in: source).map {
+                  intersects(scope, $0)
+              } ?? false),
               !hasSemanticDelimiterOutsideLine(first, in: source) else { return nil }
         return first
+    }
+
+    private static func startsWithIndentation(_ line: NSRange, in source: NSString) -> Bool {
+        guard line.length > 0 else { return false }
+        let first = source.character(at: line.location)
+        return first == 9 || first == 32
     }
 
     private static func hasSemanticDelimiterOutsideLine(

@@ -73,6 +73,22 @@ enum BlockParser {
     /// change the block structure of identical text.
     private static var cachedFingerprint: String = ""
 
+    static func frontmatterRange(in source: NSString) -> NSRange? {
+        guard source.length > 0 else { return nil }
+        let opening = source.lineRange(for: NSRange(location: 0, length: 0))
+        guard lineBody(source.substring(with: opening)) == "---" else { return nil }
+        var cursor = NSMaxRange(opening)
+        while cursor < source.length {
+            let line = source.lineRange(for: NSRange(location: cursor, length: 0))
+            let body = lineBody(source.substring(with: line))
+            if body == "---" || body == "..." {
+                return NSRange(location: 0, length: NSMaxRange(line))
+            }
+            cursor = NSMaxRange(line)
+        }
+        return nil
+    }
+
     /// Splits `text` into gap-free tiling blocks; memoizes the last parse so both per-keystroke callers share one line-scan.
     /// Pass `utf16Chars` when the caller already extracted the buffer (must match `text`).
     static func parse(_ text: String, utf16Chars: [unichar]? = nil, registry: ExtensionRegistry = .empty) -> [Block] {
