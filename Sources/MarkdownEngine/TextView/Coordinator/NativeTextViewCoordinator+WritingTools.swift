@@ -82,7 +82,8 @@ extension NativeTextViewCoordinator {
         lastSyncedText = sourceText
         textView.setSelectedRange(acceptedSelection)
         scheduleBindingWriteBack(sourceText, from: textView)
-        if let sourceBeforeWritingTools, sourceBeforeWritingTools != sourceText {
+        if let sourceBeforeWritingTools,
+           !sourceBeforeWritingTools.hasSameUTF16(as: sourceText) {
             let mutation: MarkdownTextMutation
             if let startRevision,
                let editorController,

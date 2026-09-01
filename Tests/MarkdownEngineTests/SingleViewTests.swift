@@ -2391,6 +2391,54 @@ struct SingleViewTests {
         )])
     }
 
+    @Test(
+        "handoff protects authoritative UTF-16 from a canonically equivalent stale binding",
+        arguments: [
+            ("😀 caf\u{00E9}\r\nsecond\n", "😀 cafe\u{0301}\r\nsecond\n"),
+            ("😀 cafe\u{0301}\r\nsecond\n", "😀 caf\u{00E9}\r\nsecond\n"),
+        ]
+    )
+    func handoffProtectsCanonicalUnicode(
+        authoritative: String,
+        staleBinding: String
+    ) throws {
+        _ = NSApplication.shared
+        let controller = MarkdownEditorController()
+        let (outgoingView, _) = view(on: controller, text: authoritative)
+        let text = MutableTextBox(staleBinding)
+        let root = MutableAttachmentHost(
+            text: text,
+            controller: controller,
+            documentId: "doc",
+            onMutation: { _ in },
+            onAttachmentChange: { _ in }
+        )
+        let host = NSHostingView(rootView: root)
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        host.layoutSubtreeIfNeeded()
+        let replacementView = try #require(textViews(in: host).first)
+        let replacement = try #require(replacementView.delegate as? NativeTextViewCoordinator)
+
+        #expect(controller.textView === outgoingView)
+        #expect((replacementView.string as NSString).isEqual(to: staleBinding))
+
+        controller.detach(textView: outgoingView)
+
+        #expect(controller.textView === replacementView)
+        #expect((replacementView.string as NSString).isEqual(to: authoritative))
+        let captured = try #require(replacement.staleBindingAfterControllerTakeover)
+        #expect(captured.controller == ObjectIdentifier(controller))
+        #expect(captured.documentId == "doc")
+        #expect((captured.text as NSString).isEqual(to: staleBinding))
+
+        host.rootView = root
+        host.layoutSubtreeIfNeeded()
+
+        #expect((replacementView.string as NSString).isEqual(to: authoritative))
+        #expect((text.value as NSString).isEqual(to: staleBinding))
+        #expect(text.bindingWriteCount == 0)
+    }
+
     @Test("an occupied swap can free the target from its detached callback")
     func occupiedControllerSwapHandlesReentrantRelease() throws {
         _ = NSApplication.shared
