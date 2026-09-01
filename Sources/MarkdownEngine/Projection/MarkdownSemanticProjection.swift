@@ -110,7 +110,10 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
                 )
             }
         }
-        for block in MarkdownCodeBlockSyntax.fencedBlocks(in: source) where scopedRanges?.contains(where: {
+        let fencedBlocks = containsFenceCandidate(in: source)
+            ? MarkdownCodeBlockSyntax.fencedBlocks(in: source)
+            : []
+        for block in fencedBlocks where scopedRanges?.contains(where: {
                 intersects($0, block.range)
                     || ($0.location == source.length
                         && block.closeFence == nil
@@ -179,55 +182,85 @@ public struct MarkdownSemanticProjection: Sendable, Equatable {
         _ line: NSRange,
         in source: NSString
     ) -> Bool {
-        var cursor = line.location
-        while cursor > 0 {
-            var previousLocation = cursor - 1
-            while previousLocation > 0,
-                  (source.character(at: previousLocation) == 10
-                    || source.character(at: previousLocation) == 13) {
-                previousLocation -= 1
-            }
-            let previous = source.lineRange(for: NSRange(location: previousLocation, length: 0))
-            if isBlank(previous, in: source) { break }
-            if containsSemanticDelimiter(previous, in: source) { return true }
-            cursor = previous.location
-        }
-
-        cursor = NSMaxRange(line)
-        while cursor < source.length {
-            let next = source.lineRange(for: NSRange(location: cursor, length: 0))
-            if isBlank(next, in: source) { break }
-            if containsSemanticDelimiter(next, in: source) { return true }
-            cursor = NSMaxRange(next)
-        }
-        return false
+        containsSemanticDelimiterBefore(line.location, in: source)
+            || containsSemanticDelimiterAfter(NSMaxRange(line), in: source)
     }
 
-    private static func isBlank(_ range: NSRange, in source: NSString) -> Bool {
-        for index in range.location..<NSMaxRange(range) {
-            switch source.character(at: index) {
-            case 9, 10, 13, 32:
-                continue
-            default:
-                return false
-            }
-        }
-        return true
-    }
-
-    private static func containsSemanticDelimiter(
-        _ range: NSRange,
+    private static func containsSemanticDelimiterBefore(
+        _ end: Int,
         in source: NSString
     ) -> Bool {
-        for index in range.location..<NSMaxRange(range) {
-            switch source.character(at: index) {
-            case 42, 95, 96, 126:
-                return true
-            default:
-                continue
+        var cursor = end
+        consumeLineEndingBackward(in: source, cursor: &cursor)
+        var lineHasContent = false
+        while cursor > 0 {
+            cursor -= 1
+            let character = source.character(at: cursor)
+            if isLineEnding(character) {
+                if character == 10, cursor > 0, source.character(at: cursor - 1) == 13 {
+                    cursor -= 1
+                }
+                if !lineHasContent { return false }
+                lineHasContent = false
+            } else if character != 9, character != 32 {
+                lineHasContent = true
+                if isSemanticDelimiter(character) { return true }
             }
         }
         return false
+    }
+
+    private static func containsSemanticDelimiterAfter(
+        _ start: Int,
+        in source: NSString
+    ) -> Bool {
+        var cursor = start
+        var lineHasContent = false
+        while cursor < source.length {
+            let character = source.character(at: cursor)
+            cursor += 1
+            if isLineEnding(character) {
+                if character == 13,
+                   cursor < source.length,
+                   source.character(at: cursor) == 10 {
+                    cursor += 1
+                }
+                if !lineHasContent { return false }
+                lineHasContent = false
+            } else if character != 9, character != 32 {
+                lineHasContent = true
+                if isSemanticDelimiter(character) { return true }
+            }
+        }
+        return false
+    }
+
+    private static func consumeLineEndingBackward(
+        in source: NSString,
+        cursor: inout Int
+    ) {
+        guard cursor > 0 else { return }
+        if source.character(at: cursor - 1) == 10 {
+            cursor -= 1
+            if cursor > 0, source.character(at: cursor - 1) == 13 {
+                cursor -= 1
+            }
+        } else if source.character(at: cursor - 1) == 13 {
+            cursor -= 1
+        }
+    }
+
+    private static func isLineEnding(_ character: unichar) -> Bool {
+        character == 10 || character == 13
+    }
+
+    private static func isSemanticDelimiter(_ character: unichar) -> Bool {
+        character == 42 || character == 95 || character == 96 || character == 126
+    }
+
+    private static func containsFenceCandidate(in source: NSString) -> Bool {
+        source.range(of: "```").location != NSNotFound
+            || source.range(of: "~~~").location != NSNotFound
     }
 
     private static func shifted(

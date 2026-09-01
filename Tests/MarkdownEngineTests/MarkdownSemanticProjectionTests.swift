@@ -41,7 +41,11 @@ struct MarkdownSemanticProjectionTests {
             #expect(span.map { NSLocationInRange((source as NSString).range(of: "let value").location, $0.contentRange) } == true)
         }
 
-        for source in [">     let value", "-     let value", "1.     let value"] {
+        for source in [
+            ">     let value", "-     let value", "1.     let value",
+            ">   \tlet value", "-   \tlet value", "1.   \tlet value",
+            "> \t    let value", "- \t    let value", "1. \t    let value",
+        ] {
             let span = MarkdownSemanticProjection.make(
                 markdown: source,
                 intersecting: (source as NSString).range(of: "let value")
@@ -53,6 +57,37 @@ struct MarkdownSemanticProjectionTests {
                     $0.contentRange
                 )
             } == true)
+        }
+    }
+
+    @Test("scoped projection checks every selected container-indented code line")
+    func scopedMultilineContainerIndentedCode() {
+        for separator in ["\n", "\r\n"] {
+            for codeLine in [">     code", "-     code", "1.     code"] {
+                let source = "prose\(separator)\(codeLine)\(separator)tail"
+                let selection = (source as NSString).range(of: "prose\(separator)\(codeLine)")
+                let projection = MarkdownSemanticProjection.make(
+                    markdown: source,
+                    intersecting: selection
+                )
+                let code = projection.spans.first { $0.kind == .codeBlock }
+                #expect(code.map {
+                    NSLocationInRange((source as NSString).range(of: "code").location, $0.contentRange)
+                } == true)
+            }
+        }
+    }
+
+    @Test("local projection stops delimiter checks at LF and CRLF paragraph boundaries")
+    func scopedProjectionParagraphBoundary() {
+        for separator in ["\n\n", "\r\n\r\n"] {
+            let source = "**old**\(separator)plain\n**target**"
+            let target = (source as NSString).range(of: "target")
+            let projection = MarkdownSemanticProjection.make(
+                markdown: source,
+                intersecting: target
+            )
+            #expect(projection.spans.map(\.range) == [(source as NSString).range(of: "**target**")])
         }
     }
 

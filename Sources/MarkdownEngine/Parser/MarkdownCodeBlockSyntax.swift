@@ -86,10 +86,22 @@ enum MarkdownCodeBlockSyntax {
     ) -> [IndentedBlock] {
         var lines: [NSRange] = []
         if let scopedRanges {
+            var lineLocations: Set<Int> = []
             for scope in scopedRanges where source.length > 0 {
-                let location = min(scope.location, source.length - 1)
-                let line = source.lineRange(for: NSRange(location: location, length: 0))
-                if lines.last != line { lines.append(line) }
+                var cursor = min(scope.location, source.length - 1)
+                let finalLocation = min(
+                    max(scope.location, NSMaxRange(scope) - 1),
+                    source.length - 1
+                )
+                while cursor <= finalLocation {
+                    let line = source.lineRange(for: NSRange(location: cursor, length: 0))
+                    if lineLocations.insert(line.location).inserted {
+                        lines.append(line)
+                    }
+                    let next = NSMaxRange(line)
+                    guard next > cursor else { break }
+                    cursor = next
+                }
             }
         } else {
             var cursor = 0
@@ -389,12 +401,20 @@ enum MarkdownCodeBlockSyntax {
                source.character(at: cursor) == 32 || source.character(at: cursor) == 9 {
                 cursor += 1
             }
-            var indentation = 0
-            while cursor < end, indentation < 4, source.character(at: cursor) == 32 {
-                cursor += 1
-                indentation += 1
+            var indentationColumns = 0
+            while cursor < end, indentationColumns < 4 {
+                let character = source.character(at: cursor)
+                if character == 32 {
+                    indentationColumns += 1
+                    cursor += 1
+                } else if character == 9 {
+                    indentationColumns += 4 - (indentationColumns % 4)
+                    cursor += 1
+                } else {
+                    break
+                }
             }
-            if indentation == 4 {
+            if indentationColumns >= 4 {
                 guard cursor < end else { return nil }
                 return IndentedBlock(
                     range: lineRange,
