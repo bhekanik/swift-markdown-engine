@@ -88,7 +88,9 @@ final class NativeTextView: NSTextView {
         super.viewDidChangeEffectiveAppearance()
         // Forward appearance changes to the embedder's highlighter via its registered notification.
         if let name = configuration.services.syntaxHighlighter.appearanceDidChangeNotification {
-            NotificationCenter.default.post(name: name, object: self)
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                NotificationCenter.default.post(name: name, object: self)
+            }
         }
     }
 

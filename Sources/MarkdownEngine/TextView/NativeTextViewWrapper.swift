@@ -95,6 +95,9 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     /// embedders construct this themselves and pass it in; the wrapper does
     /// not read UserDefaults or know about app-specific colors/services.
     public var configuration: MarkdownEditorConfiguration
+    /// Stable identity for theme or styling-service changes that require a
+    /// full restyle even when the document and font are unchanged.
+    public var styleRevision: String?
     /// Handle on the live editor: external text patches
     /// (``MarkdownEditorController/applyPatch(range:replacement:actionName:registersUndo:)``)
     /// and the underlying `NSTextView` (find, a key layer, typewriter scroll).
@@ -163,6 +166,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     public init(
         text: Binding<String>,
         configuration: MarkdownEditorConfiguration = .default,
+        styleRevision: String? = nil,
         controller: MarkdownEditorController? = nil,
         fontName: String = "SF Pro",
         fontSize: CGFloat = 16,
@@ -182,6 +186,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
     ) {
         self._text = text
         self.configuration = configuration
+        self.styleRevision = styleRevision
         self.controller = controller
         self.fontName = fontName
         self.fontSize = fontSize
@@ -465,6 +470,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
                 && context.coordinator.requestedControllerWhileDetached == nil
         )
         let isNodeSwitch = context.coordinator.documentId != documentId
+        let styleChanged = context.coordinator.styleRevision != styleRevision
         // Attachment tracks occupancy, not whether the controller's document
         // storage is newer than the last Binding value it accepted.
         let targetControllerHadAuthoritativeText = controller?.textView !== textView
@@ -726,6 +732,15 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         }
         textView.isEditable = isEditable
         textView.isSelectable = true
+        if styleChanged {
+            context.coordinator.styleRevision = styleRevision
+            context.coordinator.configuration.theme = configuration.theme
+            context.coordinator.configuration.services = configuration.services
+            textView.configuration.theme = configuration.theme
+            textView.configuration.services = configuration.services
+            context.coordinator.didInitialFormatting = false
+            context.coordinator.resolvedCaretColor = nil
+        }
         // Keep the caret ink the selection handler resolved (an extension span
         // can invert it); a plain bodyText reset here stomps it on every pass.
         textView.insertionPointColor = isEditable
@@ -1021,6 +1036,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         // arm the restore here or a remount would always open at the top.
         coordinator.armScrollRestore(for: documentId)
         coordinator.configuration = configuration
+        coordinator.styleRevision = styleRevision
         coordinator.editorController = controller
         coordinator.onCodeBlockSelectionChange = onCodeBlockSelectionChange
         coordinator.userPrefersContinuousSpellChecking = configuration.spellChecking.continuousSpellChecking
