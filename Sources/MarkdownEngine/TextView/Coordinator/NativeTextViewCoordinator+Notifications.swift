@@ -74,6 +74,8 @@ extension NativeTextViewCoordinator {
             return
         }
         let fullRange = NSRange(location: 0, length: (tv.string as NSString).length)
-        restyleTextView(tv, paragraphCandidates: [fullRange])
+        tv.effectiveAppearance.performAsCurrentDrawingAppearance {
+            restyleTextView(tv, paragraphCandidates: [fullRange])
+        }
     }
 }

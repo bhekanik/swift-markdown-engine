@@ -95,6 +95,7 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     @Binding var text: String
     var fontName: String
     var fontSize: CGFloat
+    var styleRevision: String?
     var configuration: MarkdownEditorConfiguration = .default {
         didSet {
             subscribeToBusNotifications(replacing: oldValue.services.bus)
