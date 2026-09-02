@@ -70,9 +70,8 @@ extension NativeTextView {
         case .block, .hollow:
             let width = blockCaretWidth()
             if caretBarWidth == nil { caretBarWidth = indicator.frame.width }
-            guard abs(indicator.frame.width - width) >= 0.5 || indicator.alphaValue != 0.45 else { return }
             isApplyingCaretShift = true
-            indicator.frame.size.width = width
+            if abs(indicator.frame.width - width) >= 0.5 { indicator.frame.size.width = width }
             indicator.alphaValue = 0.45
             isApplyingCaretShift = false
         }
