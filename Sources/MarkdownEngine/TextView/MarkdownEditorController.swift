@@ -230,6 +230,16 @@ public final class MarkdownEditorController {
         return projection
     }
 
+    /// The clip view's origin y in document coordinates, or `0` while detached.
+    public var verticalScrollOffset: CGFloat {
+        textView?.enclosingScrollView?.contentView.bounds.origin.y ?? 0
+    }
+
+    /// The clip view's visible height, or `0` while detached.
+    public var visibleHeight: CGFloat {
+        textView?.enclosingScrollView?.contentView.bounds.height ?? 0
+    }
+
     /// Scroll a UTF-16 display range through TextKit 2 fragment geometry.
     ///
     /// This deliberately does not call `NSTextView.scrollRangeToVisible`'s
@@ -243,6 +253,18 @@ public final class MarkdownEditorController {
     ) -> Bool {
         guard let textView = textView as? NativeTextView else { return false }
         return textView.scroll(range: range, position: position)
+    }
+
+    /// Set the clip view's origin y through the same clamp, restore-cancel
+    /// and viewport-settle path as ``scroll(range:position:)``.
+    ///
+    /// A vim `scrollTo` used to write the clip view directly, which lost to
+    /// `ClampedScrollView`'s armed restore for about a second after open and
+    /// could park past the real content height. This is the safe entry.
+    @discardableResult
+    public func scroll(toVerticalOffset y: CGFloat) -> Bool {
+        guard let textView = textView as? NativeTextView else { return false }
+        return textView.scroll(toVerticalOffset: y)
     }
 
     // MARK: - Patching

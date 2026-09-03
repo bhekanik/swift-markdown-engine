@@ -49,14 +49,17 @@ extension NativeTextView {
         }
     }
 
-    /// Widen the indicator to the character cell for ``MarkdownCaretShape/block``.
+    /// Widen the indicator to the character cell for ``MarkdownCaretShape/block``
+    /// and outline it for ``MarkdownCaretShape/hollow``.
     ///
     /// AppKit rewrites the indicator frame on every selection change and lays
     /// the bar out itself, so this runs from the same two places the
     /// block-image workaround does (`updateInsertionPointStateAndRestartTimer`
     /// and the frame KVO) and re-applies the width each time. Half alpha keeps
     /// the character under the block readable, which terminal vim gets for
-    /// free by inverting the cell.
+    /// free by inverting the cell. The hollow caret keeps the character fully
+    /// readable: a much fainter fill plus a 1 pt outline, drawn by a sibling of
+    /// the indicator so the indicator's own alpha never fades the outline too.
     private func applyCaretShape(to indicator: NSView) {
         let shape = editorController?.caretShape ?? .bar
         switch shape {
@@ -67,14 +70,41 @@ extension NativeTextView {
             indicator.frame.size.width = barWidth
             indicator.alphaValue = 1
             isApplyingCaretShift = false
-        case .block, .hollow:
-            let width = blockCaretWidth()
-            if caretBarWidth == nil { caretBarWidth = indicator.frame.width }
-            isApplyingCaretShift = true
-            if abs(indicator.frame.width - width) >= 0.5 { indicator.frame.size.width = width }
+            removeHollowCaretBorder()
+        case .block:
+            widenIndicatorForBlockCaret(indicator)
             indicator.alphaValue = 0.45
-            isApplyingCaretShift = false
+            removeHollowCaretBorder()
+        case .hollow:
+            widenIndicatorForBlockCaret(indicator)
+            indicator.alphaValue = 0.12
+            installHollowCaretBorder(for: indicator)
         }
+    }
+
+    private func widenIndicatorForBlockCaret(_ indicator: NSView) {
+        let width = blockCaretWidth()
+        if caretBarWidth == nil { caretBarWidth = indicator.frame.width }
+        isApplyingCaretShift = true
+        if abs(indicator.frame.width - width) >= 0.5 { indicator.frame.size.width = width }
+        isApplyingCaretShift = false
+    }
+
+    /// The outline tracks the indicator frame because this whole policy reruns
+    /// from the indicator's frame KVO, which AppKit fires on every caret move.
+    private func installHollowCaretBorder(for indicator: NSView) {
+        let border = hollowCaretBorder ?? HollowCaretBorderView()
+        if border.superview == nil {
+            indicator.superview?.addSubview(border)
+        }
+        hollowCaretBorder = border
+        border.update(color: insertionPointColor ?? .textInsertionPointColor)
+        border.frame = indicator.frame
+    }
+
+    private func removeHollowCaretBorder() {
+        hollowCaretBorder?.removeFromSuperview()
+        hollowCaretBorder = nil
     }
 
     /// Advance of the grapheme cluster at the caret, or an em at a line end or
@@ -156,5 +186,30 @@ extension NativeTextView {
         isApplyingCaretShift = true
         indicator.frame.origin.y = desiredY
         isApplyingCaretShift = false
+    }
+}
+
+/// The 1 pt outline of a ``MarkdownCaretShape/hollow`` caret.
+///
+/// A sibling of the indicator rather than a subview or an indicator layer
+/// border: the indicator blinks by fading its own alpha, and anything
+/// composited inside it would fade with it — an outline that disappears
+/// half the time reads as a flickering block, not a hollow caret.
+final class HollowCaretBorderView: NSView {
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    /// The caret never receives clicks anyway; keep this out of the
+    /// text view's responder path entirely.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    func update(color: NSColor) {
+        layer?.borderColor = color.cgColor
+        layer?.borderWidth = 1
     }
 }
