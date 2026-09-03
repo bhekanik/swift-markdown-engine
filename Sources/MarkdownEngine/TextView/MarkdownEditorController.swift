@@ -184,6 +184,13 @@ public final class MarkdownEditorController {
         }
     }
 
+    /// The drawn block/hollow caret for ``caretShape``, so an embedder can
+    /// assert its frame and styling. Exists only while a non-bar shape is
+    /// active; `nil` in `.bar` and while the caret is hidden.
+    public var vimCaretOverlay: VimCaretOverlayView? {
+        textView?.subviews.first(where: { $0 is VimCaretOverlayView }) as? VimCaretOverlayView
+    }
+
     /// Fires once the controller is attached to (or detached from) a live
     /// editor, so an embedder can install a finder / key layer at the right
     /// moment instead of polling ``isAttached``.

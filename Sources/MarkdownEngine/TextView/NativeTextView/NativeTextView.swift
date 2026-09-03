@@ -51,12 +51,22 @@ final class NativeTextView: NSTextView {
     var caretIndicatorObservation: NSKeyValueObservation?
     weak var observedCaretIndicator: NSView?
     var isApplyingCaretShift: Bool = false
-    /// The indicator's own width, remembered while a block caret is applied so
-    /// switching back to `.bar` restores it.
-    var caretBarWidth: CGFloat?
-    /// Outline of a `.hollow` caret, installed and re-framed by the caret-shape
-    /// policy. Retained by the view hierarchy while installed.
-    weak var hollowCaretBorder: HollowCaretBorderView?
+
+    // MARK: Vim caret overlay state
+    /// The drawn block/hollow caret; retained by the view hierarchy, so weak
+    /// here (see `NativeTextView+VimCaretOverlay.swift`).
+    weak var vimCaretOverlay: VimCaretOverlayView?
+    /// Shape last applied by the overlay refresh. The `.bar` steady state
+    /// exits on it instead of rescanning subviews on every caret move.
+    var lastAppliedCaretShape: MarkdownCaretShape?
+    var caretOverlayHooksInstalled = false
+    /// Whether this view is the window's first responder, tracked by the
+    /// responder overrides rather than probed (the window lags the
+    /// transitions — see `becomeFirstResponder`).
+    var caretOverlayIsFirstResponder = false
+    /// Set by the observed window key transitions; never polled, so a test
+    /// harness window that was never key never dims.
+    var overlayWindowDidResignKey = false
 
     // MARK: Drag-select state
     var dragStartMouseScreenLoc: NSPoint?
@@ -109,6 +119,9 @@ final class NativeTextView: NSTextView {
                 NotificationCenter.default.post(name: name, object: self)
             }
         }
+        // The overlay takes its fill from the live insertion-point colour,
+        // which just changed.
+        refreshVimCaretOverlay()
     }
 
     // MARK: Keyboard input seam
