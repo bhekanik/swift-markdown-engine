@@ -2,9 +2,12 @@
 //  NativeTextView+CaretWorkarounds.swift
 //  MarkdownEngine
 //
-//  Created by Luca Chen on 16.03.26.
-//
 //  Caret-indicator workarounds: block-image hide/resize + trailing-`\n` Y-snap (FB22524198).
+//
+//  The block/hollow caret shape itself is no longer handled here: resizing
+//  AppKit's indicator was unverifiable in a real key window (see
+//  `NativeTextView+VimCaretOverlay.swift`), so the shape is drawn by a layer
+//  we own and the indicator is hidden while that layer is active.
 //
 
 import AppKit
@@ -13,119 +16,46 @@ extension NativeTextView {
     override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
         super.updateInsertionPointStateAndRestartTimer(restartFlag)
         applyBlockImageCaretPolicy()
+        refreshVimCaretOverlay()
         DispatchQueue.main.async { [weak self] in self?.fixPhantomTrailingCaret() }
     }
 
     func applyBlockImageCaretPolicy() {
-        let indicators = subviews.filter { type(of: $0) == NSTextInsertionIndicator.self }
-        guard !indicators.isEmpty else { return }
-
-        var hide = false
-        var resize = false
-        if let ts = textStorage {
-            let sel = selectedRange()
-            if sel.length != 0 || sel.location > ts.length {
-                hide = true
-            } else if sel.location < ts.length {
-                let paraRange = (ts.string as NSString).paragraphRange(
-                    for: NSRange(location: sel.location, length: 0)
-                )
-                ts.enumerateAttribute(.renderedImageIsBlock, in: paraRange, options: []) { value, range, stop in
-                    guard value as? Bool == true else { return }
-                    if ts.attribute(.renderedBlockOffsetY, at: range.location, effectiveRange: nil) != nil {
-                        resize = true
-                    } else {
-                        hide = true
-                        stop.pointee = true
-                    }
-                }
-            }
-        }
-
-        for sub in indicators {
+        let (hide, resize) = blockImageCaretDecision()
+        for sub in subviews where type(of: sub) == NSTextInsertionIndicator.self {
             if !hide && resize { resizeIndicatorToLayoutCaret(sub) }
-            if !hide { applyCaretShape(to: sub) }
             if sub.isHidden != hide { sub.isHidden = hide }
         }
     }
 
-    /// Widen the indicator to the character cell for ``MarkdownCaretShape/block``
-    /// and outline it for ``MarkdownCaretShape/hollow``.
-    ///
-    /// AppKit rewrites the indicator frame on every selection change and lays
-    /// the bar out itself, so this runs from the same two places the
-    /// block-image workaround does (`updateInsertionPointStateAndRestartTimer`
-    /// and the frame KVO) and re-applies the width each time. Half alpha keeps
-    /// the character under the block readable, which terminal vim gets for
-    /// free by inverting the cell. The hollow caret keeps the character fully
-    /// readable: a much fainter fill plus a 1 pt outline, drawn by a sibling of
-    /// the indicator so the indicator's own alpha never fades the outline too.
-    private func applyCaretShape(to indicator: NSView) {
-        let shape = editorController?.caretShape ?? .bar
-        switch shape {
-        case .bar:
-            guard let barWidth = caretBarWidth else { return }
-            caretBarWidth = nil
-            isApplyingCaretShift = true
-            indicator.frame.size.width = barWidth
-            indicator.alphaValue = 1
-            isApplyingCaretShift = false
-            removeHollowCaretBorder()
-        case .block:
-            widenIndicatorForBlockCaret(indicator)
-            indicator.alphaValue = 0.45
-            removeHollowCaretBorder()
-        case .hollow:
-            widenIndicatorForBlockCaret(indicator)
-            indicator.alphaValue = 0.12
-            installHollowCaretBorder(for: indicator)
+    /// When the caret sits in a paragraph with block images: hidden entirely
+    /// if any block image carries no layout caret (it would render through
+    /// the image), or snapped to the layout caret's height otherwise (the
+    /// indicator keeps the collapsed image's full height otherwise). Shared
+    /// with the vim caret overlay, which must vanish on the same hiding
+    /// cases even though it takes its frame from layout, not the indicator.
+    func blockImageCaretDecision() -> (hide: Bool, resize: Bool) {
+        guard let ts = textStorage else { return (false, false) }
+        let sel = selectedRange()
+        if sel.length != 0 || sel.location > ts.length {
+            return (true, false)
         }
-    }
-
-    private func widenIndicatorForBlockCaret(_ indicator: NSView) {
-        let width = blockCaretWidth()
-        if caretBarWidth == nil { caretBarWidth = indicator.frame.width }
-        isApplyingCaretShift = true
-        if abs(indicator.frame.width - width) >= 0.5 { indicator.frame.size.width = width }
-        isApplyingCaretShift = false
-    }
-
-    /// The outline tracks the indicator frame because this whole policy reruns
-    /// from the indicator's frame KVO, which AppKit fires on every caret move.
-    private func installHollowCaretBorder(for indicator: NSView) {
-        let border = hollowCaretBorder ?? HollowCaretBorderView()
-        if border.superview == nil {
-            indicator.superview?.addSubview(border)
-        }
-        hollowCaretBorder = border
-        border.update(color: insertionPointColor ?? .textInsertionPointColor)
-        border.frame = indicator.frame
-    }
-
-    private func removeHollowCaretBorder() {
-        hollowCaretBorder?.removeFromSuperview()
-        hollowCaretBorder = nil
-    }
-
-    /// Advance of the grapheme cluster at the caret, or an em at a line end or
-    /// the end of the document, where there is no glyph to cover.
-    private func blockCaretWidth() -> CGFloat {
-        let text = string as NSString
-        let caret = selectedRange().location
-        if caret < text.length,
-           let tlm = textLayoutManager,
-           let tcs = tlm.textContentManager as? NSTextContentStorage,
-           let start = tcs.location(tcs.documentRange.location, offsetBy: caret),
-           let end = tcs.location(start, offsetBy: text.rangeOfComposedCharacterSequence(at: caret).length),
-           let range = NSTextRange(location: start, end: end) {
-            var width: CGFloat = 0
-            tlm.enumerateTextSegments(in: range, type: .standard, options: [.rangeNotRequired]) { _, frame, _, _ in
-                width = frame.width
-                return false
+        guard sel.location < ts.length else { return (false, false) }
+        let paraRange = (ts.string as NSString).paragraphRange(
+            for: NSRange(location: sel.location, length: 0)
+        )
+        var hide = false
+        var resize = false
+        ts.enumerateAttribute(.renderedImageIsBlock, in: paraRange, options: []) { value, range, stop in
+            guard value as? Bool == true else { return }
+            if ts.attribute(.renderedBlockOffsetY, at: range.location, effectiveRange: nil) != nil {
+                resize = true
+            } else {
+                hide = true
+                stop.pointee = true
             }
-            if width >= 1 { return width }
         }
-        return ("m" as NSString).size(withAttributes: [.font: font ?? baseFont]).width
+        return (hide, resize)
     }
 
     /// After collapsed→visible, the indicator frame stays at image height; snap it to the layout manager's actual caret rect.
@@ -156,6 +86,7 @@ extension NativeTextView {
                 MainActor.assumeIsolated {
                     guard let self, !self.isApplyingCaretShift else { return }
                     self.applyBlockImageCaretPolicy()
+                    self.refreshVimCaretOverlay()
                     self.fixPhantomTrailingCaret()
                 }
             }
@@ -186,30 +117,5 @@ extension NativeTextView {
         isApplyingCaretShift = true
         indicator.frame.origin.y = desiredY
         isApplyingCaretShift = false
-    }
-}
-
-/// The 1 pt outline of a ``MarkdownCaretShape/hollow`` caret.
-///
-/// A sibling of the indicator rather than a subview or an indicator layer
-/// border: the indicator blinks by fading its own alpha, and anything
-/// composited inside it would fade with it — an outline that disappears
-/// half the time reads as a flickering block, not a hollow caret.
-final class HollowCaretBorderView: NSView {
-    init() {
-        super.init(frame: .zero)
-        wantsLayer = true
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { nil }
-
-    /// The caret never receives clicks anyway; keep this out of the
-    /// text view's responder path entirely.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    func update(color: NSColor) {
-        layer?.borderColor = color.cgColor
-        layer?.borderWidth = 1
     }
 }
