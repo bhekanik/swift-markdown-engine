@@ -377,6 +377,34 @@ extension NativeTextView {
         return true
     }
 
+    /// Place the clip view at `y`, clamped to the real content range.
+    ///
+    /// Same settle loop as ``scroll(range:position:)``: off-screen TextKit 2
+    /// fragments start estimated, so one layout pass can change the height
+    /// the clamp uses. A requested offset that already matches is left
+    /// alone — including any restore still armed for it.
+    @discardableResult
+    func scroll(toVerticalOffset y: CGFloat) -> Bool {
+        guard configuration.heightBehavior == .scrolls,
+              let scrollView = enclosingScrollView,
+              let textLayoutManager,
+              textLayoutManager.textContentManager != nil else { return false }
+
+        let clipView = scrollView.contentView
+        if abs(clipView.bounds.origin.y - y) < 0.5 { return true }
+
+        for _ in 0..<3 {
+            let previousY = clipView.bounds.origin.y
+            (scrollView as? ClampedScrollView)?.cancelPendingScrollRestore()
+            clipView.scroll(to: NSPoint(x: clipView.bounds.origin.x, y: y))
+            scrollView.reflectScrolledClipView(clipView)
+            (scrollView as? ClampedScrollView)?.clampToInsets()
+            textLayoutManager.textViewportLayoutController.layoutViewport()
+            if abs(clipView.bounds.origin.y - previousY) < 0.5 { return true }
+        }
+        return true
+    }
+
     /// The target range in text-view coordinates. TextKit reports segment
     /// geometry in text-container coordinates, so the text-container origin
     /// carries `textContainerInset` into the result.
