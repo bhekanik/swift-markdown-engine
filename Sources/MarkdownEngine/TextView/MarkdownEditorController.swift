@@ -44,6 +44,44 @@ public protocol MarkdownTextFinderActionResponder: AnyObject {
     func textFinderClientStringWillChange()
 }
 
+/// First refusal on keyboard input to an attached editor.
+///
+/// A modal key layer (vim) has to see a physical key before `NSTextView`
+/// interprets it, and has to see the text the input system produced before
+/// the view inserts it. The engine owns the concrete `NSTextView`, so the
+/// seam is here, mirroring ``MarkdownTextFinderActionResponder``: install on
+/// the controller, reached from the view through its delegate, nil in every
+/// editor that has no modal layer.
+///
+/// Composition wins over the interceptor. While the view has marked text the
+/// input method owns Space, Return, Escape and Backspace (candidate selection,
+/// commit, cancel, delete a jamo), so none of these is consulted until the
+/// composition is over. A key that reached vim mid-composition left the
+/// storage holding text the vim mirror never saw.
+@MainActor
+public protocol MarkdownKeyInterceptor: AnyObject {
+    /// A physical key, before `interpretKeyEvents`. Return `true` to consume it.
+    func interceptKeyDown(_ event: NSEvent, in textView: NSTextView) -> Bool
+    /// Text the input system produced: a typed character, a dead-key result,
+    /// an emoji, an IME commit. Return `true` to consume it; the view then does
+    /// not insert it.
+    func interceptInsertText(_ text: String, replacementRange: NSRange, in textView: NSTextView) -> Bool
+    /// An `NSResponder` action selector (`insertNewline:`, `deleteBackward:`,
+    /// `moveLeft:` …) the input system produced. Return `true` to consume it.
+    func interceptCommand(_ selector: Selector, in textView: NSTextView) -> Bool
+}
+
+/// How the insertion point is drawn. `NSTextView` only knows the bar; a modal
+/// layer's normal mode sits *on* a character and wants the whole cell.
+public enum MarkdownCaretShape: Sendable, Equatable {
+    /// The standard insertion bar.
+    case bar
+    /// A translucent block covering the character at the caret.
+    case block
+    /// Drawn as `block` for now; distinct styling is the embedder's call later.
+    case hollow
+}
+
 /// Handle on one live ``NativeTextViewWrapper``.
 ///
 /// Construct one, hold it (`@State` / a store), and pass it to the wrapper.
@@ -131,6 +169,20 @@ public final class MarkdownEditorController {
     /// Weak because the embedder owns both this controller and the responder.
     /// With no responder installed, `NSTextView` keeps its normal behavior.
     public weak var textFinderActionResponder: (any MarkdownTextFinderActionResponder)?
+
+    /// Optional first refusal on keyboard input. See ``MarkdownKeyInterceptor``.
+    ///
+    /// Weak for the same reason as the finder responder. With none installed
+    /// the text view's input path is untouched.
+    public weak var keyInterceptor: (any MarkdownKeyInterceptor)?
+
+    /// How the attached view draws its insertion point. Redrawn on change.
+    public var caretShape: MarkdownCaretShape = .bar {
+        didSet {
+            guard caretShape != oldValue else { return }
+            textView?.updateInsertionPointStateAndRestartTimer(true)
+        }
+    }
 
     /// Fires once the controller is attached to (or detached from) a live
     /// editor, so an embedder can install a finder / key layer at the right

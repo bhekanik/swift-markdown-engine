@@ -51,6 +51,9 @@ final class NativeTextView: NSTextView {
     var caretIndicatorObservation: NSKeyValueObservation?
     weak var observedCaretIndicator: NSView?
     var isApplyingCaretShift: Bool = false
+    /// The indicator's own width, remembered while a block caret is applied so
+    /// switching back to `.bar` restores it.
+    var caretBarWidth: CGFloat?
 
     // MARK: Drag-select state
     var dragStartMouseScreenLoc: NSPoint?
@@ -73,9 +76,20 @@ final class NativeTextView: NSTextView {
     var accessibilityProjectionRegistryFingerprint = ""
 
     private var textFinderActionResponder: (any MarkdownTextFinderActionResponder)? {
-        (delegate as? NativeTextViewCoordinator)?
-            .editorController?
-            .textFinderActionResponder
+        editorController?.textFinderActionResponder
+    }
+
+    var editorController: MarkdownEditorController? {
+        (delegate as? NativeTextViewCoordinator)?.editorController
+    }
+
+    /// The modal key layer, if the embedder installed one. Composition wins:
+    /// while marked text is up the input method owns every key, so this is
+    /// `nil` for the duration and the three overrides below fall straight
+    /// through to `super`.
+    private var activeKeyInterceptor: (any MarkdownKeyInterceptor)? {
+        guard !hasMarkedText() else { return nil }
+        return editorController?.keyInterceptor
     }
 
     // MARK: Wide-table overlay state
@@ -92,6 +106,33 @@ final class NativeTextView: NSTextView {
                 NotificationCenter.default.post(name: name, object: self)
             }
         }
+    }
+
+    // MARK: Keyboard input seam
+
+    override func keyDown(with event: NSEvent) {
+        if let interceptor = activeKeyInterceptor,
+           interceptor.interceptKeyDown(event, in: self) {
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        if let interceptor = activeKeyInterceptor,
+           let text = (string as? NSAttributedString)?.string ?? (string as? String),
+           interceptor.interceptInsertText(text, replacementRange: replacementRange, in: self) {
+            return
+        }
+        super.insertText(string, replacementRange: replacementRange)
+    }
+
+    override func doCommand(by selector: Selector) {
+        if let interceptor = activeKeyInterceptor,
+           interceptor.interceptCommand(selector, in: self) {
+            return
+        }
+        super.doCommand(by: selector)
     }
 
     // setMarkedText skips textDidChange, so restyle the marked paragraph to apply markdown attrs.

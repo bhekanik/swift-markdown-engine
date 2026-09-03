@@ -44,8 +44,58 @@ extension NativeTextView {
 
         for sub in indicators {
             if !hide && resize { resizeIndicatorToLayoutCaret(sub) }
+            if !hide { applyCaretShape(to: sub) }
             if sub.isHidden != hide { sub.isHidden = hide }
         }
+    }
+
+    /// Widen the indicator to the character cell for ``MarkdownCaretShape/block``.
+    ///
+    /// AppKit rewrites the indicator frame on every selection change and lays
+    /// the bar out itself, so this runs from the same two places the
+    /// block-image workaround does (`updateInsertionPointStateAndRestartTimer`
+    /// and the frame KVO) and re-applies the width each time. Half alpha keeps
+    /// the character under the block readable, which terminal vim gets for
+    /// free by inverting the cell.
+    private func applyCaretShape(to indicator: NSView) {
+        let shape = editorController?.caretShape ?? .bar
+        switch shape {
+        case .bar:
+            guard let barWidth = caretBarWidth else { return }
+            caretBarWidth = nil
+            isApplyingCaretShift = true
+            indicator.frame.size.width = barWidth
+            indicator.alphaValue = 1
+            isApplyingCaretShift = false
+        case .block, .hollow:
+            let width = blockCaretWidth()
+            if caretBarWidth == nil { caretBarWidth = indicator.frame.width }
+            isApplyingCaretShift = true
+            if abs(indicator.frame.width - width) >= 0.5 { indicator.frame.size.width = width }
+            indicator.alphaValue = 0.45
+            isApplyingCaretShift = false
+        }
+    }
+
+    /// Advance of the grapheme cluster at the caret, or an em at a line end or
+    /// the end of the document, where there is no glyph to cover.
+    private func blockCaretWidth() -> CGFloat {
+        let text = string as NSString
+        let caret = selectedRange().location
+        if caret < text.length,
+           let tlm = textLayoutManager,
+           let tcs = tlm.textContentManager as? NSTextContentStorage,
+           let start = tcs.location(tcs.documentRange.location, offsetBy: caret),
+           let end = tcs.location(start, offsetBy: text.rangeOfComposedCharacterSequence(at: caret).length),
+           let range = NSTextRange(location: start, end: end) {
+            var width: CGFloat = 0
+            tlm.enumerateTextSegments(in: range, type: .standard, options: [.rangeNotRequired]) { _, frame, _, _ in
+                width = frame.width
+                return false
+            }
+            if width >= 1 { return width }
+        }
+        return ("m" as NSString).size(withAttributes: [.font: font ?? baseFont]).width
     }
 
     /// After collapsed→visible, the indicator frame stays at image height; snap it to the layout manager's actual caret rect.

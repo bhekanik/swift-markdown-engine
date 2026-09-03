@@ -59,7 +59,10 @@ extension NativeTextViewCoordinator {
         guard accepted else {
             return false
         }
-        guard textView.string == sourceText,
+        // UTF-16 equality, not `==`: Swift's canonical-equivalence compare of
+        // two bridged strings walks the whole document (3.9 ms at 75k units,
+        // measured), and document sync is UTF-16-exact anyway.
+        guard textView.string.hasSameUTF16(as: sourceText),
               editorController === sourceController,
               sourceController?.documentRevision == sourceRevision else {
             discardPendingTextProposal()
@@ -99,7 +102,7 @@ extension NativeTextViewCoordinator {
                 return false
             }
             discardPendingTextProposal()
-            guard textView.string == sourceText,
+            guard textView.string.hasSameUTF16(as: sourceText),
                   editorController === sourceController,
                   sourceController?.documentRevision == sourceRevision else {
                 return false
@@ -122,10 +125,11 @@ extension NativeTextViewCoordinator {
                 documentLength: resultingLength
             ))
         }
-        let combinedPatch = MarkdownTextPatch.diff(
-            from: sourceText,
-            to: resultingText as String
-        )
+        // One patch is already the whole change; the scalar-walking diff is
+        // only for collapsing several into one run.
+        let combinedPatch = descending.count == 1
+            ? descending[0]
+            : MarkdownTextPatch.diff(from: sourceText, to: resultingText as String)
         beginDeferringPublicMutations()
         beginSuppressingTextFinderInvalidation()
         beginMutationTransaction()
@@ -196,7 +200,7 @@ extension NativeTextViewCoordinator {
             to: textView,
             publishesMutation: publishesMutation
         )
-        let wasInvalidated = textView.string != currentDisplay
+        let wasInvalidated = !textView.string.hasSameUTF16(as: currentDisplay)
             || editorController !== controllerBeforeEdit
             || controllerBeforeEdit?.documentRevision != revisionBeforeEdit
         if !applied, wasInvalidated,
