@@ -266,6 +266,43 @@ struct KeyInterceptorTests {
         #expect(indicator.alphaValue == 1)
     }
 
+    @Test("a hollow caret draws an outline the block caret does not have")
+    func hollowCaretIsDistinctFromBlock() throws {
+        let mounted = try mount("mmm\n")
+        defer { mounted.window.contentView = nil }
+        mounted.textView.setSelectedRange(NSRange(location: 0, length: 0))
+        let indicator = plantIndicator(in: mounted.textView)
+        mounted.textView.updateInsertionPointStateAndRestartTimer(true)
+        let cell = ("m" as NSString).size(withAttributes: [.font: mounted.textView.font!]).width
+
+        mounted.controller.caretShape = .block
+        #expect(abs(indicator.frame.width - cell) < 1)
+        let blockAlpha = indicator.alphaValue
+        #expect(blockAlpha < 1)
+        #expect(mounted.textView.hollowCaretBorder == nil, "block has no outline")
+
+        mounted.controller.caretShape = .hollow
+        #expect(abs(indicator.frame.width - cell) < 1, "hollow still covers the cell")
+        #expect(
+            indicator.alphaValue < blockAlpha / 2,
+            "hollow fill \(indicator.alphaValue) must be much fainter than block \(blockAlpha)")
+        let border = try #require(mounted.textView.hollowCaretBorder)
+        #expect(border.superview === indicator.superview, "the outline is a sibling of the indicator")
+        #expect(border.frame == indicator.frame)
+        #expect(border.layer?.borderWidth == 1)
+
+        // A caret move rewrites the indicator frame; the outline must track it.
+        indicator.frame = NSRect(x: 12, y: 0, width: 1, height: 17)
+        mounted.textView.setSelectedRange(NSRange(location: 1, length: 0))
+        mounted.textView.applyBlockImageCaretPolicy()
+        #expect(border.frame == indicator.frame)
+
+        mounted.controller.caretShape = .bar
+        #expect(indicator.alphaValue == 1)
+        #expect(abs(indicator.frame.width - 1) < 0.5, "bar width restored")
+        #expect(mounted.textView.hollowCaretBorder == nil, "bar drops the outline")
+    }
+
     @Test("a block caret at a line end or the end of the document is an em wide")
     func blockCaretFallsBackToEm() throws {
         let mounted = try mount("ab\n")

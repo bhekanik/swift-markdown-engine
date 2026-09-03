@@ -54,6 +54,9 @@ final class NativeTextView: NSTextView {
     /// The indicator's own width, remembered while a block caret is applied so
     /// switching back to `.bar` restores it.
     var caretBarWidth: CGFloat?
+    /// Outline of a `.hollow` caret, installed and re-framed by the caret-shape
+    /// policy. Retained by the view hierarchy while installed.
+    weak var hollowCaretBorder: HollowCaretBorderView?
 
     // MARK: Drag-select state
     var dragStartMouseScreenLoc: NSPoint?
