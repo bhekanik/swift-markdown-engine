@@ -204,6 +204,17 @@ public final class MarkdownEditorController {
         }
     }
 
+    /// Wavy underlines drawn under source ranges, display only: an embedder's
+    /// prose lint, say. Drawn by the layout fragments after their text, because
+    /// TextKit 2 does not reliably draw underline rendering attributes
+    /// (FB9692714).
+    public var underlines: [MarkdownUnderline] = [] {
+        didSet {
+            guard underlines != oldValue else { return }
+            redrawVisibleText()
+        }
+    }
+
     private func redrawVisibleText() {
         guard let textView else { return }
         textView.setNeedsDisplay(textView.visibleRect)

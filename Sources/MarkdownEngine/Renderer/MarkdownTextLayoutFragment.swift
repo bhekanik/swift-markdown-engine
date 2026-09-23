@@ -136,6 +136,9 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         // 3. Normal text
         super.draw(at: point, in: context)
 
+        // 3b. Embedder underlines (prose lint), over the text
+        drawUnderlines(at: point, in: context)
+
         // 4. Task checkboxes (on top of hidden [ ]/[x] markers)
         drawTaskCheckboxes(at: point, in: context)
 
@@ -191,6 +194,63 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     private static var taskCheckboxKey: NSAttributedString.Key {
         MainActor.assumeIsolated { .taskCheckbox }
+    }
+
+    /// The controller's underlines that fall in this fragment, as fragment-local
+    /// ranges and colours.
+    private var underlineSnapshot: [(range: NSRange, color: CGColor)] {
+        guard let fragRange = fragmentNSRange else { return [] }
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        let marks: [(NSRange, CGColor)] = MainActor.assumeIsolated {
+            (textView?.editorController?.underlines ?? []).map { ($0.range, $0.color.cgColor) }
+        }
+        return marks.compactMap { range, color in
+            let overlap = NSIntersectionRange(range, fragRange)
+            guard overlap.length > 0 else { return nil }
+            return (NSRange(location: overlap.location - fragRange.location, length: overlap.length), color)
+        }
+    }
+
+    /// A wave like the web's `text-decoration-style: wavy`, 1 pt, under each
+    /// line's share of every underline.
+    private func drawUnderlines(at point: CGPoint, in context: CGContext) {
+        let marks = underlineSnapshot
+        guard !marks.isEmpty else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setLineWidth(1)
+        for (range, color) in marks {
+            context.setStrokeColor(color)
+            for line in textLineFragments {
+                let lineRange = line.characterRange
+                let part = NSIntersectionRange(range, lineRange)
+                guard part.length > 0 else { continue }
+                let bounds = line.typographicBounds
+                let start = line.locationForCharacter(at: part.location)
+                let end = line.locationForCharacter(at: NSMaxRange(part))
+                // Inside the descent: the fragment's drawing is clipped to its
+                // line box, and growing that box would need a relayout.
+                let descent = bounds.height - start.y
+                let y = point.y + bounds.origin.y + start.y + min(1.5, max(descent - 1.5, 0.5))
+                let x0 = point.x + bounds.origin.x + start.x
+                let x1 = point.x + bounds.origin.x + end.x
+                guard x1 > x0 else { continue }
+                let path = CGMutablePath()
+                path.move(to: CGPoint(x: x0, y: y))
+                var x = x0
+                var up = true
+                while x < x1 {
+                    let next = min(x + 2, x1)
+                    path.addQuadCurve(
+                        to: CGPoint(x: next, y: y),
+                        control: CGPoint(x: (x + next) / 2, y: y + (up ? -1 : 1)))
+                    x = next
+                    up.toggle()
+                }
+                context.addPath(path)
+                context.strokePath()
+            }
+        }
     }
 
     /// Returns the drawing position for a character at `docIndex` (document-level NSRange location).
