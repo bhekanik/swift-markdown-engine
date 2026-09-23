@@ -79,6 +79,35 @@ struct FocusDimTests {
         #expect(try alphas(textView).values.allSatisfy { $0 == nil })
     }
 
+    @Test("underlines draw ink under their words and nowhere else")
+    func underlinesDraw() throws {
+        let (window, controller, textView) = try mount()
+        defer { window.contentView = nil }
+        let word = (text as NSString).range(of: "paragraph here")
+        let rects = try #require(textView.firstRect(forCharacterRange: word, actualRange: nil) as NSRect?)
+        let local = textView.convert(window.convertFromScreen(rects), from: nil)
+        let strip = NSRect(x: local.minX, y: local.minY, width: local.width, height: local.height + 4)
+        func ink() -> Int {
+            textView.displayIfNeeded()
+            guard let rep = textView.bitmapImageRepForCachingDisplay(in: strip) else { return 0 }
+            textView.cacheDisplay(in: strip, to: rep)
+            var count = 0
+            for y in 0..<rep.pixelsHigh {
+                for x in 0..<rep.pixelsWide {
+                    if let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB), c.redComponent - c.greenComponent > 0.3 {
+                        count += 1
+                    }
+                }
+            }
+            return count
+        }
+        #expect(ink() == 0)
+        controller.underlines = [MarkdownUnderline(range: word, color: .systemRed)]
+        #expect(ink() > 10, "a red wave under the words")
+        controller.underlines = []
+        #expect(ink() == 0)
+    }
+
     @Test("an empty lit range lights the fragment it sits in")
     func emptyRangeLightsItsFragment() throws {
         let (window, controller, textView) = try mount()
