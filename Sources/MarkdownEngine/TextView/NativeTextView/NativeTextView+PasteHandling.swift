@@ -50,7 +50,8 @@ extension NativeTextView {
         // inline-only HTML (VS Code's per-line <div>s, a casually copied bold
         // word or link) would otherwise lose code indentation or gain stray
         // markdown, so we let it fall through to the clean plain-text flavor.
-        if let html = pasteboard.string(forType: .html),
+        if configuration.convertsPastedHTML,
+           let html = pasteboard.string(forType: .html),
            Self.htmlHasBlockStructure(html),
            let markdown = HTMLToMarkdownConverter.markdown(fromHTML: html) {
             let sanitized = sanitizePastedText(markdown)

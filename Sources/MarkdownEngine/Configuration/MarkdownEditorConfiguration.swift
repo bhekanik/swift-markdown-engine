@@ -83,6 +83,11 @@ public struct MarkdownEditorConfiguration: Sendable {
     /// so this stays the embedder's explicit decision rather than something the
     /// engine infers from a color it happens to see.
     public var cursorFollowsSpanInk: Bool
+    /// Turn a pasted HTML flavor (browsers, Word, Notion) into Markdown in
+    /// rich mode. Off pastes the plain-text flavor instead, for an embedder
+    /// whose writer wants the words without the structure. Raw mode never
+    /// converts either way: it pastes the source as given.
+    public var convertsPastedHTML: Bool
     public init(
         theme: MarkdownEditorTheme = .default,
         services: MarkdownEditorServices = .default,
@@ -107,7 +112,8 @@ public struct MarkdownEditorConfiguration: Sendable {
         heightBehavior: HeightBehavior = .scrolls,
         rawSourceMode: Bool = false,
         extensions: [any MarkdownExtension] = [],
-        cursorFollowsSpanInk: Bool = false
+        cursorFollowsSpanInk: Bool = false,
+        convertsPastedHTML: Bool = true
     ) {
         self.theme = theme
         self.services = services
@@ -133,6 +139,7 @@ public struct MarkdownEditorConfiguration: Sendable {
         self.rawSourceMode = rawSourceMode
         self.extensions = extensions
         self.cursorFollowsSpanInk = cursorFollowsSpanInk
+        self.convertsPastedHTML = convertsPastedHTML
     }
 
     public static let `default` = MarkdownEditorConfiguration()
