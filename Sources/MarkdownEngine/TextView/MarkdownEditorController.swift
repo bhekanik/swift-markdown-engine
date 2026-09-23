@@ -184,6 +184,31 @@ public final class MarkdownEditorController {
         }
     }
 
+    /// Focus dimming: the source range kept at full strength. Every layout
+    /// fragment that does not touch it draws at ``focusDimAlpha``, text and
+    /// everything the fragment paints itself (bullets, checkboxes, images,
+    /// rules) alike. `nil` dims nothing. Display only: layout, the string and
+    /// the selection are untouched.
+    public var focusLitRange: NSRange? {
+        didSet {
+            guard focusLitRange != oldValue else { return }
+            redrawVisibleText()
+        }
+    }
+
+    /// Opacity of the dimmed fragments.
+    public var focusDimAlpha: CGFloat = 0.35 {
+        didSet {
+            guard focusDimAlpha != oldValue, focusLitRange != nil else { return }
+            redrawVisibleText()
+        }
+    }
+
+    private func redrawVisibleText() {
+        guard let textView else { return }
+        textView.setNeedsDisplay(textView.visibleRect)
+    }
+
     /// The drawn block/hollow caret for ``caretShape``, so an embedder can
     /// assert its frame and styling. Exists only while a non-bar shape is
     /// active; `nil` in `.bar` and while the caret is hidden.
