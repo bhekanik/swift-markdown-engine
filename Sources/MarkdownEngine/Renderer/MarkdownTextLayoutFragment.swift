@@ -117,6 +117,13 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     nonisolated override func draw(at point: CGPoint, in context: CGContext) {
         MainActor.preconditionIsolated("TextKit 2 draws fragments on the main thread")
+        // Focus dimming wraps the whole fragment, so what it paints itself
+        // (bullets, checkboxes, images) dims with its text.
+        if let alpha = focusDimAlpha {
+            context.saveGState()
+            context.setAlpha(alpha)
+        }
+        defer { if focusDimAlpha != nil { context.restoreGState() } }
         // 1. Code-block backgrounds (behind text)
         drawCodeBlockBackground(at: point, in: context)
 
@@ -147,6 +154,24 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
     // MARK: - Helpers
 
     /// NSRange in the document for this fragment's content.
+    /// The alpha to draw this fragment at: the controller's dim alpha when
+    /// focus dimming is on and this fragment lies wholly outside the lit
+    /// range, otherwise `nil`.
+    var focusDimAlpha: CGFloat? {
+        guard let range = fragmentNSRange else { return nil }
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        let focus: (lit: NSRange, alpha: CGFloat)? = MainActor.assumeIsolated {
+            guard let controller = textView?.editorController, let lit = controller.focusLitRange else { return nil }
+            return (lit, controller.focusDimAlpha)
+        }
+        guard let focus else { return nil }
+        // A fragment holding an empty lit range (the caret on an empty line)
+        // is lit too, hence the inclusive end.
+        let touches = NSIntersectionRange(range, focus.lit).length > 0
+            || (focus.lit.location >= range.location && focus.lit.location <= NSMaxRange(range))
+        return touches ? nil : focus.alpha
+    }
+
     private var fragmentNSRange: NSRange? {
         guard let tcs = textLayoutManager?.textContentManager as? NSTextContentStorage else { return nil }
         let start = tcs.offset(from: tcs.documentRange.location, to: rangeInElement.location)
