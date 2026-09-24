@@ -105,6 +105,16 @@ final class NativeTextView: NSTextView {
         return editorController?.keyInterceptor
     }
 
+    // MARK: String snapshot state
+    /// See `NativeTextView+StringSnapshot.swift`.
+    var characterGeneration: TextStorageCharacterGeneration?
+    var stringSnapshot: TextViewStringSnapshot?
+
+    override var string: String {
+        get { snapshotString() }
+        set { super.string = newValue }
+    }
+
     // MARK: Wide-table overlay state
     /// Live NSScrollView per wide table; keyed by source-ID hash.
     var wideTableOverlays: [Int: WideTableOverlay] = [:]
