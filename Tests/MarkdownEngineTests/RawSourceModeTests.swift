@@ -62,4 +62,26 @@ struct RawSourceModeTests {
         #expect(runs.allSatisfy { $0.link == nil })
         #expect(runs.allSatisfy { $0.font?.pointSize == 16 })
     }
+
+    /// Raw mode skips the restyle after an edit, so inserted text must arrive
+    /// with the base attributes. A patch into an empty document (vim's first
+    /// keystroke in a new document, or after `ggdG`) has no neighbour to
+    /// inherit them from; it must not land unstyled.
+    @Test("a programmatic patch into an empty raw document carries the base attributes", arguments: ["", "old"])
+    func patchIntoEmptyDocumentIsStyled(_ initial: String) {
+        let c = makeCoordinator(raw: true)
+        let tv = NativeTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        tv.delegate = c
+        c.textView = tv
+        c.rebuildTextStorageAndStyle(tv, from: initial)
+
+        let replaceAll = NSRange(location: 0, length: (initial as NSString).length)
+        #expect(c.applyProgrammaticPatch(MarkdownTextPatch(range: replaceAll, replacement: "hello"), to: tv))
+
+        #expect(tv.string == "hello")
+        let runs = attributeRuns(tv)
+        #expect(!runs.isEmpty)
+        #expect(runs.allSatisfy { $0.font?.pointSize == 16 }, "\(runs.map { $0.font as Any })")
+        #expect(tv.textStorage?.attribute(.foregroundColor, at: 0, effectiveRange: nil) != nil)
+    }
 }

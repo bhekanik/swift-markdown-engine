@@ -196,6 +196,17 @@ extension NativeTextView {
         return min(readingColumnWidth, clipWidth)
     }
 
+    /// The wrap width follows the column: the container is fixed at
+    /// `readingWidth` (it does not track the view), so a narrower column would
+    /// otherwise lay text out wider than the view and cut it off.
+    func syncTextContainerWidth(toColumn column: CGFloat) {
+        guard configuration.readingWidth != nil, let container = textContainer else { return }
+        let wrap = max(column - configuration.textInsets.horizontal * 2, 0)
+        if abs(container.size.width - wrap) > 0.5 {
+            container.size = NSSize(width: wrap, height: container.size.height)
+        }
+    }
+
     func applyManagedFrameSize(width: CGFloat) {
         let contentHeight = max(ceil(baseContentHeight + activeBottomOverscroll), 0)
         let height: CGFloat
@@ -211,6 +222,7 @@ extension NativeTextView {
         let targetWidth = configuration.readingWidth != nil
             ? readingColumnWidth(forClipWidth: enclosingScrollView?.contentView.bounds.width ?? 0)
             : max(width, 0)
+        if configuration.readingWidth != nil { syncTextContainerWidth(toColumn: targetWidth) }
         let targetSize = NSSize(
             width: targetWidth,
             height: height
@@ -243,6 +255,7 @@ extension NativeTextView {
             container.frame = f
         }
         let column = readingColumnWidth(forClipWidth: clipWidth)
+        syncTextContainerWidth(toColumn: column)
         if abs(frame.size.width - column) > 0.5 {
             setFrameSize(NSSize(width: column, height: frame.size.height))
         }

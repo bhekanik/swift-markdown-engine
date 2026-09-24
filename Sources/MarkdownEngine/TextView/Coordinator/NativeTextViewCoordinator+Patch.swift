@@ -71,7 +71,23 @@ extension NativeTextViewCoordinator {
         if !publishesMutation {
             pendingTextMutation = nil
         }
-        textView.textStorage?.replaceCharacters(in: patch.range, with: patch.replacement)
+        if let storage = textView.textStorage, storage.length == 0 {
+            // Nothing to inherit attributes from: a bare string would land with
+            // none (default 12 pt black), and raw mode never restyles after an
+            // edit. Give it the base attributes the rebuild would.
+            let (baseFont, paragraph) = TextStylingService.makeBaseFontAndStyle(
+                fontName: fontName,
+                fontSize: fontSize,
+                layoutBridge: layoutBridge,
+                configuration: configuration
+            )
+            let attributes = TextStylingService.makeBaseAttributes(
+                font: baseFont, paragraphStyle: paragraph, configuration: configuration)
+            storage.replaceCharacters(
+                in: patch.range, with: NSAttributedString(string: patch.replacement, attributes: attributes))
+        } else {
+            textView.textStorage?.replaceCharacters(in: patch.range, with: patch.replacement)
+        }
         textView.didChangeText()
         if registersUndo, let actionName { undoManager?.setActionName(actionName) }
         textView.breakUndoCoalescing()

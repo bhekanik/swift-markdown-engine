@@ -113,6 +113,12 @@ struct NativeTextViewContainerTests {
         // And narrowing again re-wraps.
         stack.container.setFrameSize(NSSize(width: 350, height: stack.container.frame.height))
         #expect(stack.textView.frame.width == 350)
+        // The wrap width follows the column, or text lays out wider than the view.
+        let insets = stack.textView.configuration.textInsets.horizontal * 2
+        #expect(stack.textView.textContainer?.size.width == 350 - insets)
+
+        stack.container.setFrameSize(NSSize(width: 1000, height: stack.container.frame.height))
+        #expect(stack.textView.textContainer?.size.width == stack.textView.readingColumnWidth - insets)
     }
 
     @Test func managedFrameSizeHonoursANarrowClip() {
