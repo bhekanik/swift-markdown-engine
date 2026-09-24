@@ -97,4 +97,28 @@ struct NativeTextViewContainerTests {
         #expect(stack.textView.frame.width == 1000)
         #expect(stack.textView.frame.origin.x == 0)
     }
+
+    @Test func narrowClipWrapsTheColumnInsteadOfClippingIt() {
+        let stack = makeStack(viewport: NSSize(width: 300, height: 800), readingWidth: 400)
+        stack.textView.baseContentHeight = 500
+        stack.textView.centerReadingColumn(forClipWidth: 300)
+        #expect(stack.textView.frame.width == 300, "the column takes the width there is")
+        #expect(stack.textView.frame.origin.x == 0)
+
+        // Widening past the reading width restores the fixed, centred column.
+        stack.container.setFrameSize(NSSize(width: 1000, height: stack.container.frame.height))
+        #expect(stack.textView.frame.width == stack.textView.readingColumnWidth)
+        #expect(stack.textView.frame.origin.x == floor((1000 - stack.textView.readingColumnWidth) / 2))
+
+        // And narrowing again re-wraps.
+        stack.container.setFrameSize(NSSize(width: 350, height: stack.container.frame.height))
+        #expect(stack.textView.frame.width == 350)
+    }
+
+    @Test func managedFrameSizeHonoursANarrowClip() {
+        let stack = makeStack(viewport: NSSize(width: 300, height: 800), readingWidth: 400)
+        stack.textView.baseContentHeight = 500
+        stack.textView.applyManagedFrameSize(width: 300)
+        #expect(stack.textView.frame.width == 300)
+    }
 }

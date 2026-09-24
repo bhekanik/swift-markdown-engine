@@ -187,6 +187,15 @@ extension NativeTextView {
         (configuration.readingWidth ?? 0) + configuration.textInsets.horizontal * 2
     }
 
+    /// The column in a clip `clipWidth` wide. `readingWidth` is a maximum: in a
+    /// narrower view (a split pane, a small window) the column takes the width
+    /// there is, so lines wrap instead of running past the clip's edge. A
+    /// clip not laid out yet (0) gets the full column.
+    func readingColumnWidth(forClipWidth clipWidth: CGFloat) -> CGFloat {
+        guard clipWidth > 0 else { return readingColumnWidth }
+        return min(readingColumnWidth, clipWidth)
+    }
+
     func applyManagedFrameSize(width: CGFloat) {
         let contentHeight = max(ceil(baseContentHeight + activeBottomOverscroll), 0)
         let height: CGFloat
@@ -199,7 +208,9 @@ extension NativeTextView {
         }
         // Reading column: the column keeps its fixed wrap width; its centered X is
         // owned by `centerReadingColumn` (driven from the container's restack).
-        let targetWidth = configuration.readingWidth != nil ? readingColumnWidth : max(width, 0)
+        let targetWidth = configuration.readingWidth != nil
+            ? readingColumnWidth(forClipWidth: enclosingScrollView?.contentView.bounds.width ?? 0)
+            : max(width, 0)
         let targetSize = NSSize(
             width: targetWidth,
             height: height
@@ -220,7 +231,9 @@ extension NativeTextView {
         }
     }
 
-    /// Re-center the column by moving its X (not resizing it) so it stays smooth during live resize.
+    /// Re-center the column by moving its X so it stays smooth during live
+    /// resize. The column resizes (and re-wraps) only while the clip is
+    /// narrower than the reading width.
     func centerReadingColumn(forClipWidth clipWidth: CGFloat) {
         guard configuration.readingWidth != nil,
               let container = superview as? NativeTextViewContainer else { return }
@@ -229,7 +242,11 @@ extension NativeTextView {
             f.size.width = max(clipWidth, 0)
             container.frame = f
         }
-        let originX = floor(max(0, (clipWidth - readingColumnWidth) / 2))
+        let column = readingColumnWidth(forClipWidth: clipWidth)
+        if abs(frame.size.width - column) > 0.5 {
+            setFrameSize(NSSize(width: column, height: frame.size.height))
+        }
+        let originX = floor(max(0, (clipWidth - column) / 2))
         let delta = originX - frame.origin.x
         if abs(delta) > 0.5 {
             setFrameOrigin(NSPoint(x: originX, y: frame.origin.y))
