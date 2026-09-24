@@ -92,4 +92,51 @@ struct StringSnapshotTests {
         #expect(read.character(at: 1) == 0xD83D)
         #expect(read.isEqual(to: live(view)))
     }
+
+    @Test("reads through an NSTextView reference share the copy too")
+    func objcDispatchSharesStorage() {
+        // Engine and embedder code holds `NSTextView`, so reads go through
+        // Objective-C dispatch and back through bridging; the win depends on
+        // that round trip keeping the native storage.
+        let view: NSTextView = makeView(Self.longText)
+        let first = view.string
+        let second = view.string
+        let shared = first.utf8.withContiguousStorageIfAvailable { a in
+            second.utf8.withContiguousStorageIfAvailable { b in a.baseAddress == b.baseAddress }
+        }
+        #expect(shared == .some(.some(true)))
+        view.insertText("!", replacementRange: NSRange(location: 0, length: 0))
+        #expect(view.string == "!" + Self.longText)
+    }
+}
+
+@Suite("UTF-16 equality")
+struct HasSameUTF16Tests {
+    @Test("native strings compare by bytes")
+    func native() {
+        let a = String(repeating: "déjà vu ", count: 8)
+        let b = String(repeating: "déjà vu ", count: 8)
+        #expect(a.hasSameUTF16(as: b))
+        #expect(!a.hasSameUTF16(as: String(repeating: "deja vu ", count: 8) + "  "))
+        // Same length, one byte apart.
+        #expect(!a.hasSameUTF16(as: String(a.dropLast()) + "!"))
+        #expect("".hasSameUTF16(as: ""))
+        #expect(!"".hasSameUTF16(as: "x"))
+    }
+
+    @Test("canonically equivalent but different code units are not equal")
+    func canonicalEquivalence() {
+        // é precomposed vs e + combining acute: Swift's == says equal, UTF-16 does not.
+        #expect("caf\u{E9}" == "cafe\u{301}")
+        #expect(!"caf\u{E9}".hasSameUTF16(as: "cafe\u{301}"))
+    }
+
+    @Test("a bridged string falls back to NSString comparison")
+    func bridged() {
+        let units: [unichar] = [0x61, 0xD83D, 0x62]
+        let lone = NSString(characters: units, length: 3) as String
+        let same = NSString(characters: units, length: 3) as String
+        #expect(lone.hasSameUTF16(as: same))
+        #expect(!lone.hasSameUTF16(as: "a\u{FFFD}b"))
+    }
 }
