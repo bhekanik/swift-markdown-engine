@@ -126,8 +126,13 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
 
     // MARK: - Drawing
 
+    /// Tests only: called at the start of every fragment draw, to count
+    /// which fragments a change actually redrew.
+    nonisolated(unsafe) static var drawObserver: ((MarkdownTextLayoutFragment) -> Void)?
+
     nonisolated override func draw(at point: CGPoint, in context: CGContext) {
         MainActor.preconditionIsolated("TextKit 2 draws fragments on the main thread")
+        Self.drawObserver?(self)
         // Focus dimming wraps the whole fragment, so what it paints itself
         // (bullets, checkboxes, images) dims with its text.
         if let alpha = focusDimAlpha {

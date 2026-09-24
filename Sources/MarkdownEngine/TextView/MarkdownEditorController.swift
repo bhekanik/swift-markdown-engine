@@ -233,6 +233,17 @@ public final class MarkdownEditorController {
     private func redrawVisibleText() {
         guard let textView else { return }
         textView.setNeedsDisplay(textView.visibleRect)
+        // TextKit 2 draws each layout fragment in a subview of its own, and a
+        // redraw of the text view leaves those as they were until something
+        // else touches them. After a raw-mode edit (no restyle follows) that
+        // was over a second: focus blur and dimming lagged the caret.
+        func mark(_ view: NSView) {
+            for subview in view.subviews {
+                subview.needsDisplay = true
+                mark(subview)
+            }
+        }
+        mark(textView)
     }
 
     /// The drawn block/hollow caret for ``caretShape``, so an embedder can

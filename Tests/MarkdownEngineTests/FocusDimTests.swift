@@ -118,4 +118,30 @@ struct FocusDimTests {
         #expect(result["Third paragraph."] == .some(nil))
         #expect(result["Second paragraph here."] == .some(0.35))
     }
+
+    /// TextKit 2 draws each fragment in its own subview. A focus change has to
+    /// mark those, not just the text view, or they keep the old dim (or blur)
+    /// until something else redraws them: over a second after a raw-mode edit.
+    @Test("a focus change redraws every visible fragment", arguments: ["dim", "blur"])
+    func focusChangeRedrawsFragments(_ kind: String) throws {
+        let (window, controller, textView) = try mount()
+        defer {
+            MarkdownTextLayoutFragment.drawObserver = nil
+            window.close()
+        }
+        textView.textLayoutManager?.textViewportLayoutController.layoutViewport()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        var drawn = 0
+        MarkdownTextLayoutFragment.drawObserver = { _ in drawn += 1 }
+        if kind == "dim" {
+            controller.focusLitRange = NSRange(location: 0, length: 5)
+        } else {
+            controller.focusBlur = MarkdownFocusBlur(lineMinY: 0, lineMaxY: 20, maximumRadius: 6, rampDistance: 120)
+        }
+        // Layer-backed views draw at the next Core Animation commit.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        // Three paragraphs with text, two blank lines between them.
+        #expect(drawn >= 3, "fragments redrawn: \(drawn)")
+    }
 }
