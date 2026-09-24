@@ -342,7 +342,8 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
         let container = NativeTextViewContainer(frame: NSRect(origin: .zero, size: vpSize))
         container.autoresizingMask = [.width]
         container.textView = textView
-        let initialWidth = configuration.readingWidth != nil ? textView.readingColumnWidth : vpSize.width
+        let initialWidth = configuration.readingWidth != nil
+            ? textView.readingColumnWidth(forClipWidth: vpSize.width) : vpSize.width
         textView.frame = NSRect(x: 0, y: 0, width: initialWidth, height: textView.frame.height)
         container.addSubview(textView)
         scrollView.documentView = container
