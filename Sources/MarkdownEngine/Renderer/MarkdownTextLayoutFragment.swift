@@ -110,13 +110,29 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
         for fill in blockBackgroundFills(at: .zero) {
             bounds = bounds.union(fill.rect)
         }
+        // Focus blur's line band runs the column's width plus a margin, wider
+        // than a short line's own text.
+        if focusBlurSnapshot?.lineHighlight != nil {
+            let containerWidth = textLayoutManager?.textContainer?.size.width ?? bounds.width
+            bounds = bounds.union(CGRect(
+                x: -layoutFragmentFrame.origin.x - Self.highlightMargin, y: bounds.minY - 4,
+                width: containerWidth + Self.highlightMargin * 2, height: bounds.height + 8))
+        }
         return bounds
     }
 
+    /// How far the focus line's band reaches past the text column each side.
+    nonisolated static let highlightMargin: CGFloat = 14
+
     // MARK: - Drawing
+
+    /// Tests only: called at the start of every fragment draw, to count
+    /// which fragments a change actually redrew.
+    nonisolated(unsafe) static var drawObserver: ((MarkdownTextLayoutFragment) -> Void)?
 
     nonisolated override func draw(at point: CGPoint, in context: CGContext) {
         MainActor.preconditionIsolated("TextKit 2 draws fragments on the main thread")
+        Self.drawObserver?(self)
         // Focus dimming wraps the whole fragment, so what it paints itself
         // (bullets, checkboxes, images) dims with its text.
         if let alpha = focusDimAlpha {
@@ -124,35 +140,126 @@ nonisolated final class MarkdownTextLayoutFragment: NSTextLayoutFragment {
             context.setAlpha(alpha)
         }
         defer { if focusDimAlpha != nil { context.restoreGState() } }
-        // 1. Code-block backgrounds (behind text)
-        drawCodeBlockBackground(at: point, in: context)
+        // Focus blur: what this fragment paints besides its text blurs with
+        // its nearest line, so a far paragraph's bullets and bars go soft too.
+        let blur = focusBlurSnapshot
+        let lineRadii = blur.map { blur in
+            textLineFragments.map { line in
+                blur.radius(
+                    lineMinY: layoutFragmentFrame.minY + line.typographicBounds.minY,
+                    lineMaxY: layoutFragmentFrame.minY + line.typographicBounds.maxY)
+            }
+        }
+        let decorationRadius = lineRadii?.min() ?? 0
+        let surface = renderingSurfaceBounds.offsetBy(dx: point.x, dy: point.y)
+        let blurDecorations = decorationRadius > 0.25 && drawsDecorations
+        func decorations(_ body: (CGContext) -> Void) {
+            if blurDecorations {
+                FocusBlurRenderer.draw(in: surface, radius: decorationRadius, context: context, body)
+            } else {
+                body(context)
+            }
+        }
 
-        // 1b. Line-box fills (`==highlight==` and friends), behind text
-        drawBlockBackgrounds(at: point, in: context)
+        decorations { context in
+            // 1. Code-block backgrounds (behind text)
+            drawCodeBlockBackground(at: point, in: context)
 
-        // 2. Rendered images (behind text — hidden markers are invisible anyway)
-        drawRenderedImages(at: point, in: context)
+            // 1b. Line-box fills (`==highlight==` and friends), behind text
+            drawBlockBackgrounds(at: point, in: context)
+
+            // 2. Rendered images (behind text — hidden markers are invisible anyway)
+            drawRenderedImages(at: point, in: context)
+        }
 
         // 3. Normal text
-        super.draw(at: point, in: context)
+        if let lineRadii {
+            drawText(at: point, in: context, lineRadii: lineRadii)
+        } else {
+            super.draw(at: point, in: context)
+        }
 
-        // 3b. Embedder underlines (prose lint), over the text
-        drawUnderlines(at: point, in: context)
+        decorations { context in
+            // 3b. Embedder underlines (prose lint), over the text
+            drawUnderlines(at: point, in: context)
 
-        // 4. Task checkboxes (on top of hidden [ ]/[x] markers)
-        drawTaskCheckboxes(at: point, in: context)
+            // 4. Task checkboxes (on top of hidden [ ]/[x] markers)
+            drawTaskCheckboxes(at: point, in: context)
 
-        // 4b. Bullet glyphs (on top of hidden -/*/+ markers)
-        drawBulletMarkers(at: point, in: context)
-        drawOrderedMarkers(at: point, in: context)
+            // 4b. Bullet glyphs (on top of hidden -/*/+ markers)
+            drawBulletMarkers(at: point, in: context)
+            drawOrderedMarkers(at: point, in: context)
 
-        // 5. Thematic breaks (full-width line, painted last so it doesn't
-        //    fight with anything that already drew at the line's center)
-        drawThematicBreaks(at: point, in: context)
+            // 5. Thematic breaks (full-width line, painted last so it doesn't
+            //    fight with anything that already drew at the line's center)
+            drawThematicBreaks(at: point, in: context)
 
-        // 6. Blockquote bars (left gutter, behind nothing — text is indented)
-        drawBlockquoteBars(at: point, in: context)
+            // 6. Blockquote bars (left gutter, behind nothing — text is indented)
+            drawBlockquoteBars(at: point, in: context)
+        }
     }
+
+    /// The text under focus blur: sharp lines through TextKit's own drawing,
+    /// clipped to them so their rendering attributes (find highlights,
+    /// spelling) still draw; blurred lines one at a time at their radius.
+    private func drawText(at point: CGPoint, in context: CGContext, lineRadii: [CGFloat]) {
+        let surface = renderingSurfaceBounds.offsetBy(dx: point.x, dy: point.y)
+        var sharp: [CGRect] = []
+        for (line, radius) in zip(textLineFragments, lineRadii) where radius <= 0.25 {
+            let bounds = line.typographicBounds
+            sharp.append(CGRect(x: surface.minX, y: point.y + bounds.minY, width: surface.width, height: bounds.height))
+        }
+        // The sharp line's band, across the text column, behind its text.
+        if let highlight = focusBlurSnapshot?.lineHighlight, let line = sharp.first {
+            let containerWidth = textLayoutManager?.textContainer?.size.width ?? surface.width
+            let left = point.x - layoutFragmentFrame.minX
+            let margin = Self.highlightMargin
+            let band = CGRect(x: left - margin, y: line.minY - 3, width: containerWidth + margin * 2, height: line.height + 6)
+            context.saveGState()
+            context.setFillColor(highlight)
+            context.addPath(CGPath(roundedRect: band, cornerWidth: 7, cornerHeight: 7, transform: nil))
+            context.fillPath()
+            context.restoreGState()
+        }
+        if !sharp.isEmpty {
+            context.saveGState()
+            context.clip(to: sharp)
+            super.draw(at: point, in: context)
+            context.restoreGState()
+        }
+        for (line, radius) in zip(textLineFragments, lineRadii) where radius > 0.25 {
+            let bounds = line.typographicBounds
+            let origin = CGPoint(x: point.x + bounds.minX, y: point.y + bounds.minY)
+            let rect = CGRect(origin: origin, size: bounds.size)
+            let content = line.attributedString.attributedSubstring(from: line.characterRange)
+            FocusBlurRenderer.draw(in: rect, radius: radius, context: context, cacheKey: content) { bitmap in
+                line.draw(at: origin, in: bitmap)
+            }
+        }
+    }
+
+    /// Whether this fragment paints anything besides its text, so a blurred
+    /// paragraph of plain prose skips the offscreen pass for decorations.
+    private var drawsDecorations: Bool {
+        if hasCodeBlockBackground || hasThematicBreak || hasBlockquote || hasTaskCheckbox { return true }
+        if !blockImageRects(at: .zero).isEmpty || !blockBackgroundFills(at: .zero).isEmpty { return true }
+        if !underlineSnapshot.isEmpty { return true }
+        guard let storage = textStorage, let range = fragmentNSRange, range.length > 0 else { return false }
+        var marked = false
+        for key in [NSAttributedString.Key.bulletMarker, .orderedMarker] where !marked {
+            storage.enumerateAttribute(key, in: range, options: []) { value, _, stop in
+                if value != nil { marked = true; stop.pointee = true }
+            }
+        }
+        return marked
+    }
+
+    /// The controller's focus blur, read once per draw.
+    private var focusBlurSnapshot: MarkdownFocusBlur? {
+        let textView = textLayoutManager?.textContainer?.textView as? NativeTextView
+        return MainActor.assumeIsolated { textView?.editorController?.focusBlur }
+    }
+
 
     // MARK: - Helpers
 

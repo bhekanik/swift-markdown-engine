@@ -96,6 +96,11 @@ public final class NativeTextViewCoordinator: NSObject, NSTextViewDelegate {
     var fontName: String
     var fontSize: CGFloat
     var styleRevision: String?
+    /// The text inset the configuration last asked for. The view's inset is
+    /// set from the configuration only when this changes, so an embedder that
+    /// adjusts it (typewriter scrolling adds room to centre the first and last
+    /// lines) keeps its adjustment across update passes.
+    var appliedTextInset: NSSize?
     var configuration: MarkdownEditorConfiguration = .default {
         didSet {
             subscribeToBusNotifications(replacing: oldValue.services.bus)

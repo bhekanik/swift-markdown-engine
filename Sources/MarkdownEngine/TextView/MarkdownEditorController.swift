@@ -196,6 +196,21 @@ public final class MarkdownEditorController {
         }
     }
 
+    /// Focus blur: every line but the caret's drawn blurred, more with
+    /// distance. The embedder keeps the caret line's span current; `nil` draws
+    /// everything sharp.
+    public var focusBlur: MarkdownFocusBlur? {
+        didSet {
+            guard focusBlur != oldValue else { return }
+            // The line band widens every fragment's drawing surface, which
+            // TextKit reads when it lays out the viewport, not when it redraws.
+            if (focusBlur?.lineHighlight == nil) != (oldValue?.lineHighlight == nil) {
+                textView?.textLayoutManager?.textViewportLayoutController.layoutViewport()
+            }
+            redrawVisibleText()
+        }
+    }
+
     /// Opacity of the dimmed fragments.
     public var focusDimAlpha: CGFloat = 0.35 {
         didSet {
@@ -218,6 +233,17 @@ public final class MarkdownEditorController {
     private func redrawVisibleText() {
         guard let textView else { return }
         textView.setNeedsDisplay(textView.visibleRect)
+        // TextKit 2 draws each layout fragment in a subview of its own, and a
+        // redraw of the text view leaves those as they were until something
+        // else touches them. After a raw-mode edit (no restyle follows) that
+        // was over a second: focus blur and dimming lagged the caret.
+        func mark(_ view: NSView) {
+            for subview in view.subviews {
+                subview.needsDisplay = true
+                mark(subview)
+            }
+        }
+        mark(textView)
     }
 
     /// The drawn block/hollow caret for ``caretShape``, so an embedder can
