@@ -196,6 +196,21 @@ public final class MarkdownEditorController {
         }
     }
 
+    /// Focus blur: every line but the caret's drawn blurred, more with
+    /// distance. The embedder keeps the caret line's span current; `nil` draws
+    /// everything sharp.
+    public var focusBlur: MarkdownFocusBlur? {
+        didSet {
+            guard focusBlur != oldValue else { return }
+            // The line band widens every fragment's drawing surface, which
+            // TextKit reads when it lays out the viewport, not when it redraws.
+            if (focusBlur?.lineHighlight == nil) != (oldValue?.lineHighlight == nil) {
+                textView?.textLayoutManager?.textViewportLayoutController.layoutViewport()
+            }
+            redrawVisibleText()
+        }
+    }
+
     /// Opacity of the dimmed fragments.
     public var focusDimAlpha: CGFloat = 0.35 {
         didSet {

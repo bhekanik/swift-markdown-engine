@@ -287,6 +287,7 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             width: configuration.textInsets.horizontal,
             height: configuration.textInsets.vertical
         )
+        context.coordinator.appliedTextInset = textView.textContainerInset
         textContainer.heightTracksTextView = false
 
         let layoutDelegate = MarkdownLayoutManagerDelegate()
@@ -723,12 +724,14 @@ public struct NativeTextViewWrapper: NSViewRepresentable {
             context.coordinator.applyExtensionChange(configuration.extensions, in: textView)
         }
         // Reading column centers by POSITION (container subview), so the text inset is constant.
+        // Applied when the configuration changes it, not on every pass: an
+        // embedder's own adjustment (typewriter centring) must survive an update.
         let desiredTextInset = NSSize(
             width: configuration.textInsets.horizontal,
             height: configuration.textInsets.vertical
         )
-        if abs(textView.textContainerInset.width - desiredTextInset.width) > 0.5
-            || abs(textView.textContainerInset.height - desiredTextInset.height) > 0.5 {
+        if context.coordinator.appliedTextInset != desiredTextInset {
+            context.coordinator.appliedTextInset = desiredTextInset
             textView.textContainerInset = desiredTextInset
         }
         textView.isEditable = isEditable
