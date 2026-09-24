@@ -11,7 +11,19 @@ extension String {
     /// Document synchronization is UTF-16-exact; canonically equivalent Unicode
     /// can still have different UTF-16 ranges for later patches.
     func hasSameUTF16(as other: String) -> Bool {
-        (self as NSString).isEqual(to: other)
+        // Native Swift strings are valid UTF-8, so equal bytes mean equal
+        // UTF-16. A byte compare (or a shared buffer) costs microseconds where
+        // bridging to NSString transcodes both sides — milliseconds per call on
+        // a long document, and the editor asks several times per keystroke.
+        let native = utf8.withContiguousStorageIfAvailable { lhs in
+            other.utf8.withContiguousStorageIfAvailable { rhs in
+                guard lhs.count == rhs.count else { return false }
+                guard let l = lhs.baseAddress, let r = rhs.baseAddress, l != r else { return true }
+                return memcmp(l, r, lhs.count) == 0
+            }
+        }
+        if case .some(.some(let equal)) = native { return equal }
+        return (self as NSString).isEqual(to: other)
     }
 }
 
