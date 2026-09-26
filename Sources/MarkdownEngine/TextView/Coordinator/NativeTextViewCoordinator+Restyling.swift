@@ -338,7 +338,8 @@ extension NativeTextViewCoordinator {
             return memo.result
         }
         let result = MarkdownDetection.computeActiveTokenIndices(
-            selectionRange: selection, tokens: parsed.tokens, in: text, suppressed: suppressed)
+            selectionRange: selection, tokens: parsed.tokens, in: text, suppressed: suppressed,
+            collapsingExtensionIDs: configuration.collapsingExtensionIDs)
         activeTokenMemo = (parsed.version, selection, suppressed, result)
         return result
     }

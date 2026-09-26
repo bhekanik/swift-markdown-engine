@@ -274,6 +274,7 @@ private enum MarkdownTextProjectionBuilder {
         removals: inout [NSRange],
         replacements: inout [Replacement]
     ) {
+        let collapsing = registry.collapsingIDs
         switch block {
         case .frontmatter(let range), .linkDefinition(let range, _, _, _):
             removals.append(range)
@@ -284,6 +285,7 @@ private enum MarkdownTextProjectionBuilder {
                 inlines,
                 source: source,
                 referenceDefinitions: referenceDefinitions,
+                collapsing: collapsing,
                 removals: &removals
             )
 
@@ -292,6 +294,7 @@ private enum MarkdownTextProjectionBuilder {
                 inlines,
                 source: source,
                 referenceDefinitions: referenceDefinitions,
+                collapsing: collapsing,
                 removals: &removals
             )
 
@@ -301,6 +304,7 @@ private enum MarkdownTextProjectionBuilder {
                 inlines,
                 source: source,
                 referenceDefinitions: referenceDefinitions,
+                collapsing: collapsing,
                 removals: &removals
             )
 
@@ -310,6 +314,7 @@ private enum MarkdownTextProjectionBuilder {
                 inlines,
                 source: source,
                 referenceDefinitions: referenceDefinitions,
+                collapsing: collapsing,
                 removals: &removals
             )
 
@@ -323,6 +328,7 @@ private enum MarkdownTextProjectionBuilder {
                     item.inlines,
                     source: source,
                     referenceDefinitions: referenceDefinitions,
+                    collapsing: collapsing,
                     removals: &removals
                 )
             }
@@ -350,6 +356,7 @@ private enum MarkdownTextProjectionBuilder {
                 node.inlines,
                 source: source,
                 referenceDefinitions: referenceDefinitions,
+                collapsing: collapsing,
                 removals: &removals
             )
 
@@ -362,6 +369,7 @@ private enum MarkdownTextProjectionBuilder {
         _ nodes: [InlineNode],
         source: NSString,
         referenceDefinitions: Set<String>,
+        collapsing: Set<String>,
         removals: inout [NSRange]
     ) {
         for node in nodes {
@@ -378,6 +386,7 @@ private enum MarkdownTextProjectionBuilder {
                     children,
                     source: source,
                     referenceDefinitions: referenceDefinitions,
+                    collapsing: collapsing,
                     removals: &removals
                 )
 
@@ -387,6 +396,7 @@ private enum MarkdownTextProjectionBuilder {
                     children,
                     source: source,
                     referenceDefinitions: referenceDefinitions,
+                    collapsing: collapsing,
                     removals: &removals
                 )
 
@@ -403,6 +413,7 @@ private enum MarkdownTextProjectionBuilder {
                     children,
                     source: source,
                     referenceDefinitions: referenceDefinitions,
+                    collapsing: collapsing,
                     removals: &removals
                 )
 
@@ -419,6 +430,7 @@ private enum MarkdownTextProjectionBuilder {
                     children,
                     source: source,
                     referenceDefinitions: referenceDefinitions,
+                    collapsing: collapsing,
                     removals: &removals
                 )
 
@@ -435,11 +447,17 @@ private enum MarkdownTextProjectionBuilder {
                 removals.append(marker)
 
             case .ext(let node):
+                // A span that collapses to a glyph shows none of its source.
+                if collapsing.contains(node.extensionID) {
+                    removals.append(node.range)
+                    continue
+                }
                 removals += node.markers
                 collect(
                     node.children,
                     source: source,
                     referenceDefinitions: referenceDefinitions,
+                    collapsing: collapsing,
                     removals: &removals
                 )
             }
@@ -553,6 +571,7 @@ private enum MarkdownTextProjectionBuilder {
         removals: inout [NSRange],
         replacements: inout [Replacement]
     ) {
+        let collapsing = registry.collapsingIDs
         let rows = MarkdownTableRowSource.rows(in: source, range: range)
         guard let columnCount = MarkdownTableRowSource.renderedColumnCount(in: rows) else { return }
         removals.append(rows[1].lineRange)
@@ -609,6 +628,7 @@ private enum MarkdownTextProjectionBuilder {
                     ),
                     source: normalizedSource,
                     referenceDefinitions: referenceDefinitions,
+                    collapsing: collapsing,
                     removals: &cellRemovals
                 )
                 removals.append(contentsOf: cellRemovals.compactMap {
