@@ -54,6 +54,20 @@ public struct InlineSyntax: Sendable, Equatable {
     /// Reject when the character after `close` equals `close`'s last character.
     /// `~~` uses this (strict GFM-ish run handling); `==` does not. Default `false`.
     public var rejectsCloserRun: Bool
+    /// Only an exact `close` ends the span; a lone occurrence of its first
+    /// character is ordinary content. For opaque spans whose content is prose
+    /// (`<!--note: mid-century-->`). Default `false`.
+    public var allowsCloseLeadInContent: Bool
+    /// Try this span before the built-in constructs, so it can claim syntax a
+    /// built-in would otherwise take (an HTML comment of a particular shape).
+    /// Default `false`: extensions match after every built-in.
+    public var precedesBuiltIns: Bool
+    /// While the caret is outside the span, hide all of it — markers and
+    /// content — and draw the extension's ``MarkdownExtension/collapsedGlyph(theme:font:)``
+    /// in its place. The source reveals only with the caret strictly inside,
+    /// so typing on either side of the glyph leaves it collapsed. Default
+    /// `false`: markers shrink and content stays visible.
+    public var collapsesToGlyph: Bool
 
     public init(
         open: String,
@@ -61,7 +75,10 @@ public struct InlineSyntax: Sendable, Equatable {
         parsesContent: Bool = true,
         requiresNonEmptyContent: Bool = true,
         rejectsOpenerRun: Bool = true,
-        rejectsCloserRun: Bool = false
+        rejectsCloserRun: Bool = false,
+        allowsCloseLeadInContent: Bool = false,
+        precedesBuiltIns: Bool = false,
+        collapsesToGlyph: Bool = false
     ) {
         self.open = open
         self.close = close
@@ -69,6 +86,9 @@ public struct InlineSyntax: Sendable, Equatable {
         self.requiresNonEmptyContent = requiresNonEmptyContent
         self.rejectsOpenerRun = rejectsOpenerRun
         self.rejectsCloserRun = rejectsCloserRun
+        self.allowsCloseLeadInContent = allowsCloseLeadInContent
+        self.precedesBuiltIns = precedesBuiltIns
+        self.collapsesToGlyph = collapsesToGlyph
     }
 }
 
@@ -123,6 +143,11 @@ public protocol MarkdownExtension: Sendable {
     /// Wrap the rendered inner HTML for the clean-copy path
     /// (`childrenHTML` is already escaped / recursively rendered).
     func html(childrenHTML: String) -> String
+    /// The glyph drawn in place of a collapsed span (see
+    /// ``InlineSyntax/collapsesToGlyph``), sized for `font`, the run's font.
+    /// Called during styling; cache the image if it is costly. `nil` (the
+    /// default) collapses the span to nothing.
+    func collapsedGlyph(theme: MarkdownEditorTheme, font: NSFont) -> NSImage?
 }
 
 public extension MarkdownExtension {
@@ -132,6 +157,7 @@ public extension MarkdownExtension {
     // first.
     var inline: InlineSyntax? { nil }
     var block: BlockSyntax? { nil }
+    func collapsedGlyph(theme: MarkdownEditorTheme, font: NSFont) -> NSImage? { nil }
 }
 
 // MARK: - Parser-facing registry (internal)
@@ -198,7 +224,9 @@ struct ExtensionRegistry {
                 if let s = ext.inline {
                     parts += ["i", framed(s.open), framed(s.close),
                               "\(s.parsesContent)", "\(s.requiresNonEmptyContent)",
-                              "\(s.rejectsOpenerRun)", "\(s.rejectsCloserRun)"]
+                              "\(s.rejectsOpenerRun)", "\(s.rejectsCloserRun)",
+                              "\(s.allowsCloseLeadInContent)", "\(s.precedesBuiltIns)",
+                              "\(s.collapsesToGlyph)"]
                 }
                 if let b = ext.block {
                     parts += ["b", framed(b.fence)]
@@ -209,6 +237,11 @@ struct ExtensionRegistry {
     }
 
     var isEmpty: Bool { entries.isEmpty && blockEntries.isEmpty }
+
+    /// Inline rules whose spans collapse to a glyph.
+    var collapsingIDs: Set<String> {
+        Set(entries.compactMap { $0.syntax.collapsesToGlyph ? $0.id : nil })
+    }
 
     /// The first registered block rule whose fence opens `line` (column 0),
     /// or nil. Registration order is precedence, matching the inline rules.
@@ -226,6 +259,13 @@ extension MarkdownEditorConfiguration {
     /// The parser-facing registry derived from `extensions`.
     var extensionRegistry: ExtensionRegistry {
         ExtensionRegistry(extensions: extensions)
+    }
+
+    /// Inline extensions that collapse to a glyph. Their spans reveal only
+    /// with the caret strictly inside, in the styler and the active-token pass
+    /// alike, so the two agree on when a restyle is due.
+    var collapsingExtensionIDs: Set<String> {
+        Set(extensions.compactMap { $0.inline?.collapsesToGlyph == true ? $0.id : nil })
     }
 
     /// Styler-facing lookup: extension behavior by id.

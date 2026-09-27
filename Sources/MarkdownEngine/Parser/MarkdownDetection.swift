@@ -17,7 +17,8 @@ enum MarkdownDetection {
         selectionRange: NSRange,
         tokens: [MarkdownToken],
         in text: NSString,
-        suppressed: Bool = false
+        suppressed: Bool = false,
+        collapsingExtensionIDs: Set<String> = []
     ) -> Set<Int> {
         // Read-only mode (no caret) hides all tokens regardless of any trailing selection.
         if suppressed { return [] }
@@ -26,6 +27,12 @@ enum MarkdownDetection {
         for (index, token) in tokens.enumerated() {
             let start = token.range.location
             let end = NSMaxRange(token.range)
+            // A span that collapses to a glyph opens only from strictly inside,
+            // so typing either side of its glyph never reveals the source.
+            if case .extensionSpan(let id) = token.kind, collapsingExtensionIDs.contains(id) {
+                if caretLocation > start && caretLocation < end { indices.insert(index) }
+                continue
+            }
             if caretLocation >= start && caretLocation < end {
                 indices.insert(index)
                 continue

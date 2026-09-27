@@ -429,6 +429,11 @@ enum InlineParser {
         referenceDefinitions: Set<String>,
         rawHTMLTerminators: RawHTMLTerminatorCache
     ) -> Span? {
+        let c = ns.character(at: i)
+        // Extensions that claim syntax a built-in would otherwise take.
+        for entry in registry.entries where entry.syntax.precedesBuiltIns && entry.open.first == c {
+            if let span = matchExtensionSpan(ns, len, start: i, entry: entry) { return span }
+        }
         if let span = matchBuiltIn(
             ns,
             len,
@@ -439,8 +444,7 @@ enum InlineParser {
             rawHTMLTerminators: rawHTMLTerminators
         ) { return span }
         // Extensions match after every built-in, in registration order.
-        let c = ns.character(at: i)
-        for entry in registry.entries where entry.open.first == c {
+        for entry in registry.entries where !entry.syntax.precedesBuiltIns && entry.open.first == c {
             if let span = matchExtensionSpan(ns, len, start: i, entry: entry) { return span }
         }
         return nil
@@ -493,7 +497,7 @@ enum InlineParser {
     /// built-in `~~`/`==` semantics: the span opens at an exact `open` match,
     /// closes at the FIRST exact `close` match on the same line, and a lone
     /// occurrence of `close`'s first character inside the content aborts the
-    /// candidate (it stays literal).
+    /// candidate (it stays literal) unless the syntax allows it.
     private static func matchExtensionSpan(_ ns: NSString, _ len: Int, start i: Int, entry: ExtensionRegistry.Entry) -> Span? {
         let open = entry.open, close = entry.close
         guard !open.isEmpty, !close.isEmpty else { return nil }
@@ -507,7 +511,13 @@ enum InlineParser {
             let ch = ns.character(at: k)
             if ch == newline { return nil }
             if ch == closeFirst {
-                guard matches(ns, len, at: k, chars: close) else { return nil }
+                guard matches(ns, len, at: k, chars: close) else {
+                    if entry.syntax.allowsCloseLeadInContent {
+                        k += 1
+                        continue
+                    }
+                    return nil
+                }
                 if entry.syntax.requiresNonEmptyContent, k == contentStart { return nil }
                 if entry.syntax.rejectsCloserRun,
                    let after = peek(ns, k + close.count, len), after == close[close.count - 1] { return nil }

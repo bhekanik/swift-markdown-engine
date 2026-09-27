@@ -60,7 +60,8 @@ public enum MarkdownRendering {
             selectionRange: selection ?? NSRange(location: max(caretLocation, 0), length: 0),
             tokens: tokens,
             in: ns,
-            suppressed: caretLocation < 0
+            suppressed: caretLocation < 0,
+            collapsingExtensionIDs: configuration.collapsingExtensionIDs
         )
         let ranges = MarkdownStyler.styleAttributes(
             text: markdown,

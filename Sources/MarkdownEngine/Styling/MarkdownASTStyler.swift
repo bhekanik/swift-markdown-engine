@@ -67,6 +67,7 @@ enum MarkdownASTStyler {
             selection: selection,
             config: configuration,
             extensionsByID: configuration.extensionsByID,
+            collapsingExtensionIDs: configuration.collapsingExtensionIDs,
             referenceDefinitions: referenceDefinitions,
             scopedRanges: scopedRanges,
             orderedDisplayNumbers: computeOrderedDisplayNumbers(blocks: blocks, ns: ns)
@@ -679,6 +680,7 @@ enum MarkdownASTStyler {
         let selection: NSRange?
         let config: MarkdownEditorConfiguration
         let extensionsByID: [String: any MarkdownExtension]
+        let collapsingExtensionIDs: Set<String>
         let referenceDefinitions: [String: ReferenceDefinition]
         let scopedRanges: [NSRange]?
         let orderedDisplayNumbers: [Int: Int]
@@ -696,6 +698,16 @@ enum MarkdownASTStyler {
             guard range.length > 0, caret == NSMaxRange(range) else { return false }
             let last = ns.character(at: caret - 1)
             return last != 0x0A && last != 0x0D
+        }
+        /// Whether an extension span shows its source. A span that collapses
+        /// to a glyph reveals only with the caret strictly inside it, the rule
+        /// `MarkdownDetection.computeActiveTokenIndices` applies to its token.
+        func isRevealed(_ node: ExtensionInlineNode) -> Bool {
+            guard collapsingExtensionIDs.contains(node.extensionID) else { return isActive(node.range) }
+            return caret > node.range.location && caret < NSMaxRange(node.range)
+        }
+        func collapses(_ node: ExtensionInlineNode) -> Bool {
+            collapsingExtensionIDs.contains(node.extensionID)
         }
         var theme: MarkdownEditorTheme { config.theme }
         var text: String { ns as String }
@@ -985,9 +997,11 @@ enum MarkdownASTStyler {
                 if let ext = ctx.extensionsByID[node.extensionID] {
                     attrs.append((node.contentRange, ext.contentAttributes(theme: ctx.theme)))
                 }
-                if ctx.isActive(node.range) {
+                if ctx.isRevealed(node) {
                     for marker in node.markers { attrs.append((marker, [.foregroundColor: ctx.theme.mutedText])) }
                 }
+                // A placeholder's text is never prose to check.
+                if ctx.collapses(node) { attrs.append((node.range, [.spellingState: 0])) }
                 styleInlines(node.children, font: font, ctx: ctx, into: &attrs)
 
             case .code(let range, let contentRange):
@@ -1207,7 +1221,11 @@ enum MarkdownASTStyler {
                 if !active { shrink(markers, ctx: ctx, into: &attrs) }
                 shrinkInlineMarkers(children, ctx: ctx, forceReveal: active, into: &attrs)
             case .ext(let node):
-                let active = forceReveal || ctx.isActive(node.range)
+                let active = forceReveal || ctx.isRevealed(node)
+                if !active, ctx.collapses(node) {
+                    collapse(node, font: ctx.baseFont, ctx: ctx, into: &attrs)
+                    continue
+                }
                 if !active { shrink(node.markers, ctx: ctx, into: &attrs) }
                 shrinkInlineMarkers(node.children, ctx: ctx, forceReveal: active, into: &attrs)
             case .link(let range, _, _, _, let markers, let children):
@@ -1292,6 +1310,37 @@ enum MarkdownASTStyler {
         for marker in markers {
             attrs.append((marker, [.font: ctx.inlineMarkerFont, .kern: -ctx.inlineMarkerFont.pointSize]))
         }
+    }
+
+    /// Hide a collapsing extension span whole and plant its glyph on the
+    /// first character, whose kern reserves the glyph's width so the text
+    /// around it makes room. The layout fragment draws it as an inline image.
+    private static func collapse(_ node: ExtensionInlineNode, font: NSFont, ctx: Ctx, into attrs: inout [StyledRange]) {
+        let range = node.range
+        guard range.length > 0 else { return }
+        let hiddenFont = ctx.inlineMarkerFont
+        let glyph = ctx.extensionsByID[node.extensionID]?.collapsedGlyph(theme: ctx.theme, font: font)
+        let anchor = NSRange(location: range.location, length: 1)
+        let anchorWidth = HeadingHelpers.textWidth(ctx.ns.substring(with: anchor), font: hiddenFont)
+        var anchorAttrs: [NSAttributedString.Key: Any] = [.font: hiddenFont, .foregroundColor: NSColor.clear]
+        if let glyph {
+            anchorAttrs[.renderedImage] = glyph
+            // Origin y 0: the glyph stands on the baseline, like a capital.
+            anchorAttrs[.renderedImageBounds] = NSValue(rect: CGRect(
+                x: 0, y: 0, width: glyph.size.width, height: glyph.size.height))
+            anchorAttrs[.kern] = glyph.size.width - anchorWidth
+        } else {
+            anchorAttrs[.kern] = -anchorWidth
+        }
+        attrs.append((anchor, anchorAttrs))
+        guard range.length > 1 else { return }
+        let rest = NSRange(location: range.location + 1, length: range.length - 1)
+        let restText = ctx.ns.substring(with: rest)
+        attrs.append((rest, [
+            .font: hiddenFont,
+            .foregroundColor: NSColor.clear,
+            .kern: -MarkdownStyler.hiddenRunKern(restText, font: hiddenFont),
+        ]))
     }
 
     private static func hideInlineTarget(
